@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "package": "npm run build && npm run electron:build && electron-builder",
-    "release": "powershell -ExecutionPolicy Bypass -File scripts/release.ps1"
+    "release": "powershell -ExecutionPolicy Bypass -File scripts/release.ps1",
+    "release:ci": "node scripts/release-ci.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

@@ -29,3 +29,8 @@
   - Create a new GitHub Release
   - Upload all files from `release/`
   - Users will auto-update on next launch
+
+## CI Auto-Release (GitHub Actions)
+- Every push to `main` builds Windows + macOS installers
+- Each build publishes a GitHub Release tagged like `ci-<version>-<sha>`
+- You can disable CI by removing `.github/workflows/release.yml`
