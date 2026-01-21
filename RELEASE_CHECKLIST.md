@@ -23,6 +23,9 @@
   - latest.yml
 
 ## Publish (GitHub Releases)
-- Create a new GitHub Release
-- Upload all files from `release/`
-- Users will auto-update on next launch
+- GitHub Releases for public repos always include “Source code (zip/tar.gz)” links
+- To prevent source access, make the repo **private** or host the installer elsewhere
+- If using GitHub Releases:
+  - Create a new GitHub Release
+  - Upload all files from `release/`
+  - Users will auto-update on next launch
