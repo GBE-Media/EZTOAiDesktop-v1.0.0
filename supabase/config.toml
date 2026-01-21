@@ -1,0 +1,10 @@
+project_id = "xgtkdheinkrsirxnvgxs"
+
+[functions.export-products]
+verify_jwt = false
+
+[functions.test-export-connection]
+verify_jwt = false
+
+[functions.sync-products]
+verify_jwt = false

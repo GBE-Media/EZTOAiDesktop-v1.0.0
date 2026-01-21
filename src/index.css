@@ -1,0 +1,282 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* EZTO Ai Desktop - Professional PDF Editor Design System
+   Behavior-first, dense, enterprise-grade interface */
+
+@layer base {
+  :root {
+    /* Light theme */
+    --background: 0 0% 98%;
+    --foreground: 220 16% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 16% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 16% 12%;
+
+    --primary: 210 100% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 14% 94%;
+    --secondary-foreground: 220 16% 20%;
+
+    --muted: 220 14% 95%;
+    --muted-foreground: 215 15% 45%;
+
+    --accent: 210 100% 95%;
+    --accent-foreground: 210 100% 35%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 13% 87%;
+    --input: 220 13% 87%;
+    --ring: 210 100% 45%;
+
+    --radius: 0.25rem;
+
+    /* Panel colors - Light */
+    --panel-background: 0 0% 97%;
+    --panel-header: 0 0% 95%;
+    --panel-border: 220 13% 87%;
+
+    /* Toolbar colors - Light */
+    --toolbar-background: 0 0% 100%;
+    --toolbar-border: 220 13% 87%;
+    --toolbar-active: 210 100% 95%;
+
+    /* Canvas colors - Light */
+    --canvas-background: 220 14% 92%;
+    --canvas-grid: 220 13% 82%;
+
+    /* Ruler colors - Light */
+    --ruler-background: 0 0% 95%;
+    --ruler-text: 215 15% 45%;
+    --ruler-mark: 220 13% 75%;
+
+    /* Status colors */
+    --status-success: 142 71% 45%;
+    --status-warning: 38 92% 50%;
+    --status-error: 0 84% 60%;
+    --status-info: 210 100% 45%;
+
+    /* Selection colors - Light */
+    --selection-background: 210 100% 45% / 0.15;
+    --selection-border: 210 100% 45%;
+
+    /* Sidebar colors - Light */
+    --sidebar-background: 0 0% 97%;
+    --sidebar-foreground: 220 16% 12%;
+    --sidebar-primary: 210 100% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 100% 95%;
+    --sidebar-accent-foreground: 210 100% 35%;
+    --sidebar-border: 220 13% 87%;
+    --sidebar-ring: 210 100% 45%;
+  }
+
+  .dark {
+    /* Core backgrounds - Dark professional theme */
+    --background: 220 16% 12%;
+    --foreground: 210 20% 92%;
+
+    /* Surfaces */
+    --card: 220 16% 14%;
+    --card-foreground: 210 20% 92%;
+
+    --popover: 220 18% 16%;
+    --popover-foreground: 210 20% 92%;
+
+    /* Primary accent - Professional blue */
+    --primary: 210 100% 52%;
+    --primary-foreground: 0 0% 100%;
+
+    /* Secondary - Subtle contrast */
+    --secondary: 220 14% 20%;
+    --secondary-foreground: 210 20% 85%;
+
+    /* Muted elements */
+    --muted: 220 14% 18%;
+    --muted-foreground: 215 15% 55%;
+
+    /* Accent for highlights */
+    --accent: 210 100% 52%;
+    --accent-foreground: 0 0% 100%;
+
+    /* Destructive */
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    /* Borders and inputs */
+    --border: 220 14% 22%;
+    --input: 220 14% 20%;
+    --ring: 210 100% 52%;
+
+    --radius: 0.25rem;
+
+    /* Panel system */
+    --panel-background: 220 16% 13%;
+    --panel-header: 220 16% 16%;
+    --panel-border: 220 14% 20%;
+
+    /* Toolbar */
+    --toolbar-background: 220 16% 15%;
+    --toolbar-border: 220 14% 20%;
+    --toolbar-active: 210 100% 52%;
+
+    /* Canvas area */
+    --canvas-background: 220 10% 8%;
+    --canvas-grid: 220 14% 15%;
+
+    /* Status colors */
+    --status-success: 142 70% 45%;
+    --status-warning: 38 92% 50%;
+    --status-error: 0 72% 51%;
+    --status-info: 210 100% 52%;
+
+    /* Selection */
+    --selection-background: 210 100% 52%;
+    --selection-border: 210 100% 60%;
+
+    /* Sidebar */
+    --sidebar-background: 220 16% 13%;
+    --sidebar-foreground: 210 20% 85%;
+    --sidebar-primary: 210 100% 52%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 14% 18%;
+    --sidebar-accent-foreground: 210 20% 85%;
+    --sidebar-border: 220 14% 20%;
+    --sidebar-ring: 210 100% 52%;
+
+    /* Ruler */
+    --ruler-background: 220 16% 14%;
+    --ruler-text: 215 15% 50%;
+    --ruler-mark: 220 14% 25%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    overflow: hidden;
+  }
+
+  /* Scrollbar styling for professional feel */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: hsl(var(--panel-background));
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground));
+  }
+
+  /* Focus styles */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 1px;
+  }
+}
+
+@layer components {
+  /* Panel system */
+  .panel {
+    background-color: hsl(var(--panel-background));
+    border-color: hsl(var(--panel-border));
+  }
+
+  .panel-header {
+    background-color: hsl(var(--panel-header));
+    @apply px-2 py-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground;
+    border-bottom: 1px solid hsl(var(--panel-border));
+  }
+
+  /* Toolbar buttons */
+  .toolbar-button {
+    @apply flex items-center justify-center w-8 h-8 rounded-sm text-muted-foreground transition-colors;
+    @apply hover:bg-secondary hover:text-foreground;
+    @apply active:bg-primary active:text-primary-foreground;
+  }
+
+  .toolbar-button.active {
+    @apply bg-primary text-primary-foreground;
+  }
+
+  .toolbar-button:disabled {
+    @apply opacity-40 cursor-not-allowed;
+  }
+
+  /* Dense list items */
+  .list-item {
+    @apply flex items-center gap-2 px-2 py-1 text-sm cursor-pointer;
+    @apply hover:bg-secondary;
+  }
+
+  .list-item.selected {
+    @apply bg-primary/20 text-primary;
+  }
+
+  /* Document tabs */
+  .doc-tab {
+    @apply flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer;
+    background-color: hsl(var(--panel-background));
+    border-right: 1px solid hsl(var(--panel-border));
+  }
+
+  .doc-tab:hover {
+    @apply bg-secondary;
+  }
+
+  .doc-tab.active {
+    @apply bg-background;
+    border-bottom: 2px solid hsl(var(--primary));
+  }
+
+  /* Ruler */
+  .ruler {
+    background-color: hsl(var(--ruler-background));
+    color: hsl(var(--ruler-text));
+    @apply text-[10px] font-mono;
+  }
+
+  /* Status messages */
+  .status-message {
+    @apply text-xs text-muted-foreground;
+  }
+}
+
+@layer utilities {
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  /* Dense spacing utility */
+  .dense {
+    @apply text-xs leading-tight;
+  }
+}

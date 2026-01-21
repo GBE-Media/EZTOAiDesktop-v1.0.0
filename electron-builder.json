@@ -1,0 +1,110 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.ezto.ai",
+  "productName": "EZTO Ai",
+  "directories": {
+    "output": "release",
+    "buildResources": "build"
+  },
+  "files": [
+    "dist/**/*",
+    "dist-electron/**/*",
+    "public/favicon.ico"
+  ],
+  "extraResources": [
+    {
+      "from": "build/tessdata",
+      "to": "tessdata",
+      "filter": ["**/*"]
+    }
+  ],
+  "extraMetadata": {
+    "main": "dist-electron/main.js"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      },
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "public/favicon.ico",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "fileAssociations": [
+      {
+        "ext": "ezto",
+        "name": "EZTO Project File",
+        "description": "EZTO Ai Takeoff Project",
+        "icon": "public/favicon.ico",
+        "role": "Editor"
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "perMachine": false,
+    "license": "build/installer-license.txt",
+    "include": "build/installer.nsh"
+  },
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "GBE-Media",
+      "repo": "ezto-ai-desktopv1"
+    }
+  ],
+  "mac": {
+    "target": [
+      {
+        "target": "dmg",
+        "arch": ["x64", "arm64"]
+      },
+      {
+        "target": "zip",
+        "arch": ["x64", "arm64"]
+      }
+    ],
+    "icon": "public/favicon.ico",
+    "category": "public.app-category.productivity",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "fileAssociations": [
+      {
+        "ext": "ezto",
+        "name": "EZTO Project File",
+        "description": "EZTO Ai Takeoff Project",
+        "icon": "public/favicon.ico",
+        "role": "Editor"
+      }
+    ]
+  },
+  "linux": {
+    "target": [
+      {
+        "target": "AppImage",
+        "arch": ["x64"]
+      },
+      {
+        "target": "deb",
+        "arch": ["x64"]
+      }
+    ],
+    "icon": "public/favicon.ico",
+    "category": "Office",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "fileAssociations": [
+      {
+        "ext": "ezto",
+        "name": "EZTO Project File",
+        "description": "EZTO Ai Takeoff Project",
+        "mimeType": "application/x-ezto"
+      }
+    ]
+  }
+}

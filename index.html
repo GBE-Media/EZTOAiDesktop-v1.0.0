@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EZTO Ai - PDF Takeoff</title>
+    <meta name="description" content="Professional PDF Takeoff and Markup Tool" />
+    <meta name="author" content="TheBEMedia" />
+    <style>
+      /* Prevent text selection and dragging for desktop app feel */
+      body {
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-app-region: no-drag;
+        overflow: hidden;
+      }
+      
+      /* Allow text selection in input fields and content areas */
+      input, textarea, [contenteditable="true"], .selectable {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      
+      /* Remove default margins */
+      html, body, #root {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

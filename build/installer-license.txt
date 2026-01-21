@@ -1,0 +1,18 @@
+EZTO Ai - Terms and Conditions (Placeholder)
+
+Replace this placeholder with your official Terms & Conditions / EULA text.
+
+1. License Grant
+You are granted a non-exclusive license to install and use this software.
+
+2. Restrictions
+You may not reverse engineer, decompile, or redistribute this software except as allowed by law.
+
+3. Disclaimer
+This software is provided "as is" without warranty of any kind.
+
+4. Limitation of Liability
+The authors are not liable for any damages arising from use of this software.
+
+5. Acceptance
+By installing this software, you agree to these Terms & Conditions.
