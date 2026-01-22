@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -31,5 +32,16 @@ jobs:
         run: npm run release:ci
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ELECTRON_BUILDER_HTTP_TIMEOUT: 300000
+          ELECTRON_BUILDER_HTTP_TIMEOUT: 600000
           ELECTRON_BUILDER_HTTP_MAX_RETRY: 5
+
+      - name: Cleanup old releases (keep last 20)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tags = gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[20:] | .[].tagName'
+          foreach ($tag in $tags) {
+            if ($tag) {
+              gh release delete $tag -y --delete-tag
+            }
+          }
