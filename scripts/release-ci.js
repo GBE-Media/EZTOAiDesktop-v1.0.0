@@ -28,5 +28,5 @@ console.log(`Publishing release: ${releaseTag} (version: ${numericVersion})`);
 run("npm run build");
 run("npm run electron:build");
 run(
-  `npx electron-builder --publish always --config.extraMetadata.version=${numericVersion} --config.publish.tag=${releaseTag}`
+  `npx electron-builder --publish always --config.extraMetadata.version=${numericVersion} --config.publish[0].tag=${releaseTag}`
 );
