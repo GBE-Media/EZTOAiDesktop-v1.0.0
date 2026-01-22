@@ -36,4 +36,5 @@ jobs:
         run: npm run release:ci
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ELECTRON_BUILDER_HTTP_TIMEOUT: 120000
+          ELECTRON_BUILDER_HTTP_TIMEOUT: 300000
+          ELECTRON_BUILDER_HTTP_MAX_RETRY: 5
