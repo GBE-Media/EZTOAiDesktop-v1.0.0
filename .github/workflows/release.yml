@@ -28,13 +28,6 @@ jobs:
         env:
           npm_config_build_from_source: "false"
 
-      - name: Build and publish release
-        run: npm run release:ci
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ELECTRON_BUILDER_HTTP_TIMEOUT: 600000
-          ELECTRON_BUILDER_HTTP_MAX_RETRY: 5
-
       - name: Cleanup old releases (keep last 20)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -45,3 +38,10 @@ jobs:
               gh release delete $tag -y --delete-tag
             }
           }
+
+      - name: Build and publish release
+        run: npm run release:ci
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ELECTRON_BUILDER_HTTP_TIMEOUT: 600000
+          ELECTRON_BUILDER_HTTP_MAX_RETRY: 5
