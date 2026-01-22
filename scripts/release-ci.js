@@ -9,9 +9,9 @@ const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
 const shortSha = (process.env.GITHUB_SHA || "local").slice(0, 7);
 const runId = process.env.GITHUB_RUN_ID || Date.now().toString();
 const baseVersion = pkg.version || "0.0.0";
-// Use numeric version for Windows compatibility, tag for release naming
-const buildNumber = Math.abs(Number.parseInt(runId, 10) % 65535);
-const numericVersion = baseVersion === "0.0.0" ? `0.1.${buildNumber}` : baseVersion;
+// Use numeric version for Windows compatibility, unique per CI run
+const buildNumber = Math.abs(Number.parseInt(runId, 10) || Date.now());
+const numericVersion = baseVersion === "0.0.0" ? `0.1.${buildNumber}` : `${baseVersion}.${buildNumber}`;
 const releaseTag = `v${numericVersion}-${shortSha}-run-${runId}`;
 
 const releaseEnv = {
