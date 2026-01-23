@@ -1,4 +1,4 @@
-name: Build and Publish (Windows + macOS)
+name: Build and Publish (macOS)
 
 on:
   push:
@@ -26,11 +26,7 @@ jobs:
 
   build:
     needs: cleanup
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     timeout-minutes: 10
 
     steps:

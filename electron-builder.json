@@ -36,7 +36,7 @@
         "ext": "ezto",
         "name": "EZTO Project File",
         "description": "EZTO Ai Takeoff Project",
-        "icon": "public/favicon.ico",
+        "icon": "build/icon-1024.png",
         "role": "Editor"
       }
     ]
