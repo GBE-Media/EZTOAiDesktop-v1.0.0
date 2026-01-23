@@ -21,7 +21,7 @@ jobs:
         run: |
           tags=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[20:] | .[].tagName')
           for tag in $tags; do
-            gh release delete "$tag" -y --delete-tag
+            gh release delete "$tag" -y --cleanup-tag
           done
 
   build:
