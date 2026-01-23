@@ -1,5 +1,7 @@
 !define MUI_ABORTWARNING
 
+!include "nsDialogs.nsh"
+
 ; Variables for desktop shortcut checkbox
 Var DesktopShortcutCheckbox
 Var DesktopShortcutState
@@ -11,8 +13,7 @@ Var DesktopShortcutState
 
 ; Custom page for desktop shortcut option
 Function DesktopShortcutPage
-  !insertmacro MUI_HEADER_TEXT "Installation Options" "Choose additional options for the installation."
-  
+  ; Create the dialog
   nsDialogs::Create 1018
   Pop $0
   
@@ -20,7 +21,12 @@ Function DesktopShortcutPage
     Abort
   ${EndIf}
   
-  ${NSD_CreateCheckbox} 0 0 100% 12u "Create a desktop shortcut"
+  ; Add a label for context
+  ${NSD_CreateLabel} 0 0 100% 24u "Choose additional installation options:"
+  Pop $0
+  
+  ; Create checkbox for desktop shortcut (checked by default)
+  ${NSD_CreateCheckbox} 0 30u 100% 12u "Create a desktop shortcut"
   Pop $DesktopShortcutCheckbox
   ${NSD_SetState} $DesktopShortcutCheckbox ${BST_CHECKED}
   
