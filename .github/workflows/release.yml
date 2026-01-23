@@ -1,4 +1,4 @@
-name: Build and Publish (Windows)
+name: Build and Publish (Windows + macOS)
 
 on:
   push:
@@ -9,8 +9,25 @@ permissions:
   contents: write
 
 jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cleanup old releases (keep last 20)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tags=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[20:] | .[].tagName')
+          for tag in $tags; do
+            gh release delete "$tag" -y --delete-tag
+          done
+
   build:
-    runs-on: windows-latest
+    needs: cleanup
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
 
     steps:
@@ -27,17 +44,6 @@ jobs:
         run: npm ci
         env:
           npm_config_build_from_source: "false"
-
-      - name: Cleanup old releases (keep last 20)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $tags = gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[20:] | .[].tagName'
-          foreach ($tag in $tags) {
-            if ($tag) {
-              gh release delete $tag -y --delete-tag
-            }
-          }
 
       - name: Build and publish release
         run: npm run release:ci

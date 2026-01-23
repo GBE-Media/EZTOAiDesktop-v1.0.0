@@ -31,7 +31,7 @@
   - Users will auto-update on next launch
 
 ## CI Auto-Release (GitHub Actions)
-- Every push to `main` builds Windows installers
+- Every push to `main` builds Windows and macOS installers
 - Each build publishes a GitHub Release tagged like `v<version>-<sha>-run-<runId>`
 - CI deletes older releases before publish and keeps the newest 20
 - You can disable CI by removing `.github/workflows/release.yml`
