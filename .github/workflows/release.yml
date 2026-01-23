@@ -1,4 +1,4 @@
-name: Build and Publish (Windows + macOS)
+name: Release and Build
 
 on:
   push:
@@ -7,10 +7,62 @@ on:
 
 permissions:
   contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
+  # First: Determine version and create release using semantic-release
+  release:
+    runs-on: ubuntu-latest
+    outputs:
+      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
+      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run semantic-release
+        id: semantic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Run semantic-release
+          npx semantic-release 2>&1 | tee semantic-output.txt
+          EXIT_CODE=${PIPESTATUS[0]}
+          
+          # Check if a release was published
+          if grep -q "Published release" semantic-output.txt; then
+            VERSION=$(grep -oP 'Published release \K[0-9]+\.[0-9]+\.[0-9]+' semantic-output.txt || echo "")
+            if [ -n "$VERSION" ]; then
+              echo "new_release_published=true" >> $GITHUB_OUTPUT
+              echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
+              echo "✅ Published version: $VERSION"
+            else
+              echo "new_release_published=false" >> $GITHUB_OUTPUT
+              echo "new_release_version=" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "new_release_published=false" >> $GITHUB_OUTPUT
+            echo "new_release_version=" >> $GITHUB_OUTPUT
+            echo "ℹ️ No new release needed (no relevant commits)"
+          fi
+
+  # Cleanup old releases (keep last 20)
   cleanup:
     runs-on: ubuntu-latest
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,28 +71,36 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tags=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[20:] | .[].tagName')
+          tags=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[20:] | .[].tagName' || echo "")
           for tag in $tags; do
-            gh release delete "$tag" -y --cleanup-tag
+            gh release delete "$tag" -y --cleanup-tag || true
           done
 
+  # Build and upload artifacts for each platform
   build:
-    needs: cleanup
+    needs: release
+    if: needs.release.outputs.new_release_published == 'true'
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Pull latest changes (includes version bump)
+        run: git pull origin main
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
           cache: npm
 
       - name: Install dependencies
@@ -56,7 +116,6 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir -p build/icon.iconset
-          # Use ImageMagick to resize - more reliable than sips for various PNG formats
           magick build/icon-1024.png -resize 16x16 build/icon.iconset/icon_16x16.png
           magick build/icon-1024.png -resize 32x32 build/icon.iconset/icon_16x16@2x.png
           magick build/icon-1024.png -resize 32x32 build/icon.iconset/icon_32x32.png
@@ -70,9 +129,14 @@ jobs:
           iconutil -c icns build/icon.iconset -o build/icon.icns
           cp build/icon.icns public/favicon.icns
 
-      - name: Build and publish release
-        run: npm run release:ci
+      - name: Build application
+        run: |
+          npm run build
+          npm run electron:build
+
+      - name: Publish to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_HTTP_TIMEOUT: 600000
           ELECTRON_BUILDER_HTTP_MAX_RETRY: 5
+        run: npx electron-builder --publish always
