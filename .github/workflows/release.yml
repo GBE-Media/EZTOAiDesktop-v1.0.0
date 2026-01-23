@@ -63,6 +63,7 @@ jobs:
           sips -z 512 512 build/icon-1024.png --out build/icon.iconset/icon_512x512.png
           sips -z 1024 1024 build/icon-1024.png --out build/icon.iconset/icon_512x512@2x.png
           iconutil -c icns build/icon.iconset -o build/icon.icns
+          cp build/icon.icns public/favicon.icns
 
       - name: Build and publish release
         run: npm run release:ci
