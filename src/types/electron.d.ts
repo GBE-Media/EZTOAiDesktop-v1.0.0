@@ -38,6 +38,10 @@ export interface ElectronAPI {
     message?: string;
     updateInfo?: any;
   }>;
+  installUpdate: () => Promise<{
+    success: boolean;
+    message?: string;
+  }>;
   
   // Window close handling
   confirmClose: () => Promise<void>;

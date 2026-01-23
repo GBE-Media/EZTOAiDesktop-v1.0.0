@@ -432,6 +432,20 @@ ipcMain.handle('app:checkForUpdates', async () => {
   }
 });
 
+ipcMain.handle('app:installUpdate', async () => {
+  if (!app.isPackaged) {
+    return { success: false, message: 'Updates are only available in the packaged app.' };
+  }
+
+  try {
+    // Quit and install the update
+    autoUpdater.quitAndInstall(false, true);
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, message: error?.message || 'Failed to install update.' };
+  }
+});
+
 // Allow renderer to confirm window close
 ipcMain.handle('window:confirm-close', async () => {
   if (mainWindow && !mainWindow.isDestroyed()) {

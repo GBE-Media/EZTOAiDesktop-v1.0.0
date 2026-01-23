@@ -9,7 +9,7 @@
 
 @layer base {
   :root {
-    /* Light theme */
+    /* Light theme - Green accent to match web app */
     --background: 0 0% 98%;
     --foreground: 220 16% 12%;
 
@@ -19,7 +19,8 @@
     --popover: 0 0% 100%;
     --popover-foreground: 220 16% 12%;
 
-    --primary: 210 100% 45%;
+    /* Primary - Green to match web app */
+    --primary: 142 76% 36%;
     --primary-foreground: 0 0% 100%;
 
     --secondary: 220 14% 94%;
@@ -28,15 +29,15 @@
     --muted: 220 14% 95%;
     --muted-foreground: 215 15% 45%;
 
-    --accent: 210 100% 95%;
-    --accent-foreground: 210 100% 35%;
+    --accent: 142 76% 90%;
+    --accent-foreground: 142 76% 30%;
 
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
 
     --border: 220 13% 87%;
     --input: 220 13% 87%;
-    --ring: 210 100% 45%;
+    --ring: 142 76% 36%;
 
     --radius: 0.25rem;
 
@@ -48,7 +49,7 @@
     /* Toolbar colors - Light */
     --toolbar-background: 0 0% 100%;
     --toolbar-border: 220 13% 87%;
-    --toolbar-active: 210 100% 95%;
+    --toolbar-active: 142 76% 90%;
 
     /* Canvas colors - Light */
     --canvas-background: 220 14% 92%;
@@ -66,22 +67,22 @@
     --status-info: 210 100% 45%;
 
     /* Selection colors - Light */
-    --selection-background: 210 100% 45% / 0.15;
-    --selection-border: 210 100% 45%;
+    --selection-background: 142 76% 36% / 0.15;
+    --selection-border: 142 76% 36%;
 
     /* Sidebar colors - Light */
     --sidebar-background: 0 0% 97%;
     --sidebar-foreground: 220 16% 12%;
-    --sidebar-primary: 210 100% 45%;
+    --sidebar-primary: 142 76% 36%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 210 100% 95%;
-    --sidebar-accent-foreground: 210 100% 35%;
+    --sidebar-accent: 142 76% 90%;
+    --sidebar-accent-foreground: 142 76% 30%;
     --sidebar-border: 220 13% 87%;
-    --sidebar-ring: 210 100% 45%;
+    --sidebar-ring: 142 76% 36%;
   }
 
   .dark {
-    /* Core backgrounds - Dark professional theme */
+    /* Core backgrounds - Dark professional theme matching web app */
     --background: 220 16% 12%;
     --foreground: 210 20% 92%;
 
@@ -92,8 +93,8 @@
     --popover: 220 18% 16%;
     --popover-foreground: 210 20% 92%;
 
-    /* Primary accent - Professional blue */
-    --primary: 210 100% 52%;
+    /* Primary accent - Green to match web app */
+    --primary: 142 70% 45%;
     --primary-foreground: 0 0% 100%;
 
     /* Secondary - Subtle contrast */
@@ -104,8 +105,8 @@
     --muted: 220 14% 18%;
     --muted-foreground: 215 15% 55%;
 
-    /* Accent for highlights */
-    --accent: 210 100% 52%;
+    /* Accent for highlights - Green */
+    --accent: 142 70% 45%;
     --accent-foreground: 0 0% 100%;
 
     /* Destructive */
@@ -115,7 +116,7 @@
     /* Borders and inputs */
     --border: 220 14% 22%;
     --input: 220 14% 20%;
-    --ring: 210 100% 52%;
+    --ring: 142 70% 45%;
 
     --radius: 0.25rem;
 
@@ -127,7 +128,7 @@
     /* Toolbar */
     --toolbar-background: 220 16% 15%;
     --toolbar-border: 220 14% 20%;
-    --toolbar-active: 210 100% 52%;
+    --toolbar-active: 142 70% 45%;
 
     /* Canvas area */
     --canvas-background: 220 10% 8%;
@@ -139,19 +140,19 @@
     --status-error: 0 72% 51%;
     --status-info: 210 100% 52%;
 
-    /* Selection */
-    --selection-background: 210 100% 52%;
-    --selection-border: 210 100% 60%;
+    /* Selection - Green */
+    --selection-background: 142 70% 45%;
+    --selection-border: 142 70% 55%;
 
     /* Sidebar */
     --sidebar-background: 220 16% 13%;
     --sidebar-foreground: 210 20% 85%;
-    --sidebar-primary: 210 100% 52%;
+    --sidebar-primary: 142 70% 45%;
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 220 14% 18%;
     --sidebar-accent-foreground: 210 20% 85%;
     --sidebar-border: 220 14% 20%;
-    --sidebar-ring: 210 100% 52%;
+    --sidebar-ring: 142 70% 45%;
 
     /* Ruler */
     --ruler-background: 220 16% 14%;

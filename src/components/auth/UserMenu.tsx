@@ -1,7 +1,7 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useTheme } from 'next-themes';
 import { useEffect, useState } from 'react';
-import { LogOut, User, ChevronDown, Moon, Sun } from 'lucide-react';
+import { LogOut, User, ChevronDown, Moon, Sun, Download } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -9,6 +9,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
@@ -18,6 +28,8 @@ export function UserMenu() {
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
+  const [updateReady, setUpdateReady] = useState(false);
+  const [showUpdateDialog, setShowUpdateDialog] = useState(false);
 
   if (!user) return null;
 
@@ -32,7 +44,7 @@ export function UserMenu() {
     });
     const cleanupAvailable = window.electronAPI.onUpdateAvailable(() => {
       setIsCheckingUpdates(false);
-      toast({ title: 'Update available', description: 'Downloading in the background.' });
+      toast({ title: 'Update available', description: 'Downloading in the background…' });
     });
     const cleanupNotAvailable = window.electronAPI.onUpdateNotAvailable(() => {
       setIsCheckingUpdates(false);
@@ -40,7 +52,8 @@ export function UserMenu() {
     });
     const cleanupDownloaded = window.electronAPI.onUpdateDownloaded(() => {
       setIsCheckingUpdates(false);
-      toast({ title: 'Update ready', description: 'Restart the app to install the update.' });
+      setUpdateReady(true);
+      setShowUpdateDialog(true);
     });
     const cleanupError = window.electronAPI.onUpdateError((error) => {
       setIsCheckingUpdates(false);
@@ -75,7 +88,15 @@ export function UserMenu() {
     }
   };
 
+  const handleInstallUpdate = async () => {
+    if (!window.electronAPI?.installUpdate) return;
+    
+    toast({ title: 'Installing update…', description: 'The app will restart shortly.' });
+    await window.electronAPI.installUpdate();
+  };
+
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button 
@@ -109,13 +130,23 @@ export function UserMenu() {
           />
         </div>
 
-        <DropdownMenuItem
-          disabled={isCheckingUpdates}
-          onClick={handleCheckForUpdates}
-          className="cursor-pointer"
-        >
-          {isCheckingUpdates ? 'Checking for updates…' : 'Check for updates'}
-        </DropdownMenuItem>
+        {updateReady ? (
+          <DropdownMenuItem
+            onClick={() => setShowUpdateDialog(true)}
+            className="cursor-pointer text-primary"
+          >
+            <Download className="h-4 w-4 mr-2" />
+            Install Update
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem
+            disabled={isCheckingUpdates}
+            onClick={handleCheckForUpdates}
+            className="cursor-pointer"
+          >
+            {isCheckingUpdates ? 'Checking for updates…' : 'Check for updates'}
+          </DropdownMenuItem>
+        )}
 
         <DropdownMenuSeparator />
         
@@ -128,5 +159,24 @@ export function UserMenu() {
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+
+    {/* Update Ready Dialog */}
+    <AlertDialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Update Ready to Install</AlertDialogTitle>
+          <AlertDialogDescription>
+            A new version of EZTO Ai has been downloaded. Would you like to restart the app now to install the update?
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Later</AlertDialogCancel>
+          <AlertDialogAction onClick={handleInstallUpdate}>
+            Restart & Install
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }

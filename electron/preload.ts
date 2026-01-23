@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   clearSession: () => ipcRenderer.invoke('auth:clearSession'),
   getTessdataPath: () => ipcRenderer.invoke('app:getTessdataPath'),
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
+  installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
   
   // Window close handling
   confirmClose: () => ipcRenderer.invoke('window:confirm-close'),
