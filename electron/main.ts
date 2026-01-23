@@ -119,6 +119,13 @@ function createWindow() {
       console.log(`[RENDERER] ${message}`);
     });
     
+    // Allow Ctrl+Shift+I to toggle DevTools even in packaged builds (for debugging)
+    mainWindow.webContents.on('before-input-event', (event, input) => {
+      if (input.control && input.shift && input.key.toLowerCase() === 'i') {
+        mainWindow?.webContents.toggleDevTools();
+      }
+    });
+    
     // Disable navigation to external URLs
     mainWindow.webContents.on('will-navigate', (event, url) => {
       if (!url.startsWith('file://')) {
