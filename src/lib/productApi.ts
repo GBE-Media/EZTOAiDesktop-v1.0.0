@@ -1,6 +1,7 @@
 import { ProductNode, ProductComponent, LinkedMeasurement } from '@/types/product';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 
+  'https://einpdmanlpadqyqnvccb.supabase.co';
 
 interface DbFolder {
   id: string;
