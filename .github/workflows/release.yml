@@ -1,4 +1,4 @@
-name: Release and Build
+name: Build and Release
 
 on:
   push:
@@ -7,79 +7,28 @@ on:
 
 permissions:
   contents: write
-  issues: write
-  pull-requests: write
 
 jobs:
-  # First: Determine version and create release using semantic-release
-  release:
-    runs-on: ubuntu-latest
-    outputs:
-      new_release_published: ${{ steps.semantic.outputs.new_release_published }}
-      new_release_version: ${{ steps.semantic.outputs.new_release_version }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run semantic-release
-        id: semantic
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Run semantic-release
-          npx semantic-release 2>&1 | tee semantic-output.txt
-          EXIT_CODE=${PIPESTATUS[0]}
-          
-          # Check if a release was published
-          if grep -q "Published release" semantic-output.txt; then
-            VERSION=$(grep -oP 'Published release \K[0-9]+\.[0-9]+\.[0-9]+' semantic-output.txt || echo "")
-            if [ -n "$VERSION" ]; then
-              echo "new_release_published=true" >> $GITHUB_OUTPUT
-              echo "new_release_version=$VERSION" >> $GITHUB_OUTPUT
-              echo "✅ Published version: $VERSION"
-            else
-              echo "new_release_published=false" >> $GITHUB_OUTPUT
-              echo "new_release_version=" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "new_release_published=false" >> $GITHUB_OUTPUT
-            echo "new_release_version=" >> $GITHUB_OUTPUT
-            echo "ℹ️ No new release needed (no relevant commits)"
-          fi
-
-  # Cleanup old releases (keep last 20)
+  # Cleanup old releases first (keep last 10)
   cleanup:
     runs-on: ubuntu-latest
-    needs: release
-    if: needs.release.outputs.new_release_published == 'true'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cleanup old releases (keep last 20)
+      - name: Cleanup old releases (keep last 10)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tags=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[20:] | .[].tagName' || echo "")
+          tags=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[10:] | .[].tagName' || echo "")
           for tag in $tags; do
+            echo "Deleting old release: $tag"
             gh release delete "$tag" -y --cleanup-tag || true
           done
 
-  # Build and upload artifacts for each platform
+  # Build and publish for each platform
   build:
-    needs: release
-    if: needs.release.outputs.new_release_published == 'true'
+    needs: cleanup
     strategy:
       fail-fast: false
       matrix:
@@ -90,12 +39,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      - name: Pull latest changes (includes version bump)
-        run: git pull origin main
 
       - name: Setup Node
         uses: actions/setup-node@v4
