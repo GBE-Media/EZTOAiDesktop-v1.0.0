@@ -25,16 +25,30 @@ const sizes = [16, 32, 48, 64, 128, 256];
 
 async function generateIco() {
   try {
-    // Generate PNGs at different sizes
+    console.log('Reading source image:', inputPath);
+    
+    // First, ensure proper color handling by converting to sRGB
+    const sourceImage = sharp(inputPath)
+      .flatten({ background: { r: 10, g: 10, b: 10 } }) // Match the black background
+      .toColorspace('srgb');
+    
+    // Generate PNGs at different sizes with high quality
     const pngBuffers = await Promise.all(
-      sizes.map(size =>
-        sharp(inputPath)
-          .resize(size, size)
-          .png()
-          .toBuffer()
-      )
+      sizes.map(async size => {
+        console.log(`Generating ${size}x${size}...`);
+        return sharp(await sourceImage.toBuffer())
+          .resize(size, size, {
+            kernel: sharp.kernel.lanczos3,
+            fit: 'contain',
+            background: { r: 10, g: 10, b: 10, alpha: 1 }
+          })
+          .png({ quality: 100, compressionLevel: 9 })
+          .toBuffer();
+      })
     );
 
+    console.log('Converting to ICO format...');
+    
     // Convert to ICO
     const icoBuffer = await toIco(pngBuffers);
     
