@@ -1,3 +1,17 @@
+/**
+ * Icon Generator Script
+ * 
+ * This script generates ICO files from the source PNG icon.
+ * Run locally when updating the app icon.
+ * 
+ * Usage:
+ *   npm install sharp to-ico --no-save
+ *   node scripts/generate-ico.cjs
+ * 
+ * These packages are NOT in package.json to avoid CI build failures
+ * (sharp has native dependencies that fail on some CI runners).
+ */
+
 const sharp = require('sharp');
 const toIco = require('to-ico');
 const fs = require('fs');
