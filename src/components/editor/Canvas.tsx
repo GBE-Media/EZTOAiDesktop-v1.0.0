@@ -112,14 +112,19 @@ export function Canvas() {
     render();
   }, [pdfDocument, currentPage, setPageDimensions]); // Note: zoom removed - uses CSS transform
 
-  // Handle file drop
+  // Handle file drop - accept both PDFs and .ezto files
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
     
     const file = e.dataTransfer.files[0];
-    if (file && file.type === 'application/pdf') {
-      openFile(file);
+    if (file) {
+      const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+      const isProject = file.name.toLowerCase().endsWith('.ezto');
+      
+      if (isPdf || isProject) {
+        openFile(file);
+      }
     }
   }, [openFile]);
 

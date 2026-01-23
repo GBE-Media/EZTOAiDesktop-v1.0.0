@@ -3,12 +3,15 @@ import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useProductStore } from '@/store/productStore';
 import { loadPDF, getPageDimensions } from '@/lib/pdfLoader';
+import { useProjectOpen } from '@/hooks/useProjectOpen';
+import { toast } from 'sonner';
 import '@/types/electron.d.ts';
 
 export function useFileOpen() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const { addDocument, setActiveDocument } = useEditorStore();
   const { setPdfDocument } = useCanvasStore();
+  const { openProject } = useProjectOpen();
 
   // Core function to process a PDF from ArrayBuffer
   const processFileBuffer = useCallback(async (arrayBuffer: ArrayBuffer, fileName: string, filePath?: string) => {
@@ -81,24 +84,56 @@ export function useFileOpen() {
     }
   }, [addDocument, setPdfDocument, setActiveDocument]);
 
+  // Process .ezto project file from ArrayBuffer
+  const processProjectBuffer = useCallback(async (arrayBuffer: ArrayBuffer, fileName: string, filePath?: string) => {
+    try {
+      const jsonString = new TextDecoder().decode(arrayBuffer);
+      const projectData = JSON.parse(jsonString);
+      
+      // Validate project data
+      if (!projectData.version || !projectData.documents) {
+        toast.error('Invalid project file');
+        return;
+      }
+      
+      await openProject(projectData, filePath);
+    } catch (error) {
+      console.error('Failed to load project:', error);
+      toast.error('Failed to load project file');
+    }
+  }, [openProject]);
+
   const openFile = useCallback(async (file: File) => {
-    if (file.type !== 'application/pdf') {
-      console.error('Invalid file type. Please select a PDF file.');
+    const arrayBuffer = await file.arrayBuffer();
+    
+    // Handle .ezto project files
+    if (file.name.endsWith('.ezto')) {
+      await processProjectBuffer(arrayBuffer, file.name);
       return;
     }
-
-    const arrayBuffer = await file.arrayBuffer();
-    await processFileBuffer(arrayBuffer, file.name);
-  }, [processFileBuffer]);
+    
+    // Handle PDF files
+    if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+      await processFileBuffer(arrayBuffer, file.name);
+      return;
+    }
+    
+    toast.error('Please select a PDF or EZTO project file');
+  }, [processFileBuffer, processProjectBuffer]);
 
   const triggerFileDialog = useCallback(async () => {
     // Check if running in Electron - use native dialog
     if (window.electronAPI?.isElectron) {
       try {
-        const fileData = await window.electronAPI.openFile('pdf');
+        // Open dialog that accepts both PDF and project files
+        const fileData = await window.electronAPI.openFile();
         if (fileData) {
-          // Pass the actual file system path for Electron
-          await processFileBuffer(fileData.buffer, fileData.name, fileData.path);
+          // Determine file type and process accordingly
+          if (fileData.name.endsWith('.ezto')) {
+            await processProjectBuffer(fileData.buffer, fileData.name, fileData.path);
+          } else {
+            await processFileBuffer(fileData.buffer, fileData.name, fileData.path);
+          }
         }
       } catch (error) {
         console.error('Failed to open file via Electron:', error);
@@ -106,11 +141,11 @@ export function useFileOpen() {
       return;
     }
 
-    // Fallback to browser file input
+    // Fallback to browser file input - accept both PDFs and .ezto files
     if (!inputRef.current) {
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = 'application/pdf';
+      input.accept = 'application/pdf,.ezto';
       input.style.display = 'none';
       input.onchange = (e) => {
         const target = e.target as HTMLInputElement;
@@ -123,7 +158,7 @@ export function useFileOpen() {
       document.body.appendChild(input);
     }
     inputRef.current.click();
-  }, [openFile, processFileBuffer]);
+  }, [openFile, processFileBuffer, processProjectBuffer]);
 
-  return { openFile, triggerFileDialog };
+  return { openFile, triggerFileDialog, processFileBuffer, processProjectBuffer };
 }
