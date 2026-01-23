@@ -68,7 +68,7 @@
         "arch": ["x64", "arm64"]
       }
     ],
-    "icon": "public/favicon.ico",
+    "icon": "build/icon-1024.png",
     "category": "public.app-category.productivity",
     "artifactName": "${productName}-${version}-${arch}.${ext}",
     "fileAssociations": [
