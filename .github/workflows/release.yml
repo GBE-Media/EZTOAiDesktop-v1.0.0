@@ -48,20 +48,25 @@ jobs:
         env:
           npm_config_build_from_source: "false"
 
+      - name: Install ImageMagick (macOS)
+        if: runner.os == 'macOS'
+        run: brew install imagemagick
+
       - name: Generate macOS icon
         if: runner.os == 'macOS'
         run: |
           mkdir -p build/icon.iconset
-          sips -z 16 16 build/icon-1024.png --out build/icon.iconset/icon_16x16.png
-          sips -z 32 32 build/icon-1024.png --out build/icon.iconset/icon_16x16@2x.png
-          sips -z 32 32 build/icon-1024.png --out build/icon.iconset/icon_32x32.png
-          sips -z 64 64 build/icon-1024.png --out build/icon.iconset/icon_32x32@2x.png
-          sips -z 128 128 build/icon-1024.png --out build/icon.iconset/icon_128x128.png
-          sips -z 256 256 build/icon-1024.png --out build/icon.iconset/icon_128x128@2x.png
-          sips -z 256 256 build/icon-1024.png --out build/icon.iconset/icon_256x256.png
-          sips -z 512 512 build/icon-1024.png --out build/icon.iconset/icon_256x256@2x.png
-          sips -z 512 512 build/icon-1024.png --out build/icon.iconset/icon_512x512.png
-          sips -z 1024 1024 build/icon-1024.png --out build/icon.iconset/icon_512x512@2x.png
+          # Use ImageMagick to resize - more reliable than sips for various PNG formats
+          magick build/icon-1024.png -resize 16x16 build/icon.iconset/icon_16x16.png
+          magick build/icon-1024.png -resize 32x32 build/icon.iconset/icon_16x16@2x.png
+          magick build/icon-1024.png -resize 32x32 build/icon.iconset/icon_32x32.png
+          magick build/icon-1024.png -resize 64x64 build/icon.iconset/icon_32x32@2x.png
+          magick build/icon-1024.png -resize 128x128 build/icon.iconset/icon_128x128.png
+          magick build/icon-1024.png -resize 256x256 build/icon.iconset/icon_128x128@2x.png
+          magick build/icon-1024.png -resize 256x256 build/icon.iconset/icon_256x256.png
+          magick build/icon-1024.png -resize 512x512 build/icon.iconset/icon_256x256@2x.png
+          magick build/icon-1024.png -resize 512x512 build/icon.iconset/icon_512x512.png
+          magick build/icon-1024.png -resize 1024x1024 build/icon.iconset/icon_512x512@2x.png
           iconutil -c icns build/icon.iconset -o build/icon.icns
           cp build/icon.icns public/favicon.icns
 
