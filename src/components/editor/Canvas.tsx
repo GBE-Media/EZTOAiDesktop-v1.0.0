@@ -263,27 +263,40 @@ export function Canvas() {
     return (
       <div 
         ref={containerRef}
-        className={`flex-1 flex items-center justify-center bg-canvas transition-colors ${
-          isDragOver ? 'bg-primary/10 border-2 border-dashed border-primary' : ''
-        }`}
+        className={`
+          flex-1 flex items-center justify-center
+          border-2 border-dashed m-4 rounded-lg
+          transition-all duration-200
+          ${isDragOver 
+            ? 'border-primary bg-primary/10' 
+            : 'border-muted-foreground/20 bg-secondary/20 hover:border-muted-foreground/40'
+          }
+        `}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
       >
-        <div className="text-center text-muted-foreground">
-          <div className="w-20 h-20 mx-auto mb-4 rounded-full bg-secondary/50 flex items-center justify-center">
+        <div className="text-center text-muted-foreground p-8">
+          <div className={`
+            w-24 h-24 mx-auto mb-6 rounded-full 
+            flex items-center justify-center
+            transition-all duration-200
+            ${isDragOver ? 'bg-primary/20' : 'bg-secondary'}
+          `}>
             {isDragOver ? (
-              <Upload className="w-10 h-10 text-primary animate-pulse" />
+              <Upload className="w-12 h-12 text-primary animate-pulse" />
             ) : (
-              <FileText className="w-10 h-10 opacity-50" />
+              <FileText className="w-12 h-12 opacity-60" />
             )}
           </div>
-          <p className="text-sm font-medium mb-1">
+          <p className="text-lg font-medium mb-2">
             {isDragOver ? 'Drop PDF here' : 'No document open'}
           </p>
-          <p className="text-xs mb-4">Drag and drop a PDF or click to browse</p>
-          <label className="inline-flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground text-xs font-medium rounded cursor-pointer hover:bg-primary/90 transition-colors">
-            <Upload className="w-4 h-4" />
+          <p className="text-sm text-muted-foreground mb-6">
+            Drag and drop a PDF file here, or click the button below
+          </p>
+          <label className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-primary-foreground text-sm font-medium rounded-lg cursor-pointer hover:bg-primary/90 transition-colors shadow-sm">
+            <Upload className="w-5 h-5" />
             Open PDF
             <input 
               type="file" 

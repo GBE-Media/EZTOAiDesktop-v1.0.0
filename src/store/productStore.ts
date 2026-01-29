@@ -38,6 +38,7 @@ interface ProductStore {
   unlinkMeasurement: (productId: string, measurementId: string) => void;
   unlinkMeasurementByMarkupId: (markupId: string) => LinkedMeasurement | null; // Returns the unlinked measurement for cascading
   getMeasurementByMarkupId: (markupId: string) => { productId: string; measurement: LinkedMeasurement } | null;
+  updateMeasurementValueByMarkupId: (markupId: string, newValue: number) => void; // Update measurement value when count is renumbered
   
   // Group management
   setActiveCountGroup: (groupId: string | null) => void;
@@ -457,6 +458,37 @@ export const useProductStore = create<ProductStore>()(
         return null;
       },
       
+      updateMeasurementValueByMarkupId: (markupId, newValue) => {
+        const state = get();
+        
+        // Find the product containing this measurement
+        for (const nodeId of Object.keys(state.nodes)) {
+          const node = state.nodes[nodeId];
+          if (node.type !== 'product') continue;
+          
+          const measurementIndex = (node.measurements || []).findIndex((m) => m.markupId === markupId);
+          if (measurementIndex !== -1) {
+            // Update the measurement value
+            const updatedMeasurements = [...(node.measurements || [])];
+            updatedMeasurements[measurementIndex] = {
+              ...updatedMeasurements[measurementIndex],
+              value: newValue,
+            };
+            
+            set({
+              nodes: {
+                ...state.nodes,
+                [nodeId]: {
+                  ...node,
+                  measurements: updatedMeasurements,
+                },
+              },
+            });
+            return;
+          }
+        }
+      },
+      
       setActiveCountGroup: (groupId) => {
         set({ activeCountGroupId: groupId });
       },
@@ -501,8 +533,9 @@ export const useProductStore = create<ProductStore>()(
       exportProducts: (projectName) => {
         const { nodes, getProductPath } = get();
         
+        // Only export products that have measurements (footages, areas, or counts applied)
         const products: ExportProduct[] = Object.values(nodes)
-          .filter((node) => node.type === 'product')
+          .filter((node) => node.type === 'product' && (node.measurements?.length || 0) > 0)
           .map((node) => {
             const measurements = node.measurements || [];
             

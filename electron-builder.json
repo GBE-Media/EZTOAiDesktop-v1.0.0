@@ -44,7 +44,7 @@
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
-    "createDesktopShortcut": true,
+    "createDesktopShortcut": false,
     "createStartMenuShortcut": true,
     "perMachine": false,
     "license": "build/installer-license.txt",

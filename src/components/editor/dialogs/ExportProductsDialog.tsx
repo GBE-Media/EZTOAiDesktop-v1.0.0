@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { Upload, ExternalLink, Plug, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import { Upload, ExternalLink, CheckCircle2, XCircle, Loader2, Plug } from 'lucide-react';
 import { useProductStore } from '@/store/productStore';
-import { supabase } from '@/integrations/supabase/client';
+import { useEditorStore } from '@/store/editorStore';
+import { externalAuthClient } from '@/integrations/external-auth/client';
+import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 import {
   Dialog,
@@ -21,61 +23,99 @@ interface ExportProductsDialogProps {
 }
 
 interface ConnectionStatus {
-  status: 'idle' | 'success' | 'error';
+  status: 'idle' | 'testing' | 'success' | 'error';
   message: string;
-  endpoint?: string;
 }
 
+// Import endpoint - uses Supabase Edge Function
+const SUPABASE_URL = import.meta.env.VITE_EXTERNAL_SUPABASE_URL || 'https://einpdmanlpadqyqnvccb.supabase.co';
+const IMPORT_ENDPOINT = `${SUPABASE_URL}/functions/v1/receive-products`;
+
 export function ExportProductsDialog({ open, onOpenChange }: ExportProductsDialogProps) {
+  const { user, session } = useAuth();
   const [projectName, setProjectName] = useState('');
   const [isExporting, setIsExporting] = useState(false);
-  const [isTesting, setIsTesting] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>({
+    status: 'idle',
+    message: 'Not tested',
+  });
 
   const { exportProducts, nodes } = useProductStore();
+  const { activeDocument } = useEditorStore();
 
-  const productCount = Object.values(nodes).filter(n => n.type === 'product').length;
-  const measurementCount = Object.values(nodes)
-    .filter(n => n.type === 'product')
-    .reduce((sum, n) => sum + (n.measurements?.length || 0), 0);
+  // Count only products that have measurements for the ACTIVE document
+  // This matches the behavior of the Products tab
+  const productsWithMeasurements = Object.values(nodes).filter(n => {
+    if (n.type !== 'product') return false;
+    const docMeasurements = (n.measurements || []).filter(
+      m => m.documentId === activeDocument
+    );
+    return docMeasurements.length > 0;
+  });
+  const productCount = productsWithMeasurements.length;
+  const measurementCount = productsWithMeasurements.reduce((sum, n) => {
+    const docMeasurements = (n.measurements || []).filter(
+      m => m.documentId === activeDocument
+    );
+    return sum + docMeasurements.length;
+  }, 0);
 
   const handleTestConnection = async () => {
-    setIsTesting(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('test-export-connection');
+    if (!session?.access_token) {
+      toast.error('You must be logged in to test the connection');
+      return;
+    }
 
-      if (error) {
-        setConnectionStatus({
-          status: 'error',
-          message: error.message || 'Connection test failed',
-        });
-        toast.error('API connection test failed');
-        return;
+    setConnectionStatus({ status: 'testing', message: 'Testing connection...' });
+
+    try {
+      // Get fresh session token
+      const { data: { session: currentSession } } = await externalAuthClient.auth.getSession();
+      
+      if (!currentSession?.access_token) {
+        throw new Error('Session expired. Please log in again.');
       }
 
-      if (!data?.configured || data?.status === 'error') {
-        setConnectionStatus({
-          status: 'error',
-          message: data?.message || 'API is not configured',
-          endpoint: data?.endpoint,
+      // Send a test request to the endpoint
+      // We'll use a GET request or OPTIONS to test connectivity
+      const response = await fetch(IMPORT_ENDPOINT, {
+        method: 'OPTIONS',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentSession.access_token}`,
+        },
+      });
+
+      // Any response (even 4xx for OPTIONS) means the endpoint is reachable
+      setConnectionStatus({
+        status: 'success',
+        message: 'Connection successful',
+      });
+      toast.success('API connection successful!');
+    } catch (err) {
+      // Try a HEAD request as fallback
+      try {
+        const { data: { session: currentSession } } = await externalAuthClient.auth.getSession();
+        
+        const response = await fetch(IMPORT_ENDPOINT, {
+          method: 'HEAD',
+          headers: {
+            'Authorization': `Bearer ${currentSession?.access_token}`,
+          },
         });
-        toast.error(data?.message || 'API connection failed');
-      } else {
+
         setConnectionStatus({
           status: 'success',
-          message: data.message || 'Connected successfully',
-          endpoint: data.endpoint,
+          message: 'Connection successful',
         });
         toast.success('API connection successful!');
+      } catch (headErr) {
+        setConnectionStatus({
+          status: 'error',
+          message: 'Could not reach the API endpoint',
+        });
+        toast.error('Could not reach the API endpoint. Please check your network connection.');
       }
-    } catch (err) {
-      setConnectionStatus({
-        status: 'error',
-        message: 'Connection test failed unexpectedly',
-      });
-      toast.error('Connection test failed');
-    } finally {
-      setIsTesting(false);
     }
   };
 
@@ -85,25 +125,41 @@ export function ExportProductsDialog({ open, onOpenChange }: ExportProductsDialo
       return;
     }
 
+    if (!session?.access_token) {
+      toast.error('You must be logged in to export');
+      return;
+    }
+
     setIsExporting(true);
 
     try {
       const payload = exportProducts(projectName.trim());
       
-      // Call the edge function to handle the export
-      const { data, error } = await supabase.functions.invoke('export-products', {
-        body: payload,
+      // Get fresh session token
+      const { data: { session: currentSession } } = await externalAuthClient.auth.getSession();
+      
+      if (!currentSession?.access_token) {
+        throw new Error('Session expired. Please log in again.');
+      }
+
+      // Call the API with session token authentication
+      const response = await fetch(IMPORT_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${currentSession.access_token}`,
+        },
+        body: JSON.stringify(payload),
       });
 
-      if (error) {
-        throw new Error(error.message || 'Export failed');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `Export failed with status ${response.status}`);
       }
 
-      if (data?.error) {
-        throw new Error(data.error);
-      }
-
-      toast.success(data?.message || 'Products exported successfully!');
+      const data = await response.json();
+      
+      toast.success(data?.message || `Successfully exported ${productCount} products!`);
       onOpenChange(false);
     } catch (error) {
       console.error('Export failed:', error);
@@ -133,23 +189,20 @@ export function ExportProductsDialog({ open, onOpenChange }: ExportProductsDialo
     toast.success('Products exported to JSON file');
   };
 
-  const getStatusIcon = () => {
-    if (isTesting) {
-      return <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />;
-    }
-    if (!connectionStatus) {
-      return <Plug className="w-4 h-4 text-muted-foreground" />;
-    }
-    if (connectionStatus.status === 'success') {
-      return <CheckCircle2 className="w-4 h-4 text-green-500" />;
-    }
-    return <XCircle className="w-4 h-4 text-destructive" />;
-  };
+  const isAuthenticated = !!session?.access_token;
+  const isTesting = connectionStatus.status === 'testing';
 
-  const getStatusText = () => {
-    if (isTesting) return 'Testing connection...';
-    if (!connectionStatus) return 'Status unknown';
-    return connectionStatus.message;
+  const getConnectionIcon = () => {
+    switch (connectionStatus.status) {
+      case 'testing':
+        return <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />;
+      case 'success':
+        return <CheckCircle2 className="w-4 h-4 text-green-500" />;
+      case 'error':
+        return <XCircle className="w-4 h-4 text-destructive" />;
+      default:
+        return <Plug className="w-4 h-4 text-muted-foreground" />;
+    }
   };
 
   return (
@@ -189,38 +242,46 @@ export function ExportProductsDialog({ open, onOpenChange }: ExportProductsDialo
             />
           </div>
 
+          {/* Authentication Status */}
+          <div className="flex items-center gap-2 p-3 bg-secondary rounded-lg">
+            {isAuthenticated ? (
+              <>
+                <CheckCircle2 className="w-4 h-4 text-green-500" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm">Signed in</p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {user?.email}
+                  </p>
+                </div>
+              </>
+            ) : (
+              <>
+                <XCircle className="w-4 h-4 text-destructive" />
+                <p className="text-sm">Please sign in to export</p>
+              </>
+            )}
+          </div>
+
           {/* API Connection Status */}
           <div className="space-y-2">
             <Label>API Connection</Label>
             <div className="flex items-center justify-between p-3 bg-secondary rounded-lg">
               <div className="flex items-center gap-2 flex-1 min-w-0">
-                {getStatusIcon()}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm truncate">{getStatusText()}</p>
-                  {connectionStatus?.endpoint && (
-                    <p className="text-xs text-muted-foreground truncate">
-                      {connectionStatus.endpoint}
-                    </p>
-                  )}
-                </div>
+                {getConnectionIcon()}
+                <p className="text-sm">{connectionStatus.message}</p>
               </div>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={handleTestConnection}
-                disabled={isTesting}
+                disabled={isTesting || !isAuthenticated}
                 className="ml-2 shrink-0"
               >
-                {isTesting ? 'Testing...' : connectionStatus ? 'Test Again' : 'Test Connection'}
+                {isTesting ? 'Testing...' : connectionStatus.status === 'success' ? 'Test Again' : 'Test Connection'}
               </Button>
             </div>
           </div>
-
-          {/* Info about API configuration */}
-          <p className="text-xs text-muted-foreground">
-            Configure the API endpoint and key in your backend secrets.
-          </p>
         </div>
 
         <DialogFooter className="flex-col sm:flex-row gap-2">
@@ -238,14 +299,17 @@ export function ExportProductsDialog({ open, onOpenChange }: ExportProductsDialo
           </Button>
           <Button
             onClick={handleExport}
-            disabled={isExporting || productCount === 0}
+            disabled={isExporting || productCount === 0 || !isAuthenticated}
           >
             {isExporting ? (
-              <>Exporting...</>
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Exporting...
+              </>
             ) : (
               <>
                 <ExternalLink className="w-4 h-4 mr-2" />
-                Export to API
+                Export to Estimate
               </>
             )}
           </Button>

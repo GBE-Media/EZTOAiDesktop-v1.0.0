@@ -16,10 +16,10 @@ export function useFileOpen() {
   // Core function to process a PDF from ArrayBuffer
   const processFileBuffer = useCallback(async (arrayBuffer: ArrayBuffer, fileName: string, filePath?: string) => {
     try {
-      // Clear product counts only when starting a brand-new project
-      if (useEditorStore.getState().documents.length === 0) {
-        useProductStore.getState().clearProductCounts();
-      }
+      // Always clear product counts when opening a new PDF file
+      // This ensures the user starts fresh with each new document
+      // Saved projects (.ezto files) load their own measurements via useProjectOpen
+      useProductStore.getState().clearProductCounts();
       
       // Clone the ArrayBuffer BEFORE loadPDF uses it (it gets detached)
       const originalBytes = arrayBuffer.slice(0);

@@ -74,8 +74,8 @@ function createWindow() {
       backgroundColor: '#0a0a0a',
       title: 'EZTO Ai - PDF Takeoff',
       autoHideMenuBar: true,  // Hide menu bar like Bluebeam
-      frame: true,
-      titleBarStyle: 'default',
+      frame: false,           // Frameless window - custom controls in renderer
+      titleBarStyle: 'hidden',
     });
     
     // #region agent log
@@ -446,6 +446,16 @@ ipcMain.handle('app:installUpdate', async () => {
   }
 });
 
+// Open external URL in default browser
+ipcMain.handle('shell:openExternal', async (_, url: string) => {
+  try {
+    await shell.openExternal(url);
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, message: error?.message || 'Failed to open URL.' };
+  }
+});
+
 // Allow renderer to confirm window close
 ipcMain.handle('window:confirm-close', async () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -457,6 +467,23 @@ ipcMain.handle('window:confirm-close', async () => {
 ipcMain.handle('window:cancel-close', async () => {
   // Do nothing - window close was already prevented
   return true;
+});
+
+// Window control handlers for frameless window
+ipcMain.handle('window:minimize', () => {
+  mainWindow?.minimize();
+});
+
+ipcMain.handle('window:maximize', () => {
+  if (mainWindow?.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow?.maximize();
+  }
+});
+
+ipcMain.handle('window:close', () => {
+  mainWindow?.close();
 });
 
 // App lifecycle

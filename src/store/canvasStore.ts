@@ -139,7 +139,6 @@ interface CanvasActions {
   updateMarkup: (page: number, id: string, updates: Partial<CanvasMarkup>) => void;
   deleteMarkups: (page: number, ids: string[]) => void;
   deleteMarkupFromDocument: (docId: string, page: number, markupId: string) => void; // Cross-document deletion
-  renumberCountMarkers: (page: number, groupId: string) => void; // Renumber counts within a group
   selectMarkup: (id: string, addToSelection?: boolean) => void;
   clearSelection: () => void;
   setHoveredMarkup: (id: string | null) => void;
@@ -167,10 +166,20 @@ interface CanvasActions {
   extractDocumentSnapData: (page: number) => Promise<void>;
   clearDocumentSnapData: () => void;
   getDocumentSnapData: (page: number) => DocumentSnapData | null;
+  getSnapPointForPage: (page: number, point: Point, snapDistance?: number) => { point: Point; snapPoint: SnapPoint | null };
   setActiveSnapPoint: (point: SnapPoint | null) => void;
   
   // Style actions
   setDefaultStyle: (style: Partial<MarkupStyle>) => void;
+  
+  // AI markup actions
+  addAIMarkup: (page: number, markup: CanvasMarkup, pending?: boolean) => void;
+  addAIMarkupBatch: (markups: Array<{ page: number; markup: CanvasMarkup }>, pending?: boolean) => void;
+  confirmAIMarkup: (page: number, id: string) => void;
+  confirmAllAIMarkups: () => void;
+  rejectAIMarkup: (page: number, id: string) => void;
+  rejectAllAIMarkups: () => void;
+  getAIPendingMarkups: () => Array<{ page: number; markup: CanvasMarkup }>;
   
   // Utility
   getSnapPoint: (point: Point) => { point: Point; snapPoint: SnapPoint | null };
@@ -638,24 +647,8 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     useEditorStore.getState().updateDocument(state.activeDocId, { modified: true });
     
     // Cascade: unlink deleted markups from product store
-    const affectedGroupIds = new Set<string>();
-    
     deletedMarkups.forEach((markup) => {
-      // Unlink from product store
       productStore.unlinkMeasurementByMarkupId(markup.id);
-      
-      // Track affected count groups for renumbering
-      if (markup.type === 'count-marker') {
-        const countMarkup = markup as any;
-        if (countMarkup.groupId) {
-          affectedGroupIds.add(countMarkup.groupId);
-        }
-      }
-    });
-    
-    // Renumber count markers in affected groups
-    affectedGroupIds.forEach((groupId) => {
-      get().renumberCountMarkers(page, groupId);
     });
   },
   
@@ -709,71 +702,6 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     
     // Unlink from product store
     productStore.unlinkMeasurementByMarkupId(markupId);
-
-    // Renumber count markers if needed
-    if (deletedMarkup.type === 'count-marker') {
-      const countMarkup = deletedMarkup as any;
-      if (countMarkup.groupId) {
-        // We need to renumber in the correct document context
-        // Store current active doc, switch context temporarily
-        const wasActiveDocId = state.activeDocId;
-        if (wasActiveDocId !== docId) {
-          set({ activeDocId: docId });
-        }
-        get().renumberCountMarkers(page, countMarkup.groupId);
-        if (wasActiveDocId !== docId) {
-          set({ activeDocId: wasActiveDocId });
-        }
-      }
-    }
-  },
-  
-  renumberCountMarkers: (page, groupId) => {
-    const state = get();
-    if (!state.activeDocId) return;
-    
-    const docData = state.pdfDocuments[state.activeDocId];
-    if (!docData) return;
-    
-    const pageMarkups = docData.markupsByPage[page] || [];
-    
-    // Find all count markers with this groupId
-    const countMarkers = pageMarkups.filter(
-      (m) => m.type === 'count-marker' && (m as any).groupId === groupId
-    );
-    
-    if (countMarkers.length === 0) return;
-    
-    // Sort by creation time (using createdAt)
-    countMarkers.sort((a, b) => 
-      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
-    
-    // Create updated markups with renumbered values
-    const updatedMarkups = pageMarkups.map((markup) => {
-      if (markup.type !== 'count-marker' || (markup as any).groupId !== groupId) {
-        return markup;
-      }
-      
-      const newNumber = countMarkers.indexOf(markup) + 1;
-      return {
-        ...markup,
-        number: newNumber,
-      };
-    });
-    
-    set({
-      pdfDocuments: {
-        ...state.pdfDocuments,
-        [state.activeDocId]: {
-          ...docData,
-          markupsByPage: {
-            ...docData.markupsByPage,
-            [page]: updatedMarkups,
-          },
-        },
-      },
-    });
   },
   
   selectMarkup: (id, addToSelection = false) => set((state) => ({
@@ -961,6 +889,37 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     if (!state.activeDocId) return null;
     return state.documentSnapDataByPage[state.activeDocId]?.[page] || null;
   },
+
+  getSnapPointForPage: (page, point, snapDistance = 10) => {
+    const state = get();
+    if (!state.activeDocId) return { point, snapPoint: null };
+    const docSnapData = state.documentSnapDataByPage[state.activeDocId]?.[page];
+    if (!docSnapData) return { point, snapPoint: null };
+
+    const distance = (p1: Point, p2: Point) =>
+      Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+
+    for (const endpoint of docSnapData.endpoints) {
+      if (distance(point, endpoint) < snapDistance) {
+        return { point: endpoint, snapPoint: { x: endpoint.x, y: endpoint.y, type: 'document-endpoint' } };
+      }
+    }
+
+    for (const intersection of docSnapData.intersections) {
+      if (distance(point, intersection) < snapDistance) {
+        return { point: intersection, snapPoint: { x: intersection.x, y: intersection.y, type: 'intersection' } };
+      }
+    }
+
+    for (const line of docSnapData.lines) {
+      const nearest = nearestPointOnLine(point, line);
+      if (distance(point, nearest) < snapDistance) {
+        return { point: nearest, snapPoint: { x: nearest.x, y: nearest.y, type: 'document-line' } };
+      }
+    }
+
+    return { point, snapPoint: null };
+  },
   
   setActiveSnapPoint: (point) => set({ activeSnapPoint: point }),
   
@@ -1060,6 +1019,133 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     
     // Mark document as modified in editorStore
     useEditorStore.getState().updateDocument(state.activeDocId, { modified: true });
+  },
+  
+  // AI Markup Actions
+  addAIMarkup: (page, markup, pending = true) => {
+    const aiMarkup = {
+      ...markup,
+      aiGenerated: true,
+      aiPending: pending,
+    };
+    get().addMarkup(page, aiMarkup);
+  },
+  
+  addAIMarkupBatch: (markups, pending = true) => {
+    const state = get();
+    if (!state.activeDocId) return;
+    
+    const docData = state.pdfDocuments[state.activeDocId];
+    if (!docData) return;
+    
+    // Group markups by page
+    const markupsByPage = { ...docData.markupsByPage };
+    
+    for (const { page, markup } of markups) {
+      const aiMarkup = {
+        ...markup,
+        aiGenerated: true,
+        aiPending: pending,
+      };
+      
+      if (!markupsByPage[page]) {
+        markupsByPage[page] = [];
+      }
+      markupsByPage[page] = [...markupsByPage[page], aiMarkup];
+    }
+    
+    set({
+      pdfDocuments: {
+        ...state.pdfDocuments,
+        [state.activeDocId]: {
+          ...docData,
+          markupsByPage,
+        },
+      },
+    });
+    
+    useEditorStore.getState().updateDocument(state.activeDocId, { modified: true });
+  },
+  
+  confirmAIMarkup: (page, id) => {
+    get().updateMarkup(page, id, { aiPending: false });
+  },
+  
+  confirmAllAIMarkups: () => {
+    const state = get();
+    if (!state.activeDocId) return;
+    
+    const docData = state.pdfDocuments[state.activeDocId];
+    if (!docData) return;
+    
+    const markupsByPage = { ...docData.markupsByPage };
+    
+    for (const pageNum of Object.keys(markupsByPage)) {
+      const page = parseInt(pageNum);
+      markupsByPage[page] = markupsByPage[page].map(markup => 
+        markup.aiPending ? { ...markup, aiPending: false } : markup
+      );
+    }
+    
+    set({
+      pdfDocuments: {
+        ...state.pdfDocuments,
+        [state.activeDocId]: {
+          ...docData,
+          markupsByPage,
+        },
+      },
+    });
+  },
+  
+  rejectAIMarkup: (page, id) => {
+    get().deleteMarkups(page, [id]);
+  },
+  
+  rejectAllAIMarkups: () => {
+    const state = get();
+    if (!state.activeDocId) return;
+    
+    const docData = state.pdfDocuments[state.activeDocId];
+    if (!docData) return;
+    
+    const markupsByPage = { ...docData.markupsByPage };
+    
+    for (const pageNum of Object.keys(markupsByPage)) {
+      const page = parseInt(pageNum);
+      markupsByPage[page] = markupsByPage[page].filter(markup => !markup.aiPending);
+    }
+    
+    set({
+      pdfDocuments: {
+        ...state.pdfDocuments,
+        [state.activeDocId]: {
+          ...docData,
+          markupsByPage,
+        },
+      },
+    });
+  },
+  
+  getAIPendingMarkups: () => {
+    const state = get();
+    if (!state.activeDocId) return [];
+    
+    const docData = state.pdfDocuments[state.activeDocId];
+    if (!docData) return [];
+    
+    const pending: Array<{ page: number; markup: CanvasMarkup }> = [];
+    
+    for (const [pageStr, markups] of Object.entries(docData.markupsByPage)) {
+      const page = parseInt(pageStr);
+      for (const markup of markups) {
+        if (markup.aiPending) {
+          pending.push({ page, markup });
+        }
+      }
+    }
+    
+    return pending;
   },
   
   undo: () => {

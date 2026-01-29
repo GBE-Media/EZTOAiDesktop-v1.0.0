@@ -181,6 +181,66 @@ export type Database = {
           },
         ]
       }
+      user_api_settings: {
+        Row: {
+          id: string
+          user_id: string
+          api_endpoint: string | null
+          api_key_encrypted: string | null
+          created_at: string | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          api_endpoint?: string | null
+          api_key_encrypted?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          api_endpoint?: string | null
+          api_key_encrypted?: string | null
+          created_at?: string | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      user_api_keys: {
+        Row: {
+          id: string
+          user_id: string
+          api_key: string
+          api_key_prefix: string
+          name: string | null
+          created_at: string
+          last_used_at: string | null
+          is_active: boolean
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          api_key: string
+          api_key_prefix: string
+          name?: string | null
+          created_at?: string
+          last_used_at?: string | null
+          is_active?: boolean
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          api_key?: string
+          api_key_prefix?: string
+          name?: string | null
+          created_at?: string
+          last_used_at?: string | null
+          is_active?: boolean
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never

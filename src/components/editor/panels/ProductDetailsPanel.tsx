@@ -219,12 +219,10 @@ export function ProductDetailsPanel() {
                 {measurements.slice(0, 5).map((m) => {
                   const Icon = measurementTypeIcons[m.type] || Ruler;
                   const handleUnlink = () => {
-                    // Delete the canvas markup first (this will cascade and handle renumbering)
+                    // Delete the canvas markup - this automatically unlinks the measurement
+                    // and handles count marker renumbering
                     const canvasStore = useCanvasStore.getState();
                     canvasStore.deleteMarkupFromDocument(m.documentId, m.page, m.markupId);
-                    // The cascade in deleteMarkupFromDocument will handle unlinking from product store
-                    // But since we're using deleteMarkupFromDocument which doesn't auto-unlink, we do it manually
-                    unlinkMeasurement(selectedNode.id, m.id);
                   };
                   
                   return (

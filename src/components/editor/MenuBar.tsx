@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { Minus, Square, X } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useProductStore } from '@/store/productStore';
@@ -367,10 +368,30 @@ export function MenuBar() {
     toast.info('EZTO Ai Desktop v1.0.0 - Professional PDF Editor');
   }, []);
 
+  // Window control handlers
+  const handleWindowMinimize = useCallback(() => {
+    window.electronAPI?.windowMinimize();
+  }, []);
+
+  const handleWindowMaximize = useCallback(() => {
+    window.electronAPI?.windowMaximize();
+  }, []);
+
+  const handleWindowClose = useCallback(() => {
+    window.electronAPI?.windowClose();
+  }, []);
+
+  // CSS for app region drag
+  const dragStyle = { WebkitAppRegion: 'drag' } as unknown as React.CSSProperties;
+  const noDragStyle = { WebkitAppRegion: 'no-drag' } as unknown as React.CSSProperties;
+
   return (
-    <div className="flex items-center h-7 bg-panel-header border-b border-panel-border px-1">
-      {/* Logo */}
-      <div className="flex items-center gap-1.5 px-2 mr-2">
+    <div 
+      className="flex items-center h-8 bg-panel-header border-b border-panel-border px-1"
+      style={dragStyle}
+    >
+      {/* Logo - no-drag for click events */}
+      <div className="flex items-center gap-1.5 px-2 mr-2" style={noDragStyle}>
         <img 
           src="https://einpdmanlpadqyqnvccb.supabase.co/storage/v1/object/public/company-logos//EZTO Logo.png" 
           alt="EZTO Ai" 
@@ -379,7 +400,7 @@ export function MenuBar() {
         <span className="text-xs font-semibold text-foreground">EZTO Ai</span>
       </div>
 
-      <Menubar className="border-none bg-transparent h-auto p-0 space-x-0">
+      <Menubar className="border-none bg-transparent h-auto p-0 space-x-0" style={noDragStyle}>
         {/* File Menu */}
         <MenubarMenu>
           <MenubarTrigger className="px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-secondary rounded-sm cursor-pointer">
@@ -641,8 +662,34 @@ export function MenuBar() {
       <div className="flex-1" />
       
       {/* User Menu */}
-      <UserMenu />
+      <div style={noDragStyle}>
+        <UserMenu />
+      </div>
       
+      {/* Window Controls */}
+      <div className="flex items-center ml-2" style={noDragStyle}>
+        <button
+          onClick={handleWindowMinimize}
+          className="w-8 h-8 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+          title="Minimize"
+        >
+          <Minus className="w-4 h-4" />
+        </button>
+        <button
+          onClick={handleWindowMaximize}
+          className="w-8 h-8 flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+          title="Maximize"
+        >
+          <Square className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={handleWindowClose}
+          className="w-8 h-8 flex items-center justify-center text-muted-foreground hover:text-white hover:bg-red-600 transition-colors"
+          title="Close"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
 
       <OcrDialog
         open={ocrDialogOpen}

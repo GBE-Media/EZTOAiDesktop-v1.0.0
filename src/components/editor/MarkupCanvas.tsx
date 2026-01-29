@@ -43,8 +43,7 @@ const STAMP_PRESETS: Record<StampPreset, { label: string; color: string; bgColor
   void: { label: 'VOID', color: '#6b7280', bgColor: 'rgba(107, 114, 128, 0.15)' },
 };
 
-// Global count marker tracking
-let countMarkerGroups: Record<string, number> = {};
+// Note: Count marker numbers are no longer tracked - total is shown in tab bar
 
 type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'start' | 'end';
 
@@ -656,22 +655,18 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       
       case 'count-marker': {
         const m = markup as CountMarkerMarkup;
-        const radius = 15;
+        const radius = 10;
         
-        // Circle background
+        // Simple dot marker (no number)
         ctx.fillStyle = isEraserHovered ? 'rgba(239, 68, 68, 0.8)' : markup.style.strokeColor;
         ctx.beginPath();
         ctx.arc(m.x, m.y, radius, 0, Math.PI * 2);
         ctx.fill();
         
-        // Number
-        ctx.fillStyle = 'white';
-        ctx.font = 'bold 12px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(m.number.toString(), m.x, m.y);
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'alphabetic';
+        // Add a subtle border for visibility
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 2;
+        ctx.stroke();
         break;
       }
       
@@ -1049,12 +1044,6 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const handleResumeCount = () => {
     if (!countMenu) return;
 
-    const groupMarkers = markups.filter(
-      (m) => m.type === 'count-marker' && (m as CountMarkerMarkup).groupId === countMenu.groupId
-    ) as CountMarkerMarkup[];
-    const maxNumber = groupMarkers.reduce((max, m) => Math.max(max, m.number || 0), 0);
-    countMarkerGroups[countMenu.groupId] = maxNumber;
-
     setActiveCountGroup(countMenu.groupId);
     if (countMenu.productId) {
       setActiveProduct(countMenu.productId);
@@ -1074,20 +1063,18 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     if (splitIndex < 0) return;
 
     const newGroupId = `${groupId}-split-${Date.now()}`;
-    const oldMarkers = groupMarkers.slice(0, splitIndex);
     const newMarkers = groupMarkers.slice(splitIndex);
+    const newMarkerIds = new Set(newMarkers.map((m) => m.id));
 
-    const oldNumberMap = new Map(oldMarkers.map((m, idx) => [m.id, idx + 1]));
-    const newNumberMap = new Map(newMarkers.map((m, idx) => [m.id, idx + 1]));
-
+    // Move markers from split point onward to new group
     const updatedMarkups = markups.map((m) => {
       if (m.type !== 'count-marker') return m;
       const count = m as CountMarkerMarkup;
       if (count.groupId !== groupId) return m;
-      if (newNumberMap.has(count.id)) {
-        return { ...count, groupId: newGroupId, number: newNumberMap.get(count.id) as number };
+      if (newMarkerIds.has(count.id)) {
+        return { ...count, groupId: newGroupId };
       }
-      return { ...count, number: oldNumberMap.get(count.id) as number };
+      return count;
     });
 
     useHistoryStore.getState().pushHistory({
@@ -1099,8 +1086,6 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     });
 
     setMarkupsForPage(currentPage, updatedMarkups);
-    countMarkerGroups[groupId] = oldMarkers.length;
-    countMarkerGroups[newGroupId] = newMarkers.length;
     setActiveCountGroup(newGroupId);
     setCountMenu(null);
   };
@@ -1337,18 +1322,9 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     
     // Handle count tool
     if (activeTool === 'count') {
-      // Use explicit active group when resuming; otherwise group by product or page
+      // Simple group ID based on product or page
       const groupId = activeCountGroupId
         || (activeProductId ? `count-product-${activeProductId}` : `count-page-${currentPage}`);
-
-      if (countMarkerGroups[groupId] === undefined) {
-        const existingMax = markups
-          .filter((m) => m.type === 'count-marker' && (m as CountMarkerMarkup).groupId === groupId)
-          .reduce((max, m) => Math.max(max, (m as CountMarkerMarkup).number || 0), 0);
-        countMarkerGroups[groupId] = existingMax;
-      }
-
-      countMarkerGroups[groupId]++;
       
       const newMarker: CountMarkerMarkup = {
         id: `count-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -1360,7 +1336,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         createdAt: new Date().toISOString(),
         x: point.x,
         y: point.y,
-        number: countMarkerGroups[groupId],
+        number: 0, // Number not displayed, kept for compatibility
         groupId,
         productId: activeProductId || undefined,
       };
@@ -1411,16 +1387,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           return;
         }
 
-        if (markup.type === 'count-marker') {
-          const countMarkup = markup as CountMarkerMarkup;
-          const groupIds = markups
-            .filter((m) => m.type === 'count-marker' && (m as CountMarkerMarkup).groupId === countMarkup.groupId)
-            .map((m) => m.id);
-          clearSelection();
-          groupIds.forEach((id, index) => selectMarkup(id, index > 0));
-        } else {
-          selectMarkup(markup.id, e.shiftKey);
-        }
+        // Select only the clicked marker (count markers are individually selectable)
+        selectMarkup(markup.id, e.shiftKey);
         setIsDragging(true);
         setDragStart(point);
         

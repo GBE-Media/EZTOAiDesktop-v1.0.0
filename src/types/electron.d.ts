@@ -42,11 +42,20 @@ export interface ElectronAPI {
     success: boolean;
     message?: string;
   }>;
+  openExternal: (url: string) => Promise<{
+    success: boolean;
+    message?: string;
+  }>;
   
   // Window close handling
   confirmClose: () => Promise<void>;
   cancelClose: () => Promise<boolean>;
   onCheckUnsavedChanges: (callback: () => void) => () => void;
+  
+  // Window control methods for frameless window
+  windowMinimize: () => Promise<void>;
+  windowMaximize: () => Promise<void>;
+  windowClose: () => Promise<void>;
   
   // Menu event listeners
   onMenuOpen: (callback: () => void) => () => void;

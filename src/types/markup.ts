@@ -40,6 +40,13 @@ export interface BaseMarkup {
   author: string;
   createdAt: string;
   label?: string;
+  
+  // AI-generated markup fields
+  aiGenerated?: boolean;      // True if created by AI
+  aiNote?: string;            // AI explanation or code reference
+  aiPending?: boolean;        // True if awaiting user confirmation
+  aiConfidence?: number;      // AI confidence score (0-1)
+  aiLinkedItemId?: string;    // Links to AI detected item
 }
 
 export interface RectangleMarkup extends BaseMarkup {

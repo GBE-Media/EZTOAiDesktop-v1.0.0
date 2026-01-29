@@ -23,10 +23,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getTessdataPath: () => ipcRenderer.invoke('app:getTessdataPath'),
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),
   
   // Window close handling
   confirmClose: () => ipcRenderer.invoke('window:confirm-close'),
   cancelClose: () => ipcRenderer.invoke('window:cancel-close'),
+  
+  // Window control methods for frameless window
+  windowMinimize: () => ipcRenderer.invoke('window:minimize'),
+  windowMaximize: () => ipcRenderer.invoke('window:maximize'),
+  windowClose: () => ipcRenderer.invoke('window:close'),
+  
   onCheckUnsavedChanges: (callback: () => void) => {
     ipcRenderer.on('window:check-unsaved-changes', callback);
     return () => ipcRenderer.removeListener('window:check-unsaved-changes', callback);

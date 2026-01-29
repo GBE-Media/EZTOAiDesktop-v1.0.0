@@ -26,11 +26,13 @@ import {
   Save,
   SaveAll,
   Printer,
-  Hash
+  Hash,
+  Bot
 } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useHistoryStore } from '@/store/historyStore';
+import { useAIChatStore } from '@/store/aiChatStore';
 import { useSave } from '@/hooks/useSave';
 import { printDocument } from '@/lib/pdfPrint';
 import type { ToolType } from '@/types/editor';
@@ -231,6 +233,17 @@ export function Toolbar() {
         shortcut="Ctrl+G"
         active={gridEnabled}
         onClick={toggleGrid}
+      />
+
+      <ToolbarDivider />
+
+      {/* AI Assistant */}
+      <ToolButton 
+        icon={<Bot className="w-4 h-4" />} 
+        label="AI Assistant" 
+        shortcut="Ctrl+Shift+A"
+        active={useAIChatStore.getState().isOpen}
+        onClick={() => useAIChatStore.getState().toggleDrawer()}
       />
 
       <div className="flex-1" />

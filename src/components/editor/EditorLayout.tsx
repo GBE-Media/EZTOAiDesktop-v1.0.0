@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from 'react';
-import { List, Settings2, Ruler, FileText, ChevronLeft, ChevronRight, Package } from 'lucide-react';
+import { List, Settings2, Ruler, FileText, ChevronLeft, ChevronRight, Package, Bot } from 'lucide-react';
 import { MenuBar } from './MenuBar';
 import { Toolbar } from './Toolbar';
 import { DocumentTabs } from './DocumentTabs';
@@ -13,6 +13,7 @@ import { MeasurementsPanel } from './panels/MeasurementsPanel';
 import { ProductsPanel } from './panels/ProductsPanel';
 import { ProductDetailsPanel } from './panels/ProductDetailsPanel';
 import { UnsavedChangesDialog } from './UnsavedChangesDialog';
+import { AiChatDrawer } from '@/components/ai/AiChatDrawer';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useWindowClose } from '@/hooks/useWindowClose';
 import { useProjectOpen } from '@/hooks/useProjectOpen';
@@ -330,6 +331,9 @@ export function EditorLayout() {
           onCancel={onCancelClose}
         />
       )}
+      
+      {/* AI Chat Drawer */}
+      <AiChatDrawer />
     </div>
   );
 }
