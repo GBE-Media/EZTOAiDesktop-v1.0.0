@@ -33,6 +33,7 @@ export interface ElectronAPI {
   getStoredSession: () => Promise<string | null>;
   clearSession: () => Promise<void>;
   getTessdataPath: () => Promise<string>;
+  getAppVersion: () => Promise<string>;
   checkForUpdates: () => Promise<{
     status: 'unavailable' | 'checking' | 'error';
     message?: string;

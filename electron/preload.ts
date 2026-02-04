@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getStoredSession: () => ipcRenderer.invoke('auth:getStoredSession'),
   clearSession: () => ipcRenderer.invoke('auth:clearSession'),
   getTessdataPath: () => ipcRenderer.invoke('app:getTessdataPath'),
+  getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
   openExternal: (url: string) => ipcRenderer.invoke('shell:openExternal', url),

@@ -364,8 +364,11 @@ export function MenuBar() {
     );
   }, []);
 
-  const handleAbout = useCallback(() => {
-    toast.info('EZTO Ai Desktop v1.0.0 - Professional PDF Editor');
+  const handleAbout = useCallback(async () => {
+    const version = window.electronAPI?.getAppVersion 
+      ? await window.electronAPI.getAppVersion() 
+      : '1.0.0';
+    toast.info(`EZTO Ai Desktop v${version} - Professional PDF Editor`);
   }, []);
 
   // Window control handlers

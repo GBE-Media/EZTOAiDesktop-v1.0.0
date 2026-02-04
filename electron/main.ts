@@ -419,6 +419,10 @@ ipcMain.handle('app:getTessdataPath', async () => {
   return path.join(basePath, 'tessdata');
 });
 
+ipcMain.handle('app:getVersion', () => {
+  return app.getVersion();
+});
+
 ipcMain.handle('app:checkForUpdates', async () => {
   if (!app.isPackaged) {
     return { status: 'unavailable', message: 'Updates are only available in the packaged app.' };
