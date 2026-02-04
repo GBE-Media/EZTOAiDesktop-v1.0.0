@@ -526,6 +526,29 @@ app.whenReady().then(() => {
   console.log('[DEBUG] App ready, creating window...');
   createWindow();
   if (app.isPackaged) {
+    // Configure autoUpdater logging
+    autoUpdater.logger = {
+      info: (msg: any) => log('autoUpdater:info', String(msg)),
+      warn: (msg: any) => log('autoUpdater:warn', String(msg)),
+      error: (msg: any) => log('autoUpdater:error', String(msg)),
+      debug: (msg: any) => log('autoUpdater:debug', String(msg)),
+    };
+    
+    // Explicitly set the feed URL for GitHub releases
+    autoUpdater.setFeedURL({
+      provider: 'github',
+      owner: 'GBE-Media',
+      repo: 'EZTOAiDesktop-v1.0.0',
+    });
+    
+    // Log the current feed URL configuration
+    log('autoUpdater', 'Feed URL config', { 
+      currentVersion: app.getVersion(),
+      provider: 'github',
+      owner: 'GBE-Media',
+      repo: 'EZTOAiDesktop-v1.0.0'
+    });
+    
     autoUpdater.autoDownload = true;
     autoUpdater.on('checking-for-update', () => {
       log('autoUpdater', 'checking-for-update');
