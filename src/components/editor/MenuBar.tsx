@@ -396,7 +396,7 @@ export function MenuBar() {
       {/* Logo - no-drag for click events */}
       <div className="flex items-center gap-1.5 px-2 mr-2" style={noDragStyle}>
         <img 
-          src="https://einpdmanlpadqyqnvccb.supabase.co/storage/v1/object/public/company-logos//EZTO Logo.png" 
+          src="/logo.png" 
           alt="EZTO Ai" 
           className="h-5 w-auto object-contain"
         />
