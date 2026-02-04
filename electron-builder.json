@@ -47,7 +47,8 @@
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
     "perMachine": false,
-    "license": "build/installer-license.txt"
+    "license": "build/installer-license.txt",
+    "include": "build/installer.nsh"
   },
   "publish": [
     {
