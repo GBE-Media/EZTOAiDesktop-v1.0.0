@@ -46,7 +46,7 @@ export default function Login() {
         <CardHeader className="text-center space-y-4">
           <div className="mx-auto w-20 h-20 flex items-center justify-center">
             <img 
-              src="/logo.png" 
+              src="./logo.png" 
               alt="EZTO Ai" 
               className="w-full h-full object-contain"
             />
