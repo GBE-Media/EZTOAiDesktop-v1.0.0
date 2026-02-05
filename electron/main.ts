@@ -69,7 +69,9 @@ function createWindow() {
         webSecurity: true,
         allowRunningInsecureContent: false,
       },
-      icon: getAssetPath('public', 'favicon.ico'),
+      icon: app.isPackaged
+        ? getAssetPath('dist', 'favicon.ico')
+        : getAssetPath('public', 'favicon.ico'),
       show: false,
       backgroundColor: '#0a0a0a',
       title: 'EZTO Ai - PDF Takeoff',

@@ -29,14 +29,14 @@
         "arch": ["x64"]
       }
     ],
-    "icon": "public/favicon.ico",
+    "icon": "build/icon.ico",
     "artifactName": "${productName}-${version}-${arch}.${ext}",
     "fileAssociations": [
       {
         "ext": "ezto",
         "name": "EZTO Project File",
         "description": "EZTO Ai Takeoff Project",
-        "icon": "build/icon-1024.png",
+        "icon": "build/icon.ico",
         "role": "Editor"
       }
     ]
@@ -48,7 +48,9 @@
     "createStartMenuShortcut": true,
     "perMachine": false,
     "license": "build/installer-license.txt",
-    "include": "build/installer.nsh"
+    "include": "build/installer.nsh",
+    "installerIcon": "build/icon.ico",
+    "uninstallerIcon": "build/icon.ico"
   },
   "publish": [
     {
