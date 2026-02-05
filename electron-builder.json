@@ -17,6 +17,10 @@
       "from": "build/tessdata",
       "to": "tessdata",
       "filter": ["**/*"]
+    },
+    {
+      "from": "build/icon.ico",
+      "to": "icon.ico"
     }
   ],
   "extraMetadata": {
