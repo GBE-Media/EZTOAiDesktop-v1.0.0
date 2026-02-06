@@ -38,8 +38,22 @@ export function useProductSync() {
           const localStorageData = localStorage.getItem('product-store');
           const hasLocalData = localStorageData && JSON.parse(localStorageData)?.state?.rootIds?.length > 0;
           const hasDbData = data.rootIds.length > 0;
+          const hasInMemoryData = Object.keys(nodes).length > 0 && rootIds.length > 0;
           
-          if (hasLocalData && !hasDbData) {
+          if (!hasDbData && hasInMemoryData && !hasLocalData) {
+            // Avoid overwriting in-memory data with empty DB payload
+            const success = await syncProductsToDb(
+              session.access_token,
+              nodes,
+              rootIds
+            );
+            if (success) {
+              toast.success('Recovered products and synced to your account');
+              lastSyncedDataRef.current = JSON.stringify({ nodes, rootIds });
+            } else {
+              toast.error('Failed to sync recovered products');
+            }
+          } else if (hasLocalData && !hasDbData) {
             // Migrate localStorage data to database with regenerated UUIDs
             const localState = JSON.parse(localStorageData).state;
             

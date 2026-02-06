@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useFileOpen } from '@/hooks/useFileOpen';
@@ -19,6 +19,9 @@ export function Canvas() {
   const [loading, setLoading] = useState(false);
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 612, height: 792 });
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
+  const [selectionRect, setSelectionRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   
   // Pan state for transform-based panning
   const [isPanning, setIsPanning] = useState(false);
@@ -38,6 +41,20 @@ export function Canvas() {
     setContainerDimensions,
     fitToCanvas,
     setPanOffset,
+    aiSelectionActive,
+    aiSelectionRect: storedAiSelectionRect,
+    setAiSelectionActive,
+    setAiSelectionRect,
+    clearAiSelection,
+    setAiViewportRect,
+    aiCalibrationActive,
+    aiCalibrationType,
+    aiCalibrationSamples,
+    aiSymbolMap,
+    aiSymbolDetectionRequested,
+    addAiCalibrationSample,
+    clearAiSymbolDetectionRequest,
+    setAiSymbolMap,
   } = useCanvasStore();
   
   const { openFile } = useFileOpen();
@@ -194,6 +211,106 @@ export function Canvas() {
     }
   }, []);
 
+  const screenToCanvasPoint = useCallback((clientX: number, clientY: number) => {
+    const transformEl = pdfTransformRef.current;
+    if (!transformEl) return null;
+
+    const elementRect = transformEl.getBoundingClientRect();
+    const centerX = elementRect.left + elementRect.width / 2;
+    const centerY = elementRect.top + elementRect.height / 2;
+
+    const angleRad = (rotation * Math.PI) / 180;
+    const cos = Math.cos(angleRad);
+    const sin = Math.sin(angleRad);
+
+    const currentScale = zoom / 100;
+    const dx = clientX - centerX;
+    const dy = clientY - centerY;
+
+    const localX = (dx * cos + dy * sin) / currentScale;
+    const localY = (-dx * sin + dy * cos) / currentScale;
+
+    return {
+      x: localX + canvasDimensions.width / 2,
+      y: localY + canvasDimensions.height / 2,
+    };
+  }, [canvasDimensions.height, canvasDimensions.width, rotation, zoom]);
+
+  const updateSelectionRect = useCallback((start: { x: number; y: number }, end: { x: number; y: number }) => {
+    const x = Math.min(start.x, end.x);
+    const y = Math.min(start.y, end.y);
+    const width = Math.abs(end.x - start.x);
+    const height = Math.abs(end.y - start.y);
+    setSelectionRect({ x, y, width, height });
+  }, []);
+
+  const handleSelectionPointerDown = useCallback((e: React.PointerEvent) => {
+    if (!aiSelectionActive) return false;
+    const point = screenToCanvasPoint(e.clientX, e.clientY);
+    if (!point) return false;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setIsSelecting(true);
+    setSelectionStart(point);
+    setSelectionRect({ x: point.x, y: point.y, width: 0, height: 0 });
+    return true;
+  }, [aiSelectionActive, screenToCanvasPoint]);
+
+  const handleCalibrationPointerDown = useCallback((e: React.PointerEvent) => {
+    if (!aiCalibrationActive || !aiCalibrationType || !activeDocId) return false;
+    const point = screenToCanvasPoint(e.clientX, e.clientY);
+    if (!point) return false;
+    e.preventDefault();
+    const pdfPoint = {
+      x: point.x / BASE_RENDER_SCALE,
+      y: point.y / BASE_RENDER_SCALE,
+    };
+    addAiCalibrationSample(activeDocId, currentPage, aiCalibrationType, pdfPoint);
+    return true;
+  }, [aiCalibrationActive, aiCalibrationType, activeDocId, currentPage, screenToCanvasPoint, addAiCalibrationSample]);
+
+  const handleSelectionPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!aiSelectionActive || !isSelecting || !selectionStart) return false;
+    const point = screenToCanvasPoint(e.clientX, e.clientY);
+    if (!point) return false;
+    e.preventDefault();
+    updateSelectionRect(selectionStart, point);
+    return true;
+  }, [aiSelectionActive, isSelecting, selectionStart, screenToCanvasPoint, updateSelectionRect]);
+
+  const handleSelectionPointerUp = useCallback((e: React.PointerEvent) => {
+    if (!aiSelectionActive || !isSelecting || !selectionStart) return false;
+    const point = screenToCanvasPoint(e.clientX, e.clientY);
+    if (!point) return false;
+    e.preventDefault();
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    updateSelectionRect(selectionStart, point);
+
+    const rect = {
+      x: Math.min(selectionStart.x, point.x),
+      y: Math.min(selectionStart.y, point.y),
+      width: Math.abs(point.x - selectionStart.x),
+      height: Math.abs(point.y - selectionStart.y),
+    };
+
+    if (rect.width < 5 || rect.height < 5 || !activeDocId) {
+      clearAiSelection();
+    } else {
+      const pdfRect = {
+        x: rect.x / BASE_RENDER_SCALE,
+        y: rect.y / BASE_RENDER_SCALE,
+        width: rect.width / BASE_RENDER_SCALE,
+        height: rect.height / BASE_RENDER_SCALE,
+      };
+      setAiSelectionRect(activeDocId, currentPage, pdfRect);
+    }
+
+    setIsSelecting(false);
+    setSelectionStart(null);
+    setAiSelectionActive(false);
+    return true;
+  }, [aiSelectionActive, isSelecting, selectionStart, screenToCanvasPoint, updateSelectionRect, activeDocId, currentPage, clearAiSelection, setAiSelectionRect, setAiSelectionActive]);
+
   // Handle wheel for scroll zoom at cursor position - Bluebeam/Google Maps style
   // The point under the mouse cursor stays fixed while zooming
   const handleWheel = useCallback((e: React.WheelEvent) => {
@@ -256,6 +373,199 @@ export function Canvas() {
     state.setZoom(newZoom);
     state.setPanOffset(newPanX, newPanY);
   }, [rotation]);
+
+  const displaySelectionRect = useMemo(() => {
+    if (selectionRect) return selectionRect;
+    if (!storedAiSelectionRect || storedAiSelectionRect.docId !== activeDocId || storedAiSelectionRect.page !== currentPage) {
+      return null;
+    }
+    return {
+      x: storedAiSelectionRect.rect.x * BASE_RENDER_SCALE,
+      y: storedAiSelectionRect.rect.y * BASE_RENDER_SCALE,
+      width: storedAiSelectionRect.rect.width * BASE_RENDER_SCALE,
+      height: storedAiSelectionRect.rect.height * BASE_RENDER_SCALE,
+    };
+  }, [activeDocId, currentPage, selectionRect, storedAiSelectionRect]);
+
+  const displayCalibrationSamples = useMemo(() => {
+    if (!activeDocId) return {};
+    return aiCalibrationSamples[activeDocId]?.[currentPage] || {};
+  }, [activeDocId, aiCalibrationSamples, currentPage]);
+
+  const displaySymbolMap = useMemo(() => {
+    if (!activeDocId) return {};
+    return aiSymbolMap[activeDocId]?.[currentPage] || {};
+  }, [activeDocId, aiSymbolMap, currentPage]);
+
+  const detectSymbolsForType = useCallback((type: string, samples: { x: number; y: number }[]) => {
+    const sourceCanvas = pdfCanvasRef.current;
+    if (!sourceCanvas || samples.length === 0) return [];
+
+    const downscale = 0.5;
+    const tempCanvas = document.createElement('canvas');
+    tempCanvas.width = Math.max(1, Math.floor(sourceCanvas.width * downscale));
+    tempCanvas.height = Math.max(1, Math.floor(sourceCanvas.height * downscale));
+    const tempCtx = tempCanvas.getContext('2d');
+    if (!tempCtx) return [];
+
+    tempCtx.drawImage(sourceCanvas, 0, 0, tempCanvas.width, tempCanvas.height);
+    const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+    const data = imageData.data;
+
+    const cssToPixelScale = sourceCanvas.width / canvasDimensions.width;
+    const pdfToTempScale = BASE_RENDER_SCALE * cssToPixelScale * downscale;
+
+    const patchRadius = 6;
+    const patchSize = patchRadius * 2 + 1;
+    const template = new Float32Array(patchSize * patchSize);
+
+    let templateCount = 0;
+    for (const sample of samples) {
+      const centerX = Math.round(sample.x * pdfToTempScale);
+      const centerY = Math.round(sample.y * pdfToTempScale);
+      if (
+        centerX - patchRadius < 0 ||
+        centerY - patchRadius < 0 ||
+        centerX + patchRadius >= tempCanvas.width ||
+        centerY + patchRadius >= tempCanvas.height
+      ) {
+        continue;
+      }
+      let idx = 0;
+      for (let y = -patchRadius; y <= patchRadius; y += 1) {
+        for (let x = -patchRadius; x <= patchRadius; x += 1) {
+          const px = (centerX + x + (centerY + y) * tempCanvas.width) * 4;
+          const r = data[px];
+          const g = data[px + 1];
+          const b = data[px + 2];
+          template[idx] += 0.299 * r + 0.587 * g + 0.114 * b;
+          idx += 1;
+        }
+      }
+      templateCount += 1;
+    }
+
+    if (templateCount === 0) return [];
+    for (let i = 0; i < template.length; i += 1) {
+      template[i] /= templateCount;
+    }
+
+    const matches: { x: number; y: number }[] = [];
+    const stride = 6;
+    const maxMatches = 200;
+    const matchThreshold = 20;
+    const minDistance = patchRadius * 1.5;
+
+    for (let y = patchRadius; y < tempCanvas.height - patchRadius; y += stride) {
+      for (let x = patchRadius; x < tempCanvas.width - patchRadius; x += stride) {
+        let diff = 0;
+        let idx = 0;
+        for (let j = -patchRadius; j <= patchRadius; j += 1) {
+          for (let i = -patchRadius; i <= patchRadius; i += 1) {
+            const px = (x + i + (y + j) * tempCanvas.width) * 4;
+            const r = data[px];
+            const g = data[px + 1];
+            const b = data[px + 2];
+            const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+            diff += Math.abs(gray - template[idx]);
+            idx += 1;
+          }
+        }
+        const avgDiff = diff / (patchSize * patchSize);
+        if (avgDiff > matchThreshold) continue;
+
+        const pdfX = x / pdfToTempScale;
+        const pdfY = y / pdfToTempScale;
+        const tooClose = matches.some((m) => {
+          const dx = m.x - pdfX;
+          const dy = m.y - pdfY;
+          return Math.hypot(dx, dy) < minDistance;
+        });
+        if (tooClose) continue;
+
+        matches.push({ x: pdfX, y: pdfY });
+        if (matches.length >= maxMatches) {
+          return matches;
+        }
+      }
+    }
+
+    return matches;
+  }, [canvasDimensions.width, canvasDimensions.height]);
+
+  const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
+    if (handleCalibrationPointerDown(e)) return;
+    if (handleSelectionPointerDown(e)) return;
+    handlePanPointerDown(e);
+  }, [handleCalibrationPointerDown, handleSelectionPointerDown, handlePanPointerDown]);
+
+  const handleCanvasPointerMove = useCallback((e: React.PointerEvent) => {
+    if (handleSelectionPointerMove(e)) return;
+    handlePanPointerMove(e);
+  }, [handleSelectionPointerMove, handlePanPointerMove]);
+
+  const handleCanvasPointerUp = useCallback((e: React.PointerEvent) => {
+    if (handleSelectionPointerUp(e)) return;
+    handlePanPointerUp(e);
+  }, [handleSelectionPointerUp, handlePanPointerUp]);
+
+  useEffect(() => {
+    if (!activeDocId || !pdfTransformRef.current || !containerRef.current) return;
+
+    const containerRect = containerRef.current.getBoundingClientRect();
+    const corners = [
+      { x: containerRect.left, y: containerRect.top },
+      { x: containerRect.right, y: containerRect.top },
+      { x: containerRect.right, y: containerRect.bottom },
+      { x: containerRect.left, y: containerRect.bottom },
+    ]
+      .map(({ x, y }) => screenToCanvasPoint(x, y))
+      .filter((point): point is { x: number; y: number } => !!point);
+
+    if (!corners.length) return;
+
+    const minX = Math.max(0, Math.min(...corners.map(p => p.x)));
+    const maxX = Math.min(canvasDimensions.width, Math.max(...corners.map(p => p.x)));
+    const minY = Math.max(0, Math.min(...corners.map(p => p.y)));
+    const maxY = Math.min(canvasDimensions.height, Math.max(...corners.map(p => p.y)));
+
+    const pdfRect = {
+      x: minX / BASE_RENDER_SCALE,
+      y: minY / BASE_RENDER_SCALE,
+      width: Math.max(0, (maxX - minX) / BASE_RENDER_SCALE),
+      height: Math.max(0, (maxY - minY) / BASE_RENDER_SCALE),
+    };
+
+    setAiViewportRect(activeDocId, currentPage, pdfRect);
+  }, [activeDocId, canvasDimensions.height, canvasDimensions.width, currentPage, screenToCanvasPoint, setAiViewportRect, zoom, panOffset, rotation]);
+
+  useEffect(() => {
+    if (!aiSymbolDetectionRequested) return;
+    if (!activeDocId) {
+      clearAiSymbolDetectionRequest();
+      return;
+    }
+
+    const pageSamples = aiCalibrationSamples[activeDocId]?.[currentPage] || {};
+    const types = Object.keys(pageSamples);
+    for (const type of types) {
+      const samples = pageSamples[type] || [];
+      if (samples.length < 3) {
+        continue;
+      }
+      const detected = detectSymbolsForType(type, samples);
+      setAiSymbolMap(activeDocId, currentPage, type, detected);
+    }
+    clearAiSymbolDetectionRequest();
+  }, [
+    aiSymbolDetectionRequested,
+    activeDocId,
+    currentPage,
+    aiCalibrationSamples,
+    detectSymbolsForType,
+    setAiSymbolMap,
+    clearAiSymbolDetectionRequest,
+  ]);
 
   // No document open - show upload prompt
   // IMPORTANT: Still use containerRef to track dimensions for when a document is loaded
@@ -351,10 +661,10 @@ export function Canvas() {
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
-        onPointerDown={handlePanPointerDown}
-        onPointerMove={handlePanPointerMove}
-        onPointerUp={handlePanPointerUp}
-        onPointerCancel={handlePanPointerUp}
+        onPointerDown={handleCanvasPointerDown}
+        onPointerMove={handleCanvasPointerMove}
+        onPointerUp={handleCanvasPointerUp}
+        onPointerCancel={handleCanvasPointerUp}
         onContextMenu={handleContextMenu}
         onWheel={handleWheel}
       >
@@ -402,6 +712,47 @@ export function Canvas() {
                   width={canvasDimensions.width} 
                   height={canvasDimensions.height} 
                 />
+                {Object.entries(displaySymbolMap).map(([type, points]) => (
+                  <div key={`symbol-${type}`}>
+                    {points.map((point, index) => (
+                      <div
+                        key={`symbol-${type}-${index}`}
+                        className="absolute w-2 h-2 rounded-full bg-emerald-500/50 border border-emerald-500 pointer-events-none"
+                        style={{
+                          left: point.x * BASE_RENDER_SCALE - 4,
+                          top: point.y * BASE_RENDER_SCALE - 4,
+                        }}
+                        title={`${type} (detected)`}
+                      />
+                    ))}
+                  </div>
+                ))}
+                {Object.entries(displayCalibrationSamples).map(([type, points]) => (
+                  <div key={`calibration-${type}`}>
+                    {points.map((point, index) => (
+                      <div
+                        key={`calibration-${type}-${index}`}
+                        className="absolute w-3 h-3 rounded-full bg-blue-500/60 border border-blue-500 pointer-events-none"
+                        style={{
+                          left: point.x * BASE_RENDER_SCALE - 6,
+                          top: point.y * BASE_RENDER_SCALE - 6,
+                        }}
+                        title={`${type} (sample)`}
+                      />
+                    ))}
+                  </div>
+                ))}
+                {displaySelectionRect && (
+                  <div
+                    className="absolute border-2 border-violet-500 bg-violet-500/10 pointer-events-none"
+                    style={{
+                      left: displaySelectionRect.x,
+                      top: displaySelectionRect.y,
+                      width: displaySelectionRect.width,
+                      height: displaySelectionRect.height,
+                    }}
+                  />
+                )}
               </>
             ) : (
               /* Placeholder document */

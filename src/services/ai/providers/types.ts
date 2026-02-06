@@ -110,7 +110,18 @@ export interface BlueprintAnalysisResult {
   dimensions: DetectedDimension[];
   text: ExtractedText[];
   symbols: DetectedSymbol[];
+  typeCounts?: Record<string, number>;
+  questions?: string[];
+  questionOptions?: QuestionOption[];
+  evidence?: string[];
   location?: ProjectLocation;
+}
+
+export interface QuestionOption {
+  id: string;
+  prompt: string;
+  options: string[];
+  allowMultiple?: boolean;
 }
 
 export interface DetectedItem {

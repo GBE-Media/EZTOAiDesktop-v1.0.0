@@ -47,7 +47,12 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
   
   const isActive = activeProductId === node.id;
   const isSelected = selectedNodeId === node.id;
-  const hasChildren = node.children.length > 0;
+  const derivedChildren = node.type === 'folder' && node.children.length === 0
+    ? Object.values(nodes)
+        .filter((child) => child.parentId === node.id)
+        .map((child) => child.id)
+    : node.children;
+  const hasChildren = node.type === 'folder' && derivedChildren.length > 0;
   // Only show measurement count if a document is active, and filter by document
   const measurementCount = activeDocument && node.type === 'product'
     ? (node.measurements || []).filter((m) => m.documentId === activeDocument).length
@@ -252,7 +257,7 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
       {/* Children */}
       {node.type === 'folder' && node.expanded && (
         <div>
-          {node.children.map((childId) => {
+          {derivedChildren.map((childId) => {
             const childNode = nodes[childId];
             if (!childNode) return null;
             return (

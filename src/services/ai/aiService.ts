@@ -37,8 +37,8 @@ const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
     model: 'gpt-4o',
   },
   estimationModel: {
-    provider: 'anthropic',
-    model: 'claude-sonnet-4-20250514',
+    provider: 'openai',
+    model: 'gpt-4o',
   },
   placementModel: {
     provider: 'openai',
@@ -334,7 +334,10 @@ For each item, provide:
 - Any visible circuit or circuit number
 - Relevant NEC code references
 
-Also check fixture schedules/legends and any type callouts (A, B, C, etc.). Count fixtures by type letter and return a typeCounts map if visible.`,
+Also check fixture schedules/legends and any type callouts (A, B, C, etc.). Count fixtures by type letter and return a typeCounts map if visible.
+
+If you are uncertain about symbol meaning, schedule mapping, or counts, add clear questions in a "questions" array and include any evidence snippets in "evidence".
+Also provide structured question options in "questionOptions" with id, prompt, options[], and allowMultiple when applicable.`,
 
       plumbing: `You are an expert plumbing estimator analyzing construction blueprints.
 Identify all plumbing components including:
@@ -352,7 +355,10 @@ For each item, provide:
 - Pipe size if visible
 - Relevant UPC/IPC code references
 
-Also check fixture schedules/legends and any type callouts (A, B, C, etc.). Count fixtures by type letter and return a typeCounts map if visible.`,
+Also check fixture schedules/legends and any type callouts (A, B, C, etc.). Count fixtures by type letter and return a typeCounts map if visible.
+
+If you are uncertain about symbol meaning, schedule mapping, or counts, add clear questions in a "questions" array and include any evidence snippets in "evidence".
+Also provide structured question options in "questionOptions" with id, prompt, options[], and allowMultiple when applicable.`,
 
       hvac: `You are an expert HVAC estimator analyzing construction blueprints.
 Identify all HVAC components including:
@@ -370,7 +376,10 @@ For each item, provide:
 - Size/CFM rating if visible
 - Relevant IMC/IECC code references
 
-Also check fixture schedules/legends and any type callouts (A, B, C, etc.). Count fixtures by type letter and return a typeCounts map if visible.`,
+Also check fixture schedules/legends and any type callouts (A, B, C, etc.). Count fixtures by type letter and return a typeCounts map if visible.
+
+If you are uncertain about symbol meaning, schedule mapping, or counts, add clear questions in a "questions" array and include any evidence snippets in "evidence".
+Also provide structured question options in "questionOptions" with id, prompt, options[], and allowMultiple when applicable.`,
     };
 
     return `${tradePrompts[trade]}
@@ -407,6 +416,21 @@ Respond with a JSON object in this format:
     "A": 12,
     "B": 6
   },
+  "questions": [
+    "Are type B fixtures shown with a solid or hollow circle symbol on this plan?"
+  ],
+  "questionOptions": [
+    {
+      "id": "fixture_symbol_type",
+      "prompt": "Which symbol represents Type B fixtures on this plan?",
+      "options": ["Solid circle", "Hollow circle", "Square", "Unknown"],
+      "allowMultiple": false
+    }
+  ],
+  "evidence": [
+    "LIGHTING FIXTURE SCHEDULE",
+    "TYPE B1 - 2'x2' LAY-IN TROFFER FIXTURE"
+  ],
   "projectInfo": {
     "title": "if visible",
     "address": "if visible",

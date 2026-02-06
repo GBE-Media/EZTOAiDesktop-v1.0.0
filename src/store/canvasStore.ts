@@ -103,6 +103,18 @@ interface CanvasState {
   
   // Default style
   defaultStyle: MarkupStyle;
+
+  // AI selection/viewport capture
+  aiSelectionActive: boolean;
+  aiSelectionRect: { docId: string; page: number; rect: { x: number; y: number; width: number; height: number } } | null;
+  aiViewportRect: { docId: string; page: number; rect: { x: number; y: number; width: number; height: number } } | null;
+
+  // AI symbol calibration
+  aiCalibrationActive: boolean;
+  aiCalibrationType: string | null;
+  aiCalibrationSamples: Record<string, Record<number, Record<string, { x: number; y: number }[]>>>;
+  aiSymbolMap: Record<string, Record<number, Record<string, { x: number; y: number }[]>>>;
+  aiSymbolDetectionRequested: boolean;
 }
 
 interface CanvasActions {
@@ -183,6 +195,25 @@ interface CanvasActions {
   
   // Utility
   getSnapPoint: (point: Point) => { point: Point; snapPoint: SnapPoint | null };
+
+  // AI selection/viewport actions
+  setAiSelectionActive: (active: boolean) => void;
+  setAiSelectionRect: (docId: string, page: number, rect: { x: number; y: number; width: number; height: number }) => void;
+  clearAiSelection: () => void;
+  setAiViewportRect: (docId: string, page: number, rect: { x: number; y: number; width: number; height: number }) => void;
+  clearAiViewport: () => void;
+  getAiSelectionForPage: (docId: string, page: number) => { x: number; y: number; width: number; height: number } | null;
+  getAiViewportForPage: (docId: string, page: number) => { x: number; y: number; width: number; height: number } | null;
+
+  // AI symbol calibration actions
+  setAiCalibrationActive: (active: boolean) => void;
+  setAiCalibrationType: (type: string | null) => void;
+  addAiCalibrationSample: (docId: string, page: number, type: string, point: { x: number; y: number }) => void;
+  clearAiCalibrationSamples: (docId: string, page: number, type?: string) => void;
+  setAiSymbolMap: (docId: string, page: number, type: string, points: { x: number; y: number }[]) => void;
+  getAiSymbolMapForPage: (docId: string, page: number) => Record<string, { x: number; y: number }[]>;
+  requestAiSymbolDetection: () => void;
+  clearAiSymbolDetectionRequest: () => void;
   
   // History actions
   undo: () => void;
@@ -236,6 +267,18 @@ const initialState: CanvasState = {
     fontSize: 12,
     fontFamily: 'Arial',
   },
+
+  // AI selection/viewport capture
+  aiSelectionActive: false,
+  aiSelectionRect: null,
+  aiViewportRect: null,
+
+  // AI symbol calibration
+  aiCalibrationActive: false,
+  aiCalibrationType: null,
+  aiCalibrationSamples: {},
+  aiSymbolMap: {},
+  aiSymbolDetectionRequested: false,
 };
 
 // Helper to get current document data
@@ -996,6 +1039,109 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     
     return { point, snapPoint: null };
   },
+
+  // AI selection/viewport actions
+  setAiSelectionActive: (active) => set({ aiSelectionActive: active }),
+
+  setAiSelectionRect: (docId, page, rect) => set({
+    aiSelectionRect: { docId, page, rect },
+  }),
+
+  clearAiSelection: () => set({ aiSelectionRect: null, aiSelectionActive: false }),
+
+  setAiViewportRect: (docId, page, rect) => set({
+    aiViewportRect: { docId, page, rect },
+  }),
+
+  clearAiViewport: () => set({ aiViewportRect: null }),
+
+  getAiSelectionForPage: (docId, page) => {
+    const state = get();
+    if (!state.aiSelectionRect) return null;
+    if (state.aiSelectionRect.docId !== docId || state.aiSelectionRect.page !== page) return null;
+    return state.aiSelectionRect.rect;
+  },
+
+  getAiViewportForPage: (docId, page) => {
+    const state = get();
+    if (!state.aiViewportRect) return null;
+    if (state.aiViewportRect.docId !== docId || state.aiViewportRect.page !== page) return null;
+    return state.aiViewportRect.rect;
+  },
+
+  setAiCalibrationActive: (active) => set({ aiCalibrationActive: active }),
+
+  setAiCalibrationType: (type) => set({ aiCalibrationType: type }),
+
+  addAiCalibrationSample: (docId, page, type, point) => set((state) => {
+    const docSamples = state.aiCalibrationSamples[docId] || {};
+    const pageSamples = docSamples[page] || {};
+    const typeSamples = pageSamples[type] || [];
+    return {
+      aiCalibrationSamples: {
+        ...state.aiCalibrationSamples,
+        [docId]: {
+          ...docSamples,
+          [page]: {
+            ...pageSamples,
+            [type]: [...typeSamples, point],
+          },
+        },
+      },
+    };
+  }),
+
+  clearAiCalibrationSamples: (docId, page, type) => set((state) => {
+    const docSamples = state.aiCalibrationSamples[docId] || {};
+    const pageSamples = docSamples[page] || {};
+    if (!type) {
+      return {
+        aiCalibrationSamples: {
+          ...state.aiCalibrationSamples,
+          [docId]: {
+            ...docSamples,
+            [page]: {},
+          },
+        },
+      };
+    }
+    const { [type]: _, ...restTypes } = pageSamples;
+    return {
+      aiCalibrationSamples: {
+        ...state.aiCalibrationSamples,
+        [docId]: {
+          ...docSamples,
+          [page]: restTypes,
+        },
+      },
+    };
+  }),
+
+  setAiSymbolMap: (docId, page, type, points) => set((state) => {
+    const docMap = state.aiSymbolMap[docId] || {};
+    const pageMap = docMap[page] || {};
+    return {
+      aiSymbolMap: {
+        ...state.aiSymbolMap,
+        [docId]: {
+          ...docMap,
+          [page]: {
+            ...pageMap,
+            [type]: points,
+          },
+        },
+      },
+    };
+  }),
+
+  getAiSymbolMapForPage: (docId, page) => {
+    const state = get();
+    return state.aiSymbolMap[docId]?.[page] || {};
+  },
+
+  requestAiSymbolDetection: () => set({ aiSymbolDetectionRequested: true }),
+
+  clearAiSymbolDetectionRequest: () => set({ aiSymbolDetectionRequested: false }),
   
   // Direct setter for undo/redo operations (bypasses history)
   setMarkupsForPage: (page, markups) => {

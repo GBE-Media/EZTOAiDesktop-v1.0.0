@@ -1,7 +1,7 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useTheme } from 'next-themes';
 import { useEffect, useState } from 'react';
-import { LogOut, User, ChevronDown, Moon, Sun, Download } from 'lucide-react';
+import { LogOut, User, ChevronDown, Moon, Sun, Download, Upload } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +22,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
+import { TrainingMaterialDialog } from '@/components/ai/TrainingMaterialDialog';
 
 export function UserMenu() {
   const { user, signOut } = useAuth();
@@ -30,6 +31,7 @@ export function UserMenu() {
   const [isCheckingUpdates, setIsCheckingUpdates] = useState(false);
   const [updateReady, setUpdateReady] = useState(false);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
+  const [showTrainingDialog, setShowTrainingDialog] = useState(false);
 
   if (!user) return null;
 
@@ -148,6 +150,14 @@ export function UserMenu() {
           </DropdownMenuItem>
         )}
 
+        <DropdownMenuItem
+          onClick={() => setShowTrainingDialog(true)}
+          className="cursor-pointer"
+        >
+          <Upload className="h-4 w-4 mr-2" />
+          AI Training Material
+        </DropdownMenuItem>
+
         <DropdownMenuSeparator />
         
         <DropdownMenuItem 
@@ -177,6 +187,11 @@ export function UserMenu() {
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
+
+    <TrainingMaterialDialog
+      open={showTrainingDialog}
+      onOpenChange={setShowTrainingDialog}
+    />
     </>
   );
 }

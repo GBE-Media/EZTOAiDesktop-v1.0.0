@@ -92,14 +92,14 @@ export async function captureAllPages(
 
 /**
  * Get optimal scale for AI analysis based on page dimensions
- * Targets ~2000px on the longest edge for good detail without excessive tokens
+ * Targets ~2600px on the longest edge for better symbol clarity
  */
 export function getOptimalScale(pageWidth: number, pageHeight: number): number {
-  const targetSize = 2000;
+  const targetSize = 2600;
   const longestEdge = Math.max(pageWidth, pageHeight);
   
   if (longestEdge <= targetSize) {
-    return 1.5; // Upscale small pages
+    return 2; // Upscale small pages for symbol clarity
   }
   
   return Math.max(1, targetSize / longestEdge);

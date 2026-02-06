@@ -6,6 +6,7 @@
 import { getAIService } from './aiService';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { capturePageCrop } from './imageCapture';
+import { getTextContentWithBounds, groupTextIntoLines } from '@/lib/pdfLoader';
 import type {
   TradeType,
   BlueprintAnalysisResult,
@@ -31,17 +32,143 @@ export interface PipelineOptions {
   pageWidth: number;
   pageHeight: number;
   userPrompt?: string;
+  trainingContext?: string;
   location?: string;
   onProgress?: PipelineProgressCallback;
   pdfDoc?: PDFDocumentProxy;
+  highAccuracyMode?: boolean;
   refinePlacements?: boolean;
+  visibleOnly?: boolean;
 }
+
+const KEYWORDS = [
+  'LIGHTING',
+  'FIXTURE',
+  'SCHEDULE',
+  'TYPE',
+  'LEGEND',
+  'SYMBOL',
+  'OUTLET',
+  'RECEPTACLE',
+];
+
+const buildTextContext = (lines: string[]): string => {
+  const upperLines = lines.map(line => line.toUpperCase());
+  const matchedIndices = new Set<number>();
+
+  upperLines.forEach((line, index) => {
+    if (KEYWORDS.some(keyword => line.includes(keyword))) {
+      matchedIndices.add(index);
+      matchedIndices.add(index - 1);
+      matchedIndices.add(index + 1);
+      matchedIndices.add(index + 2);
+    }
+  });
+
+  const selected = Array.from(matchedIndices)
+    .filter(index => index >= 0 && index < lines.length)
+    .sort((a, b) => a - b)
+    .map(index => lines[index]);
+
+  const fallback = lines.slice(0, 40);
+  const combined = selected.length ? selected : fallback;
+
+  const text = combined.join('\n');
+  const maxChars = 6000;
+  return text.length > maxChars ? `${text.slice(0, maxChars)}\n...[truncated]` : text;
+};
+
+const extractPageTextContext = async (pdfDoc: PDFDocumentProxy, page: number): Promise<string> => {
+  try {
+    const textItems = await getTextContentWithBounds(pdfDoc, page, 1.0);
+    const lines = groupTextIntoLines(textItems, 5)
+      .map(line => line.items.map(item => item.str).join(' ').trim())
+      .filter(Boolean);
+    return buildTextContext(lines);
+  } catch (error) {
+    console.warn('[AI] Failed to extract page text context:', error);
+    return '';
+  }
+};
+
+const extractScheduleCrop = async (pdfDoc: PDFDocumentProxy, page: number, pageWidth: number, pageHeight: number) => {
+  const textItems = await getTextContentWithBounds(pdfDoc, page, 1.0);
+  const lines = groupTextIntoLines(textItems, 5);
+  const scheduleLines = lines.filter(line =>
+    line.items.some(item => item.str.toUpperCase().includes('FIXTURE')) ||
+    line.items.some(item => item.str.toUpperCase().includes('SCHEDULE')) ||
+    line.items.some(item => item.str.toUpperCase().includes('LEGEND'))
+  );
+
+  if (!scheduleLines.length) return null;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  scheduleLines.forEach(line => {
+    line.items.forEach(item => {
+      minX = Math.min(minX, item.x);
+      minY = Math.min(minY, item.y);
+      maxX = Math.max(maxX, item.x + item.width);
+      maxY = Math.max(maxY, item.y + item.height);
+    });
+  });
+
+  const padding = 40;
+  const crop = {
+    x: Math.max(0, minX - padding),
+    y: Math.max(0, minY - padding),
+    width: Math.min(pageWidth, maxX - minX + padding * 2),
+    height: Math.min(pageHeight, maxY - minY + padding * 2),
+  };
+
+  return crop;
+};
+
+const generateTiles = (pageWidth: number, pageHeight: number, rows: number, cols: number) => {
+  const tileWidth = pageWidth / cols;
+  const tileHeight = pageHeight / rows;
+  const tiles: Array<{ x: number; y: number; width: number; height: number }> = [];
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      tiles.push({
+        x: col * tileWidth,
+        y: row * tileHeight,
+        width: tileWidth,
+        height: tileHeight,
+      });
+    }
+  }
+
+  return tiles;
+};
+
+const mergeTypeCounts = (entries: Array<Record<string, number> | undefined>) => {
+  return entries.reduce((acc, entry) => {
+    if (!entry) return acc;
+    Object.entries(entry).forEach(([key, value]) => {
+      acc[key] = (acc[key] || 0) + value;
+    });
+    return acc;
+  }, {} as Record<string, number>);
+};
 
 export interface PipelineResult {
   success: boolean;
   analysis?: BlueprintAnalysisResult[];
   estimate?: MaterialEstimate;
   placements?: CanvasPlacement;
+  questions?: string[];
+  evidence?: string[];
+  questionOptions?: Array<{
+    id: string;
+    prompt: string;
+    options: string[];
+    allowMultiple?: boolean;
+  }>;
   error?: string;
   duration: number;
 }
@@ -60,10 +187,13 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     pageWidth,
     pageHeight,
     userPrompt,
+    trainingContext,
     location,
     onProgress,
     pdfDoc,
+    highAccuracyMode = false,
     refinePlacements = true,
+    visibleOnly = false,
   } = options;
 
   const reportProgress = (stage: PipelineProgress['stage'], progress: number, message: string, data?: unknown) => {
@@ -83,25 +213,143 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
       
       // Get page image
       const imageBase64 = await imageGenerator(page);
-      
-      // Analyze with vision model
+      const textContext = pdfDoc && !visibleOnly ? await extractPageTextContext(pdfDoc, page) : '';
+      const promptParts = [
+        visibleOnly ? 'VISIBLE-ONLY MODE: Count only symbols visible in the image. Ignore schedule/legend totals or text-only counts.' : undefined,
+        userPrompt ? `User request: ${userPrompt}` : undefined,
+        trainingContext ? trainingContext : undefined,
+        textContext ? `PDF TEXT SNIPPETS:\n${textContext}` : undefined,
+      ].filter(Boolean);
+      const combinedPrompt = promptParts.join('\n\n');
+
+      // Analyze full page with vision model
       const visionResponse = await aiService.analyzeBlueprint(
         imageBase64,
         trade,
-        userPrompt
+        combinedPrompt || userPrompt
       );
       
       try {
         const analysisData = JSON.parse(visionResponse.content);
-        analysisResults.push({
+        const baseResult: BlueprintAnalysisResult = {
           page,
           items: analysisData.items || [],
           dimensions: analysisData.dimensions || [],
           text: analysisData.text || [],
           symbols: analysisData.symbols || [],
+          typeCounts: analysisData.typeCounts || undefined,
+          questions: analysisData.questions || undefined,
+          questionOptions: analysisData.questionOptions || undefined,
+          evidence: analysisData.evidence || undefined,
           location: analysisData.projectInfo?.address ? {
             address: analysisData.projectInfo.address,
           } : undefined,
+        };
+
+        if (!highAccuracyMode || !pdfDoc) {
+          analysisResults.push(baseResult);
+          continue;
+        }
+
+        reportProgress('vision', pageProgress, `High accuracy pass ${page}...`);
+
+        const scheduleCrop = visibleOnly ? null : await extractScheduleCrop(pdfDoc, page, pageWidth, pageHeight);
+        let scheduleResult: BlueprintAnalysisResult | null = null;
+
+        if (scheduleCrop) {
+          const scheduleImage = await capturePageCrop(pdfDoc, page, scheduleCrop, {
+            scale: 2.4,
+            format: 'jpeg',
+            quality: 0.92,
+          });
+          const scheduleResponse = await aiService.analyzeBlueprint(
+            scheduleImage.base64,
+            trade,
+            `${combinedPrompt}\n\nFocus on the lighting fixture schedule/legend only. Extract fixture types, descriptions, and any abbreviations.`
+          );
+          try {
+            const scheduleData = JSON.parse(scheduleResponse.content);
+            scheduleResult = {
+              page,
+              items: [],
+              dimensions: [],
+              text: [],
+              symbols: [],
+              typeCounts: scheduleData.typeCounts || undefined,
+              questions: scheduleData.questions || undefined,
+              questionOptions: scheduleData.questionOptions || undefined,
+              evidence: scheduleData.evidence || undefined,
+              location: undefined,
+            };
+          } catch (error) {
+            console.warn('[AI] Failed to parse schedule response:', error);
+          }
+        }
+
+        const tiles = generateTiles(pageWidth, pageHeight, 3, 3);
+        const tileResults: BlueprintAnalysisResult[] = [];
+
+        for (let tileIndex = 0; tileIndex < tiles.length; tileIndex += 1) {
+          const tile = tiles[tileIndex];
+          const tileImage = await capturePageCrop(pdfDoc, page, tile, {
+            scale: 2.6,
+            format: 'jpeg',
+            quality: 0.9,
+          });
+          const tileResponse = await aiService.analyzeBlueprint(
+            tileImage.base64,
+            trade,
+            `${combinedPrompt}\n\nFocus on counting fixtures/symbols in this selected area. Do not mention cropping.`
+          );
+          try {
+            const tileData = JSON.parse(tileResponse.content);
+            tileResults.push({
+              page,
+              items: tileData.items || [],
+              dimensions: [],
+              text: [],
+              symbols: tileData.symbols || [],
+              typeCounts: tileData.typeCounts || undefined,
+              questions: tileData.questions || undefined,
+              questionOptions: tileData.questionOptions || undefined,
+              evidence: tileData.evidence || undefined,
+              location: undefined,
+            });
+          } catch (error) {
+            console.warn('[AI] Failed to parse tile response:', error);
+          }
+        }
+
+        const mergedTypeCounts = mergeTypeCounts([
+          baseResult.typeCounts,
+          scheduleResult?.typeCounts,
+          ...tileResults.map(result => result.typeCounts),
+        ]);
+
+        const mergedQuestions = [
+          ...(baseResult.questions || []),
+          ...(scheduleResult?.questions || []),
+          ...tileResults.flatMap(result => result.questions || []),
+        ];
+
+        const mergedQuestionOptions = [
+          ...(baseResult.questionOptions || []),
+          ...(scheduleResult?.questionOptions || []),
+          ...tileResults.flatMap(result => result.questionOptions || []),
+        ];
+
+        const mergedEvidence = [
+          ...(baseResult.evidence || []),
+          ...(scheduleResult?.evidence || []),
+          ...tileResults.flatMap(result => result.evidence || []),
+        ];
+
+        analysisResults.push({
+          ...baseResult,
+          typeCounts: Object.keys(mergedTypeCounts).length ? mergedTypeCounts : baseResult.typeCounts,
+          questions: mergedQuestions.length ? mergedQuestions : baseResult.questions,
+          questionOptions: mergedQuestionOptions.length ? mergedQuestionOptions : baseResult.questionOptions,
+          evidence: mergedEvidence.length ? mergedEvidence : baseResult.evidence,
         });
       } catch (parseError) {
         console.error('Failed to parse vision response:', parseError);
@@ -110,6 +358,37 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     }
 
     reportProgress('vision', 100, 'Blueprint analysis complete', analysisResults);
+
+    const questions = analysisResults.flatMap(result => result.questions || []);
+    const evidence = analysisResults.flatMap(result => result.evidence || []);
+    const questionOptions = analysisResults.flatMap(result => result.questionOptions || []);
+    const totalItems = analysisResults.reduce((sum, result) => sum + (result.items?.length || 0), 0);
+    const totalTypeCounts = analysisResults.reduce((sum, result) => sum + Object.keys(result.typeCounts || {}).length, 0);
+    const askedForCounts = !!userPrompt && /count|how many|quantity|quantities|number of/i.test(userPrompt);
+
+    if (askedForCounts && totalItems === 0 && totalTypeCounts === 0) {
+      questions.push('I could not detect any fixtures to count. Are the lighting symbols visible on this page, or should I zoom into a specific area?');
+    }
+
+    if (highAccuracyMode && askedForCounts && totalTypeCounts > 0 && questions.length === 0) {
+      const typeCounts = mergeTypeCounts(analysisResults.map(result => result.typeCounts));
+      const variance = Object.values(typeCounts).some(value => value > 0);
+      if (!variance) {
+        questions.push('I could not confirm counts across tiles. Can you confirm the fixture symbols are clearly visible?');
+      }
+    }
+
+    if (questions.length > 0 || questionOptions.length > 0) {
+      reportProgress('complete', 100, 'Questions required', { questions, evidence, questionOptions });
+      return {
+        success: true,
+        analysis: analysisResults,
+        questions,
+        evidence,
+        questionOptions,
+        duration: Date.now() - startTime,
+      };
+    }
 
     // Stage 2: Estimation - Generate material takeoff
     reportProgress('estimation', 0, 'Generating material estimate...');
