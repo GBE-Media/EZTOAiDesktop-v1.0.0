@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Search, FolderPlus, PackagePlus, Package, Upload, Loader2, RefreshCw, Boxes, WifiOff } from 'lucide-react';
 import { ExportProductsDialog } from '../dialogs/ExportProductsDialog';
 import { useProductStore } from '@/store/productStore';
@@ -11,6 +11,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useProductSync } from '@/hooks/useProductSync';
 import { useAuth } from '@/hooks/useAuth';
 import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
+import { flattenVisibleTree, getVisibleChildren } from '@/lib/productTree';
 import type { ProductNode } from '@/types/product';
 
 export function ProductsPanel() {
@@ -19,8 +20,17 @@ export function ProductsPanel() {
   const [dialogType, setDialogType] = useState<'folder' | 'product' | 'assembly'>('folder');
   const [dialogParentId, setDialogParentId] = useState<string | null>(null);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
+  const treeContainerRef = useRef<HTMLDivElement>(null);
 
-  const { nodes, rootIds, setSelectedNode } = useProductStore();
+  const {
+    nodes,
+    rootIds,
+    selectedNodeId,
+    activeProductId,
+    setSelectedNode,
+    setActiveProduct,
+    toggleExpanded,
+  } = useProductStore();
   const { documents, activeDocument } = useEditorStore();
   const activeDocName = activeDocument
     ? documents.find((d) => d.id === activeDocument)?.name || 'Unknown Document'
@@ -69,6 +79,87 @@ export function ProductsPanel() {
   };
 
   const filteredRootIds = filterNodes(rootIds);
+
+  // Exact top-to-bottom order of rows currently rendered, respecting expand
+  // state, so arrow keys can walk it the same way the eye does.
+  const visibleIds = useMemo(
+    () => flattenVisibleTree(filteredRootIds, nodes),
+    [filteredRootIds, nodes],
+  );
+
+  const revealNode = (id: string) => {
+    requestAnimationFrame(() => {
+      treeContainerRef.current
+        ?.querySelector<HTMLElement>(`[data-node-id="${id}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    });
+  };
+
+  const selectAndReveal = (id: string) => {
+    setSelectedNode(id);
+    revealNode(id);
+  };
+
+  const handleTreeKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      return;
+    }
+    if (!visibleIds.length) return;
+
+    const currentIndex = selectedNodeId ? visibleIds.indexOf(selectedNodeId) : -1;
+
+    switch (e.key) {
+      case 'ArrowDown': {
+        e.preventDefault();
+        const nextIndex = currentIndex < 0 ? 0 : Math.min(currentIndex + 1, visibleIds.length - 1);
+        selectAndReveal(visibleIds[nextIndex]);
+        break;
+      }
+      case 'ArrowUp': {
+        e.preventDefault();
+        const prevIndex = currentIndex < 0 ? 0 : Math.max(currentIndex - 1, 0);
+        selectAndReveal(visibleIds[prevIndex]);
+        break;
+      }
+      case 'ArrowRight': {
+        if (currentIndex < 0) break;
+        e.preventDefault();
+        const node = nodes[visibleIds[currentIndex]];
+        if (!node || node.type !== 'folder') break;
+        if (!node.expanded) {
+          toggleExpanded(node.id);
+        } else {
+          const children = getVisibleChildren(node, nodes);
+          if (children[0]) selectAndReveal(children[0]);
+        }
+        break;
+      }
+      case 'ArrowLeft': {
+        if (currentIndex < 0) break;
+        e.preventDefault();
+        const node = nodes[visibleIds[currentIndex]];
+        if (!node) break;
+        if (node.type === 'folder' && node.expanded) {
+          toggleExpanded(node.id);
+        } else if (node.parentId) {
+          selectAndReveal(node.parentId);
+        }
+        break;
+      }
+      case 'Enter': {
+        if (currentIndex < 0) break;
+        e.preventDefault();
+        const node = nodes[visibleIds[currentIndex]];
+        if (!node) break;
+        if (node.type === 'folder') {
+          toggleExpanded(node.id);
+        } else {
+          setActiveProduct(activeProductId === node.id ? null : node.id);
+        }
+        break;
+      }
+    }
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -139,8 +230,15 @@ export function ProductsPanel() {
       </div>
 
       {/* Tree view */}
-      <ScrollArea className="flex-1">
-        <div className="py-1">
+      <ScrollArea className="flex-1 min-h-0">
+        <div
+          ref={treeContainerRef}
+          role="tree"
+          tabIndex={0}
+          className="py-1 outline-none"
+          onKeyDown={handleTreeKeyDown}
+          onClickCapture={() => treeContainerRef.current?.focus()}
+        >
           {isLoading ? (
             <div className="flex flex-col items-center justify-center py-8 px-4">
               <Loader2 className="w-6 h-6 text-muted-foreground animate-spin mb-2" />

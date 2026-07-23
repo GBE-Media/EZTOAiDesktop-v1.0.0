@@ -6,6 +6,7 @@ import { useProductStore } from '@/store/productStore';
 import { useEditorStore } from '@/store/editorStore';
 import { useCatalogStore } from '@/store/catalogStore';
 import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
+import { getVisibleChildren } from '@/lib/productTree';
 import { toast } from 'sonner';
 import {
   ContextMenu,
@@ -53,11 +54,7 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
   
   const isActive = activeProductId === node.id;
   const isSelected = selectedNodeId === node.id;
-  const derivedChildren = node.type === 'folder' && node.children.length === 0
-    ? Object.values(nodes)
-        .filter((child) => child.parentId === node.id)
-        .map((child) => child.id)
-    : node.children;
+  const derivedChildren = getVisibleChildren(node, nodes);
   const hasChildren = node.type === 'folder' && derivedChildren.length > 0;
   // Only show measurement count if a document is active, and filter by document
   const measurementCount = activeDocument && node.type !== 'folder'
@@ -212,6 +209,7 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
       <ContextMenu>
         <ContextMenuTrigger>
           <div
+            data-node-id={node.id}
             className={cn(
               'flex items-center gap-1 px-2 py-1 cursor-pointer text-sm transition-colors group',
               isSelected && 'bg-primary/20',

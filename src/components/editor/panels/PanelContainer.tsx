@@ -1,5 +1,6 @@
 import { useState, ReactNode } from 'react';
 import { ChevronDown, ChevronRight, GripVertical, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface PanelContainerProps {
   title: string;
@@ -7,6 +8,7 @@ interface PanelContainerProps {
   children: ReactNode;
   defaultCollapsed?: boolean;
   onClose?: () => void;
+  className?: string;
 }
 
 export function PanelContainer({ 
@@ -14,12 +16,13 @@ export function PanelContainer({
   icon, 
   children, 
   defaultCollapsed = false,
-  onClose 
+  onClose,
+  className,
 }: PanelContainerProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
 
   return (
-    <div className="flex flex-col border-b border-panel-border bg-panel">
+    <div className={cn('flex flex-col border-b border-panel-border bg-panel', className)}>
       {/* Header */}
       <div 
         className="panel-header flex items-center gap-1 cursor-pointer select-none"

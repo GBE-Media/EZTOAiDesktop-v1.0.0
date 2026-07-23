@@ -213,6 +213,7 @@ export function EditorLayout() {
                 <PanelContainer 
                   title="Products" 
                   icon={<Package className="w-3 h-3" />}
+                  className="flex-1 min-h-0"
                 >
                   <div className="h-full">
                     <ProductsPanel />
