@@ -532,6 +532,8 @@ export async function chat(options: {
     currentPage?: number;
     selectedItems?: unknown[];
     previousMessages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+    markupsSummary?: string;
+    catalogSummary?: string;
   };
   imageBase64?: string;
 }): Promise<string> {
@@ -550,6 +552,8 @@ You have access to the user's PDF documents and can help with:
 
 ${options.context?.trade ? `Current trade focus: ${options.context.trade}` : ''}
 ${options.context?.currentPage ? `Current page: ${options.context.currentPage}` : ''}
+${options.context?.markupsSummary ? `\nExisting markups on the current page:\n${options.context.markupsSummary}` : ''}
+${options.context?.catalogSummary ? `\nUser's product/assembly catalog:\n${options.context.catalogSummary}` : ''}
 
 Be helpful, accurate, and reference specific codes when applicable.`,
     },

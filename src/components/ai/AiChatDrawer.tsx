@@ -37,6 +37,7 @@ import { AiToolbar } from './AiToolbar';
 import { AiSettingsDialog } from './AiSettingsDialog';
 import { getAIService } from '@/services/ai/aiService';
 import { chat as aiChat, runPipeline } from '@/services/ai/pipeline';
+import { summarizeCatalogForChat, summarizeMarkupsForChat } from '@/services/ai/contextSummary';
 import { renderPageForOcr } from '@/lib/pdfLoader';
 import { cn } from '@/lib/utils';
 import { capturePageCrop, createPageImageGenerator, getOptimalScale } from '@/services/ai/imageCapture';
@@ -113,8 +114,9 @@ export function AiChatDrawer() {
     aiCalibrationActive,
     aiCalibrationType,
     aiCalibrationSamples,
+    getMarkupsByPage,
   } = useCanvasStore();
-  const { nodes, rootIds, linkMeasurement } = useProductStore();
+  const { nodes, rootIds, activeProductId, linkMeasurement } = useProductStore();
   const { isLoading: productsLoading, error: productsError } = useProductSync();
   
   // Editor store for document info
@@ -358,12 +360,19 @@ export function AiChatDrawer() {
       }
       
       // Send to AI (chat-only)
+      const markupsSummary = activeDocId
+        ? summarizeMarkupsForChat(getMarkupsByPage(activeDocId), currentPage || 1)
+        : undefined;
+      const catalogSummary = summarizeCatalogForChat(nodes, rootIds, activeProductId);
+
       const response = await aiChat({
         message: content,
         context: {
           trade: selectedTrade,
           currentPage: currentPage,
           previousMessages,
+          markupsSummary,
+          catalogSummary,
         },
         imageBase64,
       });
@@ -409,6 +418,10 @@ export function AiChatDrawer() {
     documents,
     activeDocument,
     user,
+    getMarkupsByPage,
+    nodes,
+    rootIds,
+    activeProductId,
   ]);
   
   // Handle keyboard shortcut to open drawer
