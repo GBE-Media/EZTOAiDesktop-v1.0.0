@@ -1,5 +1,5 @@
 import type { Document } from './editor';
-import type { ProductNode } from './product';
+import type { LinkedMeasurement, ProductNode } from './product';
 
 export interface ProjectFile {
   version: string;
@@ -7,9 +7,16 @@ export interface ProjectFile {
   createdAt: string;
   modifiedAt: string;
   documents: ProjectDocument[];
-  products: {
+  // Legacy 1.0 catalog snapshot. Read-only compatibility for older projects.
+  products?: {
     nodes: Record<string, ProductNode>;
     rootIds: string[];
+  };
+  // Version 1.1+ stores only catalog references/snapshots used by this project.
+  catalog?: {
+    itemSnapshots: Record<string, ProductNode>;
+    measurementLinks: Record<string, LinkedMeasurement[]>;
+    activeItemId: string | null;
   };
   settings: ProjectSettings;
 }

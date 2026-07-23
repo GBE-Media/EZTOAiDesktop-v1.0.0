@@ -5,6 +5,7 @@ import { useProductStore } from '@/store/productStore';
 import { loadPDF, getPageDimensions } from '@/lib/pdfLoader';
 import { toast } from 'sonner';
 import type { ProjectFile } from '@/types/project';
+import type { LinkedMeasurement, ProductNode } from '@/types/product';
 
 export function useProjectOpen() {
   const { addDocument, setActiveDocument, setScale, setScaleUnit, toggleSnap, toggleGrid, snapEnabled, gridEnabled } = useEditorStore();
@@ -42,22 +43,66 @@ export function useProjectOpen() {
         }
       }
 
-      // Restore products (replace existing), remapping document IDs if needed
-      if (projectData.products) {
-        const remappedNodes: Record<string, any> = {};
-        Object.entries(projectData.products.nodes).forEach(([id, node]) => {
-          if (node.type === 'product') {
-            const measurements = (node.measurements || []).map((m: any) => ({
-              ...m,
-              documentId: docIdMap.get(m.documentId) || m.documentId,
-            }));
-            remappedNodes[id] = { ...node, measurements };
-          } else {
-            remappedNodes[id] = node;
-          }
-        });
+      // Restore only project measurement links. Catalog data remains sourced
+      // from IndexedDB/Supabase, so opening a project can never overwrite it.
+      const currentProductState = useProductStore.getState();
+      const mergedNodes: Record<string, ProductNode> = { ...currentProductState.nodes };
+      const mergedRootIds = [...currentProductState.rootIds];
+      const detachedFolderId = `project-snapshots:${projectData.name}`;
+      let hasDetachedItems = false;
 
-        loadFromDatabase(remappedNodes, projectData.products.rootIds);
+      const mergeProjectItem = (id: string, snapshot: ProductNode, measurements: LinkedMeasurement[]) => {
+        const remappedMeasurements = measurements.map((measurement) => ({
+          ...measurement,
+          documentId: docIdMap.get(measurement.documentId) || measurement.documentId,
+        }));
+        const liveItem = mergedNodes[id];
+        if (liveItem && liveItem.type !== 'folder') {
+          mergedNodes[id] = { ...liveItem, measurements: remappedMeasurements };
+          return;
+        }
+        hasDetachedItems = true;
+        mergedNodes[id] = {
+          ...snapshot,
+          id,
+          parentId: detachedFolderId,
+          children: [],
+          measurements: remappedMeasurements,
+          readOnly: true,
+        };
+      };
+
+      if (projectData.catalog) {
+        Object.entries(projectData.catalog.itemSnapshots).forEach(([id, snapshot]) => {
+          mergeProjectItem(id, snapshot, projectData.catalog?.measurementLinks[id] || []);
+        });
+      } else if (projectData.products) {
+        // Version 1.0 compatibility: import embedded items as detached project
+        // snapshots instead of treating them as shared catalog changes.
+        Object.entries(projectData.products.nodes).forEach(([id, node]) => {
+          if (node.type !== 'folder') mergeProjectItem(id, node, node.measurements || []);
+        });
+      }
+
+      if (hasDetachedItems) {
+        const detachedChildren = Object.values(mergedNodes)
+          .filter((node) => node.parentId === detachedFolderId)
+          .map((node) => node.id);
+        mergedNodes[detachedFolderId] = {
+          id: detachedFolderId,
+          name: `Project snapshots — ${projectData.name}`,
+          type: 'folder',
+          parentId: null,
+          children: detachedChildren,
+          expanded: true,
+          readOnly: true,
+        };
+        if (!mergedRootIds.includes(detachedFolderId)) mergedRootIds.push(detachedFolderId);
+      }
+
+      loadFromDatabase(mergedNodes, mergedRootIds);
+      if (projectData.catalog?.activeItemId && mergedNodes[projectData.catalog.activeItemId]) {
+        useProductStore.getState().setActiveProduct(projectData.catalog.activeItemId);
       }
 
       // Restore documents (reuse stored IDs so product measurements stay linked)

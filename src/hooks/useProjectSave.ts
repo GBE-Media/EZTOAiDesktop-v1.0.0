@@ -5,8 +5,9 @@ import { useProductStore } from '@/store/productStore';
 import { exportPdfWithMarkups } from '@/lib/pdfExport';
 import { toast } from 'sonner';
 import type { ProjectFile, ProjectDocument, SaveProjectResult } from '@/types/project';
+import type { LinkedMeasurement, ProductNode } from '@/types/product';
 
-const PROJECT_VERSION = '1.0.0';
+const PROJECT_VERSION = '1.1.0';
 const PROJECT_EXTENSION = 'bidveraai';
 
 export function useProjectSave() {
@@ -89,30 +90,27 @@ export function useProjectSave() {
     const projectDocs = await exportDocumentsData();
     const docIdSet = new Set(projectDocs.map((doc) => doc.id));
     
-    // Get the latest product state directly from the store
+    // Save only catalog items referenced by this project. The global catalog
+    // lives in IndexedDB/Supabase and must never be replaced by a project file.
     const productState = useProductStore.getState();
     const currentNodes = productState.nodes;
-    const currentRootIds = productState.rootIds;
-
-    // Filter measurements to only those tied to documents in this project
-    const sanitizedNodes: Record<string, any> = {};
-    Object.entries(currentNodes).forEach(([id, node]: [string, any]) => {
-      if (node.type === 'product') {
-        sanitizedNodes[id] = {
-          ...node,
-          measurements: (node.measurements || []).filter((m: any) => docIdSet.has(m.documentId)),
-        };
-      } else {
-        sanitizedNodes[id] = node;
-      }
+    const itemSnapshots: Record<string, ProductNode> = {};
+    const measurementLinks: Record<string, LinkedMeasurement[]> = {};
+    Object.entries(currentNodes).forEach(([id, node]) => {
+      if (node.type === 'folder') return;
+      const projectMeasurements = (node.measurements || []).filter((measurement) =>
+        docIdSet.has(measurement.documentId),
+      );
+      if (!projectMeasurements.length) return;
+      itemSnapshots[id] = { ...node, measurements: [] };
+      measurementLinks[id] = projectMeasurements;
     });
     
     console.log('[PROJECT-SAVE] Saving products:', {
-      nodeCount: Object.keys(currentNodes).length,
-      rootIdCount: currentRootIds.length,
-      products: Object.values(currentNodes).filter((n: any) => n.type === 'product').map((n: any) => ({
-        name: n.name,
-        measurementCount: n.measurements?.length || 0,
+      itemCount: Object.keys(itemSnapshots).length,
+      products: Object.values(currentNodes).filter((node) => node.type !== 'folder').map((node) => ({
+        name: node.name,
+        measurementCount: node.measurements?.length || 0,
       })),
     });
 
@@ -122,9 +120,10 @@ export function useProjectSave() {
       createdAt: new Date().toISOString(),
       modifiedAt: new Date().toISOString(),
       documents: projectDocs,
-      products: {
-        nodes: sanitizedNodes,
-        rootIds: currentRootIds,
+      catalog: {
+        itemSnapshots,
+        measurementLinks,
+        activeItemId: productState.activeProductId,
       },
       settings: {
         scale,

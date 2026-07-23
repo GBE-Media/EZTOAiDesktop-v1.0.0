@@ -1,9 +1,12 @@
 import { useState } from 'react';
-import { ChevronRight, ChevronDown, Folder, FolderOpen, Package, Check, MoreHorizontal, Pencil, Trash2, FolderPlus, PackagePlus } from 'lucide-react';
+import { ChevronRight, ChevronDown, Folder, FolderOpen, Package, Check, MoreHorizontal, Pencil, Trash2, FolderPlus, PackagePlus, Boxes } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ProductNode } from '@/types/product';
 import { useProductStore } from '@/store/productStore';
 import { useEditorStore } from '@/store/editorStore';
+import { useCatalogStore } from '@/store/catalogStore';
+import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
+import { toast } from 'sonner';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -25,9 +28,10 @@ interface ProductTreeItemProps {
   onEdit: (node: ProductNode) => void;
   onNewFolder: (parentId: string | null) => void;
   onNewProduct: (parentId: string | null) => void;
+  onNewAssembly: (parentId: string | null) => void;
 }
 
-export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct }: ProductTreeItemProps) {
+export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct, onNewAssembly }: ProductTreeItemProps) {
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(node.name);
   
@@ -41,6 +45,8 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
     renameNode,
     deleteNode,
   } = useProductStore();
+  const { products, categories, assemblies } = useCatalogStore();
+  const { queueMutation } = useCatalogSync();
 
   // Use active document to show per-PDF measurement counts
   const activeDocument = useEditorStore((state) => state.activeDocument);
@@ -54,7 +60,7 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
     : node.children;
   const hasChildren = node.type === 'folder' && derivedChildren.length > 0;
   // Only show measurement count if a document is active, and filter by document
-  const measurementCount = activeDocument && node.type === 'product'
+  const measurementCount = activeDocument && node.type !== 'folder'
     ? (node.measurements || []).filter((m) => m.documentId === activeDocument).length
     : 0;
 
@@ -65,7 +71,7 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
 
   const handleDoubleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (node.type === 'product') {
+    if (node.type !== 'folder') {
       setActiveProduct(isActive ? null : node.id);
     } else {
       toggleExpanded(node.id);
@@ -77,18 +83,87 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
     toggleExpanded(node.id);
   };
 
-  const handleRenameSubmit = () => {
+  const handleRenameSubmit = async () => {
     if (renameValue.trim() && renameValue !== node.name) {
-      renameNode(node.id, renameValue.trim());
+      try {
+        if (node.type === 'product' && products[node.id]) {
+          const row = products[node.id];
+          await queueMutation('product_catalog', 'update', { ...row, name: renameValue.trim() }, row.updated_at);
+        } else if (node.type === 'assembly' && assemblies[node.id]) {
+          const row = assemblies[node.id];
+          await queueMutation('assemblies', 'update', { ...row, name: renameValue.trim() }, row.updated_at);
+        } else if (node.type === 'folder' && node.catalogCategoryId && categories[node.catalogCategoryId]) {
+          const row = categories[node.catalogCategoryId];
+          const oldPath = row.path;
+          const parts = row.path.split('/');
+          parts[parts.length - 1] = renameValue.trim();
+          const newPath = parts.join('/');
+          await queueMutation('product_categories', 'update', { ...row, path: newPath }, row.updated_at);
+          for (const category of Object.values(categories)) {
+            if (category.id !== row.id && category.path.startsWith(`${oldPath}/`)) {
+              await queueMutation(
+                'product_categories',
+                'update',
+                { ...category, path: `${newPath}${category.path.slice(oldPath.length)}` },
+                category.updated_at,
+              );
+            }
+          }
+          for (const product of Object.values(products)) {
+            if (product.category === oldPath || product.category?.startsWith(`${oldPath}/`)) {
+              await queueMutation(
+                'product_catalog',
+                'update',
+                { ...product, category: `${newPath}${product.category.slice(oldPath.length)}` },
+                product.updated_at,
+              );
+            }
+          }
+          for (const assembly of Object.values(assemblies)) {
+            if (assembly.category === oldPath || assembly.category?.startsWith(`${oldPath}/`)) {
+              await queueMutation(
+                'assemblies',
+                'update',
+                { ...assembly, category: `${newPath}${assembly.category.slice(oldPath.length)}` },
+                assembly.updated_at,
+              );
+            }
+          }
+        } else {
+          renameNode(node.id, renameValue.trim());
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Unable to rename item');
+      }
     }
     setIsRenaming(false);
   };
 
-  const handleDelete = () => {
-    if (confirm(`Delete "${node.name}"${hasChildren ? ' and all its contents' : ''}?`)) {
-      deleteNode(node.id);
+  const handleDelete = async () => {
+    if (node.type === 'folder' && hasChildren) {
+      toast.error('Move or delete the items in this category before deleting it.');
+      return;
+    }
+    if (confirm(`Delete "${node.name}"?`)) {
+      try {
+        if (node.type === 'product' && products[node.id]) {
+          const row = products[node.id];
+          await queueMutation('product_catalog', 'delete', row, row.updated_at);
+        } else if (node.type === 'assembly' && assemblies[node.id]) {
+          const row = assemblies[node.id];
+          await queueMutation('assemblies', 'delete', row, row.updated_at);
+        } else if (node.type === 'folder' && node.catalogCategoryId && categories[node.catalogCategoryId]) {
+          const row = categories[node.catalogCategoryId];
+          await queueMutation('product_categories', 'delete', row, row.updated_at);
+        } else {
+          deleteNode(node.id);
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Unable to delete item');
+      }
     }
   };
+  const canEdit = !node.readOnly && (node.type !== 'folder' || Boolean(node.catalogCategoryId));
 
   const contextMenuContent = (
     <>
@@ -102,10 +177,14 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
             <PackagePlus className="w-4 h-4 mr-2" />
             New Product
           </ContextMenuItem>
+          <ContextMenuItem onClick={() => onNewAssembly(node.id)}>
+            <Boxes className="w-4 h-4 mr-2" />
+            New Assembly
+          </ContextMenuItem>
           <ContextMenuSeparator />
         </>
       )}
-      {node.type === 'product' && (
+      {node.type !== 'folder' && (
         <>
           <ContextMenuItem onClick={() => setActiveProduct(isActive ? null : node.id)}>
             <Check className={cn('w-4 h-4 mr-2', !isActive && 'opacity-0')} />
@@ -114,14 +193,14 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
           <ContextMenuSeparator />
         </>
       )}
-      <ContextMenuItem onClick={() => {
+      <ContextMenuItem disabled={!canEdit} onClick={() => {
         setIsRenaming(true);
         setRenameValue(node.name);
       }}>
         <Pencil className="w-4 h-4 mr-2" />
         Rename
       </ContextMenuItem>
-      <ContextMenuItem onClick={handleDelete} className="text-destructive">
+      <ContextMenuItem disabled={!canEdit} onClick={() => void handleDelete()} className="text-destructive">
         <Trash2 className="w-4 h-4 mr-2" />
         Delete
       </ContextMenuItem>
@@ -167,6 +246,8 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
               ) : (
                 <Folder className="w-4 h-4 text-yellow-500" />
               )
+            ) : node.type === 'assembly' ? (
+              <Boxes className={cn('w-4 h-4', isActive ? 'text-status-success' : 'text-violet-400')} />
             ) : (
               <Package className={cn('w-4 h-4', isActive ? 'text-status-success' : 'text-primary')} />
             )}
@@ -177,9 +258,9 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
                 type="text"
                 value={renameValue}
                 onChange={(e) => setRenameValue(e.target.value)}
-                onBlur={handleRenameSubmit}
+                onBlur={() => void handleRenameSubmit()}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleRenameSubmit();
+                  if (e.key === 'Enter') void handleRenameSubmit();
                   if (e.key === 'Escape') setIsRenaming(false);
                 }}
                 className="flex-1 px-1 py-0 text-sm bg-input border border-border rounded focus:outline-none focus:ring-1 focus:ring-ring"
@@ -222,10 +303,14 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
                       <PackagePlus className="w-4 h-4 mr-2" />
                       New Product
                     </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onNewAssembly(node.id)}>
+                      <Boxes className="w-4 h-4 mr-2" />
+                      New Assembly
+                    </DropdownMenuItem>
                     <DropdownMenuSeparator />
                   </>
                 )}
-                {node.type === 'product' && (
+                {node.type !== 'folder' && (
                   <>
                     <DropdownMenuItem onClick={() => setActiveProduct(isActive ? null : node.id)}>
                       <Check className={cn('w-4 h-4 mr-2', !isActive && 'opacity-0')} />
@@ -234,14 +319,14 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
                     <DropdownMenuSeparator />
                   </>
                 )}
-                <DropdownMenuItem onClick={() => {
+                <DropdownMenuItem disabled={!canEdit} onClick={() => {
                   setIsRenaming(true);
                   setRenameValue(node.name);
                 }}>
                   <Pencil className="w-4 h-4 mr-2" />
                   Rename
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleDelete} className="text-destructive">
+                <DropdownMenuItem disabled={!canEdit} onClick={() => void handleDelete()} className="text-destructive">
                   <Trash2 className="w-4 h-4 mr-2" />
                   Delete
                 </DropdownMenuItem>
@@ -268,6 +353,7 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
                 onEdit={onEdit}
                 onNewFolder={onNewFolder}
                 onNewProduct={onNewProduct}
+                onNewAssembly={onNewAssembly}
               />
             );
           })}

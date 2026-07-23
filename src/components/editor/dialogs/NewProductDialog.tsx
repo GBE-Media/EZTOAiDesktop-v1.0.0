@@ -1,12 +1,15 @@
-import { useState, useEffect } from 'react';
-import { Folder, Package } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Boxes, Folder, Package } from 'lucide-react';
+import { toast } from 'sonner';
+import { useAuth } from '@/hooks/useAuth';
 import { useProductStore } from '@/store/productStore';
+import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,80 +18,122 @@ import { Label } from '@/components/ui/label';
 interface NewProductDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  type: 'folder' | 'product';
+  type: 'folder' | 'product' | 'assembly';
   parentId: string | null;
 }
 
 export function NewProductDialog({ open, onOpenChange, type, parentId }: NewProductDialogProps) {
   const [name, setName] = useState('');
-  const { addFolder, addProduct, nodes, setSelectedNode, setActiveProduct } = useProductStore();
-
+  const [saving, setSaving] = useState(false);
+  const { user } = useAuth();
+  const { queueMutation } = useCatalogSync();
+  const { nodes, setSelectedNode, setActiveProduct } = useProductStore();
   const parentNode = parentId ? nodes[parentId] : null;
+  const parentPath = parentNode?.categoryPath || '';
 
   useEffect(() => {
-    if (open) {
-      setName('');
-    }
+    if (open) setName('');
   }, [open]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!name.trim()) return;
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!name.trim() || !user) return;
 
-    let newId: string;
-    if (type === 'folder') {
-      newId = addFolder(parentId, name.trim());
-    } else {
-      newId = addProduct(parentId, name.trim());
-      // Optionally set the new product as active
-      setActiveProduct(newId);
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    setSaving(true);
+    try {
+      if (type === 'folder') {
+        const path = parentPath ? `${parentPath}/${name.trim()}` : name.trim();
+        await queueMutation('product_categories', 'insert', {
+          id,
+          user_id: user.id,
+          path,
+          sort_order: 0,
+          created_at: now,
+          updated_at: now,
+        });
+      } else if (type === 'product') {
+        await queueMutation('product_catalog', 'insert', {
+          id,
+          user_id: user.id,
+          name: name.trim(),
+          description: '',
+          category: parentPath || null,
+          unit_of_measure: 'each',
+          unit_price: 0,
+          labor_cost: 0,
+          material_cost: 0,
+          supplier: null,
+          sku: null,
+          notes: null,
+          created_at: now,
+          updated_at: now,
+          organization_id: null,
+          is_org_catalog: false,
+        });
+        setActiveProduct(id);
+      } else {
+        await queueMutation('assemblies', 'insert', {
+          id,
+          user_id: user.id,
+          name: name.trim(),
+          description: '',
+          category: parentPath || null,
+          unit_of_measure: 'each',
+          sku: null,
+          notes: null,
+          created_at: now,
+          updated_at: now,
+        });
+        setActiveProduct(id);
+      }
+      setSelectedNode(id);
+      onOpenChange(false);
+      toast.success(`${type === 'folder' ? 'Category' : type === 'product' ? 'Product' : 'Assembly'} created`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Unable to create catalog item');
+    } finally {
+      setSaving(false);
     }
-    
-    setSelectedNode(newId);
-    onOpenChange(false);
   };
+
+  const label = type === 'folder' ? 'Category' : type === 'product' ? 'Product' : 'Assembly';
+  const Icon = type === 'folder' ? Folder : type === 'product' ? Package : Boxes;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[400px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            {type === 'folder' ? (
-              <Folder className="w-5 h-5 text-yellow-500" />
-            ) : (
-              <Package className="w-5 h-5 text-primary" />
-            )}
-            New {type === 'folder' ? 'Folder' : 'Product'}
+            <Icon className="w-5 h-5 text-primary" />
+            New {label}
           </DialogTitle>
         </DialogHeader>
-
         <form onSubmit={handleSubmit}>
           <div className="space-y-4 py-4">
-            {parentNode && (
+            {parentPath && (
               <div className="text-xs text-muted-foreground">
-                Creating in: <span className="font-medium">{parentNode.name}</span>
+                Creating in: <span className="font-medium">{parentPath}</span>
               </div>
             )}
-
             <div className="space-y-2">
-              <Label htmlFor="name">Name</Label>
+              <Label htmlFor="catalog-name">Name</Label>
               <Input
-                id="name"
+                id="catalog-name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={type === 'folder' ? 'e.g., Electrical' : 'e.g., EM1 Exit Light'}
+                onChange={(event) => setName(event.target.value)}
+                placeholder={type === 'folder' ? 'e.g., Lighting/Interior' : `New ${label.toLowerCase()}`}
                 autoFocus
               />
             </div>
           </div>
-
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={!name.trim()}>
-              Create {type === 'folder' ? 'Folder' : 'Product'}
+            <Button type="submit" disabled={!name.trim() || saving}>
+              {saving ? 'Saving…' : `Create ${label}`}
             </Button>
           </DialogFooter>
         </form>

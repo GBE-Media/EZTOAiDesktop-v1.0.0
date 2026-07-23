@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
-import { X, Bot, Sparkles, AlertCircle, Loader2, FolderPlus, PackagePlus } from 'lucide-react';
+import { X, Bot, Sparkles, AlertCircle, Loader2, FolderPlus, PackagePlus, Boxes } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -44,6 +44,7 @@ import { fetchTrainingContext } from '@/services/ai/trainingService';
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
 import type { BlueprintAnalysisResult, CanvasPlacement, PlacementMarkup } from '@/services/ai/providers/types';
 import { useAuth } from '@/hooks/useAuth';
+import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
 
 export function AiChatDrawer() {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -68,7 +69,7 @@ export function AiChatDrawer() {
   const [visibleOnly, setVisibleOnly] = useState(false);
   const [takeoffError, setTakeoffError] = useState<string | null>(null);
   const [calibrationTypeInput, setCalibrationTypeInput] = useState('');
-  const [createNodeType, setCreateNodeType] = useState<'product' | 'folder'>('product');
+  const [createNodeType, setCreateNodeType] = useState<'product' | 'folder' | 'assembly'>('product');
   const [createNodeName, setCreateNodeName] = useState('');
   const [createNodeParentId, setCreateNodeParentId] = useState<string | null>(null);
   
@@ -89,6 +90,7 @@ export function AiChatDrawer() {
   } = useAIChatStore();
 
   const { user } = useAuth();
+  const { queueMutation } = useCatalogSync();
   
   // Settings store
   const { initialize: initSettings, isInitialized } = useAISettingsStore();
@@ -112,7 +114,7 @@ export function AiChatDrawer() {
     aiCalibrationType,
     aiCalibrationSamples,
   } = useCanvasStore();
-  const { nodes, rootIds, addProduct, addFolder, linkMeasurement } = useProductStore();
+  const { nodes, rootIds, linkMeasurement } = useProductStore();
   const { isLoading: productsLoading, error: productsError } = useProductSync();
   
   // Editor store for document info
@@ -434,7 +436,7 @@ export function AiChatDrawer() {
     : 0;
   const folderOptions = useMemo(() => buildFolderOptions(nodes, rootIds), [nodes, rootIds]);
   const productOptions = useMemo(
-    () => Object.values(nodes).filter((node) => node.type === 'product'),
+    () => Object.values(nodes).filter((node) => node.type !== 'folder'),
     [nodes]
   );
   const hasProducts = productOptions.length > 0;
@@ -465,16 +467,56 @@ export function AiChatDrawer() {
     handleSendMessage(prompt, undefined, { forcePipeline: true, scope: resolvedScope, highAccuracy, visibleOnly });
   }, [handleSendMessage, selectionAvailable, setAiSelectionActive, takeoffPrompt, takeoffScope, viewportAvailable, highAccuracy, visibleOnly]);
 
-  const handleCreateNode = useCallback(() => {
+  const handleCreateNode = useCallback(async () => {
     const name = createNodeName.trim();
-    if (!name) return;
+    if (!name || !user) return;
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const category = createNodeParentId ? nodes[createNodeParentId]?.categoryPath || '' : '';
     if (createNodeType === 'folder') {
-      addFolder(createNodeParentId, name);
+      await queueMutation('product_categories', 'insert', {
+        id,
+        user_id: user.id,
+        path: category ? `${category}/${name}` : name,
+        sort_order: 0,
+        created_at: now,
+        updated_at: now,
+      });
+    } else if (createNodeType === 'assembly') {
+      await queueMutation('assemblies', 'insert', {
+        id,
+        user_id: user.id,
+        name,
+        description: '',
+        category: category || null,
+        unit_of_measure: 'each',
+        sku: null,
+        notes: null,
+        created_at: now,
+        updated_at: now,
+      });
     } else {
-      addProduct(createNodeParentId, name);
+      await queueMutation('product_catalog', 'insert', {
+        id,
+        user_id: user.id,
+        name,
+        description: '',
+        category: category || null,
+        unit_of_measure: 'each',
+        unit_price: 0,
+        labor_cost: 0,
+        material_cost: 0,
+        supplier: null,
+        sku: null,
+        notes: null,
+        created_at: now,
+        updated_at: now,
+        organization_id: null,
+        is_org_catalog: false,
+      });
     }
     setCreateNodeName('');
-  }, [addFolder, addProduct, createNodeName, createNodeParentId, createNodeType]);
+  }, [createNodeName, createNodeParentId, createNodeType, nodes, queueMutation, user]);
 
   const applyPendingMarkups = useCallback(() => {
     if (!pendingMarkups.length) {
@@ -924,20 +966,21 @@ export function AiChatDrawer() {
             )}
             <div className="rounded-md border border-border p-3 space-y-2">
               <div className="flex items-center gap-2 text-xs font-medium">
-                {createNodeType === 'product' ? <PackagePlus className="w-4 h-4" /> : <FolderPlus className="w-4 h-4" />}
-                Create {createNodeType === 'product' ? 'Product' : 'Folder'}
+                {createNodeType === 'product' ? <PackagePlus className="w-4 h-4" /> : createNodeType === 'assembly' ? <Boxes className="w-4 h-4" /> : <FolderPlus className="w-4 h-4" />}
+                Create {createNodeType === 'product' ? 'Product' : createNodeType === 'assembly' ? 'Assembly' : 'Category'}
               </div>
               <div className="grid grid-cols-1 gap-2">
                 <Select
                   value={createNodeType}
-                  onValueChange={(value) => setCreateNodeType(value as 'product' | 'folder')}
+                  onValueChange={(value) => setCreateNodeType(value as 'product' | 'folder' | 'assembly')}
                 >
                   <SelectTrigger className="h-8 text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="product">Product</SelectItem>
-                    <SelectItem value="folder">Folder</SelectItem>
+                    <SelectItem value="assembly">Assembly</SelectItem>
+                    <SelectItem value="folder">Category</SelectItem>
                   </SelectContent>
                 </Select>
                 <Select
@@ -959,14 +1002,14 @@ export function AiChatDrawer() {
                 <Input
                   value={createNodeName}
                   onChange={(event) => setCreateNodeName(event.target.value)}
-                  placeholder={createNodeType === 'product' ? 'Product name' : 'Folder name'}
+                  placeholder={createNodeType === 'product' ? 'Product name' : createNodeType === 'assembly' ? 'Assembly name' : 'Category name'}
                   className="h-8 text-xs"
                 />
                 <Button
                   type="button"
                   variant="outline"
                   className="h-8 text-xs"
-                  onClick={handleCreateNode}
+                  onClick={() => void handleCreateNode()}
                   disabled={!createNodeName.trim()}
                 >
                   Create

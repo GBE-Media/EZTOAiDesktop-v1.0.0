@@ -2,16 +2,26 @@
 export interface ProductNode {
   id: string;
   name: string;
-  type: 'folder' | 'product';
+  type: 'folder' | 'product' | 'assembly';
   parentId: string | null;
   children: string[]; // Child node IDs for folders
   expanded: boolean;
   
   // Only for type: 'product'
   description?: string;
-  unitOfMeasure?: 'length' | 'area' | 'count' | 'each';
+  unitOfMeasure?: string;
   components?: ProductComponent[];
   measurements?: LinkedMeasurement[];
+  categoryPath?: string | null;
+  updatedAt?: string;
+  readOnly?: boolean;
+  unitPrice?: number;
+  laborCost?: number;
+  materialCost?: number;
+  supplier?: string | null;
+  sku?: string | null;
+  notes?: string | null;
+  catalogCategoryId?: string;
 }
 
 export interface ProductComponent {
@@ -20,6 +30,10 @@ export interface ProductComponent {
   quantity: number;
   unit: string;
   notes?: string;
+  componentType?: 'product' | 'labor';
+  catalogProductId?: string | null;
+  laborRate?: number;
+  sortOrder?: number;
 }
 
 export interface LinkedMeasurement {

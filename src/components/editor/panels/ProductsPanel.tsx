@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, FolderPlus, PackagePlus, Package, Upload, Loader2 } from 'lucide-react';
+import { Search, FolderPlus, PackagePlus, Package, Upload, Loader2, RefreshCw, Boxes, WifiOff } from 'lucide-react';
 import { ExportProductsDialog } from '../dialogs/ExportProductsDialog';
 import { useProductStore } from '@/store/productStore';
 import { useEditorStore } from '@/store/editorStore';
@@ -10,11 +10,13 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useProductSync } from '@/hooks/useProductSync';
 import { useAuth } from '@/hooks/useAuth';
+import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
+import type { ProductNode } from '@/types/product';
 
 export function ProductsPanel() {
   const [searchQuery, setSearchQuery] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [dialogType, setDialogType] = useState<'folder' | 'product'>('folder');
+  const [dialogType, setDialogType] = useState<'folder' | 'product' | 'assembly'>('folder');
   const [dialogParentId, setDialogParentId] = useState<string | null>(null);
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
 
@@ -24,6 +26,7 @@ export function ProductsPanel() {
     ? documents.find((d) => d.id === activeDocument)?.name || 'Unknown Document'
     : null;
   const { isLoading, error } = useProductSync();
+  const { refreshCatalog, isSyncing, isOnline, pendingCount, lastSyncAt } = useCatalogSync();
   const { user } = useAuth();
 
   const handleNewFolder = (parentId: string | null) => {
@@ -38,7 +41,13 @@ export function ProductsPanel() {
     setDialogOpen(true);
   };
 
-  const handleEdit = (node: any) => {
+  const handleNewAssembly = (parentId: string | null) => {
+    setDialogType('assembly');
+    setDialogParentId(parentId);
+    setDialogOpen(true);
+  };
+
+  const handleEdit = (node: ProductNode) => {
     setSelectedNode(node.id);
   };
 
@@ -87,7 +96,7 @@ export function ProductsPanel() {
             onClick={() => handleNewFolder(null)}
           >
             <FolderPlus className="w-3.5 h-3.5 mr-1" />
-            Folder
+            Category
           </Button>
           <Button
             variant="outline"
@@ -97,6 +106,34 @@ export function ProductsPanel() {
           >
             <PackagePlus className="w-3.5 h-3.5 mr-1" />
             Product
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="flex-1 h-7 text-xs"
+            onClick={() => handleNewAssembly(null)}
+          >
+            <Boxes className="w-3.5 h-3.5 mr-1" />
+            Assembly
+          </Button>
+        </div>
+        <div className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground">
+          <span className="truncate">
+            {!isOnline ? (
+              <><WifiOff className="inline w-3 h-3 mr-1" />Offline</>
+            ) : pendingCount ? `${pendingCount} change${pendingCount === 1 ? '' : 's'} pending` :
+              lastSyncAt ? `Synced ${new Date(lastSyncAt).toLocaleTimeString()}` : 'Not synced'}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[10px]"
+            disabled={isSyncing || !user}
+            onClick={() => void refreshCatalog()}
+            title="Refresh Catalog"
+          >
+            <RefreshCw className={`w-3 h-3 mr-1 ${isSyncing ? 'animate-spin' : ''}`} />
+            Refresh
           </Button>
         </div>
       </div>
@@ -134,6 +171,7 @@ export function ProductsPanel() {
                   onEdit={handleEdit}
                   onNewFolder={handleNewFolder}
                   onNewProduct={handleNewProduct}
+                  onNewAssembly={handleNewAssembly}
                 />
               );
             })
@@ -142,7 +180,7 @@ export function ProductsPanel() {
               <Package className="w-10 h-10 text-muted-foreground/50 mb-3" />
               <p className="text-sm text-muted-foreground mb-1">No products yet</p>
               <p className="text-xs text-muted-foreground/70 mb-4">
-                Create folders and products to organize your takeoff
+                Create categories, products, and assemblies to organize your takeoff
               </p>
               <div className="flex gap-2">
                 <Button
@@ -152,7 +190,7 @@ export function ProductsPanel() {
                   onClick={() => handleNewFolder(null)}
                 >
                   <FolderPlus className="w-3.5 h-3.5 mr-1" />
-                  New Folder
+                  New Category
                 </Button>
               </div>
             </div>

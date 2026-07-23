@@ -28,7 +28,7 @@ interface ProductStore {
   
   // Product-specific actions
   updateProductDescription: (id: string, description: string) => void;
-  updateProductUnitOfMeasure: (id: string, unit: 'length' | 'area' | 'count' | 'each') => void;
+  updateProductUnitOfMeasure: (id: string, unit: string) => void;
   addComponent: (productId: string, component: Omit<ProductComponent, 'id'>) => void;
   updateComponent: (productId: string, componentId: string, updates: Partial<ProductComponent>) => void;
   deleteComponent: (productId: string, componentId: string) => void;
@@ -80,7 +80,7 @@ export const useProductStore = create<ProductStore>()(
       const clearedNodes: Record<string, ProductNode> = {};
       
       Object.entries(state.nodes).forEach(([id, node]) => {
-        if (node.type === 'product') {
+        if (node.type === 'product' || node.type === 'assembly') {
           // Clear measurements but keep everything else
           clearedNodes[id] = {
             ...node,
@@ -535,7 +535,7 @@ export const useProductStore = create<ProductStore>()(
         
         // Only export products that have measurements (footages, areas, or counts applied)
         const products: ExportProduct[] = Object.values(nodes)
-          .filter((node) => node.type === 'product' && (node.measurements?.length || 0) > 0)
+          .filter((node) => node.type !== 'folder' && (node.measurements?.length || 0) > 0)
           .map((node) => {
             const measurements = node.measurements || [];
             
