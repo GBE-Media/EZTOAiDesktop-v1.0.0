@@ -16,6 +16,9 @@ Var CreateDesktopShortcutSelection
   StrCpy $CreateDesktopShortcutSelection "1"
 !macroend
 
+; Custom pages are only used by the installer. electron-builder compiles this
+; include again for its temporary uninstaller, where page callbacks are unused.
+!ifndef BUILD_UNINSTALLER
 !macro customPageAfterChangeDir
   Page custom DesktopShortcutPageCreate DesktopShortcutPageLeave
 !macroend
@@ -49,6 +52,7 @@ Function DesktopShortcutPageLeave
     StrCpy $CreateDesktopShortcutSelection "0"
   ${EndIf}
 FunctionEnd
+!endif
 
 !macro customInstall
   ${ifNot} ${isUpdated}
