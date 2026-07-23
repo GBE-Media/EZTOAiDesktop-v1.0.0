@@ -4,21 +4,29 @@
 !include "nsDialogs.nsh"
 !include "LogicLib.nsh"
 
-Var DesktopShortcutCheckbox
-Var CreateDesktopShortcutSelection
-
 !macro customHeader
   ; Custom header - no additional configuration needed
 !macroend
+
+; electron-builder reuses this same include file to compile a temporary,
+; standalone uninstaller (with BUILD_UNINSTALLER defined) before embedding it
+; into the real installer. In that pass, none of the macros below are ever
+; inserted by electron-builder's own templates (customInit/customInstall are
+; only invoked outside BUILD_UNINSTALLER, and customPageAfterChangeDir is only
+; used by the installer UI). Any Var declared for their exclusive use is
+; therefore left unreferenced during that pass, which NSIS reports as
+; "warning 6001" - and this project's build config treats warnings as fatal
+; errors. Guard everything installer-only behind !ifndef BUILD_UNINSTALLER so
+; the uninstaller-only compile never sees these unused variables.
+!ifndef BUILD_UNINSTALLER
+Var DesktopShortcutCheckbox
+Var CreateDesktopShortcutSelection
 
 !macro customInit
   ; Default to checked unless user opts out.
   StrCpy $CreateDesktopShortcutSelection "1"
 !macroend
 
-; Custom pages are only used by the installer. electron-builder compiles this
-; include again for its temporary uninstaller, where page callbacks are unused.
-!ifndef BUILD_UNINSTALLER
 !macro customPageAfterChangeDir
   Page custom DesktopShortcutPageCreate DesktopShortcutPageLeave
 !macroend
@@ -52,7 +60,6 @@ Function DesktopShortcutPageLeave
     StrCpy $CreateDesktopShortcutSelection "0"
   ${EndIf}
 FunctionEnd
-!endif
 
 !macro customInstall
   ${ifNot} ${isUpdated}
@@ -61,3 +68,4 @@ FunctionEnd
     ${EndIf}
   ${endIf}
 !macroend
+!endif
