@@ -5,6 +5,14 @@ on:
     branches:
       - main
 
+# A push made by this workflow's own version-bump commit uses the default
+# GITHUB_TOKEN, which GitHub never re-triggers workflow runs for - but cancel
+# any older in-flight run for the branch anyway so rapid test pushes don't
+# pile up or race each other.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -26,9 +34,32 @@ jobs:
             gh release delete "$tag" -y --cleanup-tag || true
           done
 
+  # Every push to main gets its own patch version bump, so a new GitHub
+  # Release (and therefore a new auto-update artifact) always gets published,
+  # even for pushes that didn't manually bump package.json.
+  version-bump:
+    needs: cleanup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Bump patch version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          npm version patch --no-git-tag-version
+          version=$(node -p "require('./package.json').version")
+          git add package.json package-lock.json
+          git commit -m "chore(release): bump version to $version [skip ci]"
+          git pull --rebase origin main
+          git push origin main
+
   # Build and publish for each platform
   build:
-    needs: cleanup
+    needs: version-bump
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +70,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Setup Node
         uses: actions/setup-node@v4
