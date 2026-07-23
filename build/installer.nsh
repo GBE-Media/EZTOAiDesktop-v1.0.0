@@ -1,11 +1,59 @@
 ; Custom installer script for BidveraAi
-; Minimal script - electron-builder handles most configuration
+; Adds a user-selectable desktop shortcut option.
 
-; Empty macros to satisfy NSIS requirements
+!include "nsDialogs.nsh"
+!include "LogicLib.nsh"
+
+Var DesktopShortcutCheckbox
+Var CreateDesktopShortcutSelection
+
 !macro customHeader
   ; Custom header - no additional configuration needed
 !macroend
 
 !macro customInit
-  ; Custom init - no additional configuration needed
+  ; Default to checked unless user opts out.
+  StrCpy $CreateDesktopShortcutSelection "1"
+!macroend
+
+!macro customPageAfterChangeDir
+  Page custom DesktopShortcutPageCreate DesktopShortcutPageLeave
+!macroend
+
+Function DesktopShortcutPageCreate
+  ${If} ${Silent}
+    Abort
+  ${EndIf}
+
+  nsDialogs::Create 1018
+  Pop $0
+  ${If} $0 == error
+    Abort
+  ${EndIf}
+
+  ${NSD_CreateLabel} 0 0 100% 16u "Additional shortcuts:"
+  Pop $0
+
+  ${NSD_CreateCheckbox} 0 20u 100% 12u "Create a desktop shortcut"
+  Pop $DesktopShortcutCheckbox
+  ${NSD_Check} $DesktopShortcutCheckbox
+
+  nsDialogs::Show
+FunctionEnd
+
+Function DesktopShortcutPageLeave
+  ${NSD_GetState} $DesktopShortcutCheckbox $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $CreateDesktopShortcutSelection "1"
+  ${Else}
+    StrCpy $CreateDesktopShortcutSelection "0"
+  ${EndIf}
+FunctionEnd
+
+!macro customInstall
+  ${ifNot} ${isUpdated}
+    ${If} $CreateDesktopShortcutSelection == "1"
+      CreateShortCut "$newDesktopLink" "$appExe"
+    ${EndIf}
+  ${endIf}
 !macroend

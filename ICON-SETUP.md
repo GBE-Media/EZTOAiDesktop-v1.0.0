@@ -1,49 +1,39 @@
 # Icon Setup Instructions
 
-## Current Status
-- ✅ Logo file exists at `public/logo.png` (your excavator logo)
-- ⚠️ Need to convert to `.ico` format for Windows icon support
+## Canonical Icon Flow
+- Source artwork: `build/icon-1024.png`
+- Optional UI logo copy: `public/logo.png`
+- Generated icon outputs:
+  - `build/icon.ico` (Windows app + installer icon)
+  - `public/favicon.ico` (renderer favicon + Linux icon input)
 
-## How to Create the Icon
+Do not edit `build/icon.ico` or `public/favicon.ico` by hand. Generate them from `build/icon-1024.png`.
 
-### Option 1: Online Converter (Easiest)
-1. Go to https://convertio.co/png-ico/
-2. Upload `public/logo.png`
-3. Set output size to **256x256** (or multi-size: 16, 32, 48, 64, 128, 256)
-4. Download the converted file
-5. Save it as `public/favicon.ico` (replace existing file)
+## Generate Icons Locally
+From the project root:
 
-### Option 2: Using ImageMagick (Command Line)
-If you have ImageMagick installed:
 ```bash
-cd "<your-project-root>"
-magick convert public/logo.png -define icon:auto-resize=256,128,64,48,32,16 public/favicon.ico
+npm run icons:generate
 ```
 
-### Option 3: Using GIMP (Free Software)
-1. Download GIMP from https://www.gimp.org/
-2. Open `public/logo.png` in GIMP
-3. Scale image to 256x256 (Image → Scale Image)
-4. Export as `.ico` (File → Export As → save as `favicon.ico`)
-5. Replace `public/favicon.ico` with your exported file
+This script regenerates:
+- `build/icon.ico`
+- `public/favicon.ico`
 
-## After Converting
-Once you've created the `.ico` file:
-1. Rebuild the app: `npm run build`
-2. Rebuild Electron: `npm run electron:build`
-3. Launch: `npm run electron:dev`
+## Package With Fresh Icons
+The packaging script now runs icon generation automatically:
 
-The icon will now appear:
-- In the window title bar
-- In the taskbar
-- For `.bidveraai` files in Windows Explorer (after building installer)
-
-## Building the Installer
-To create a distributable installer with the icon:
 ```bash
-npm run build
-npm run electron:build
-npx electron-builder
+npm run package
 ```
 
-This will create installers in the `release/` folder with your custom icon!
+This ensures installer/runtime icon assets are refreshed before `electron-builder` runs.
+
+## CI Behavior
+GitHub Actions also runs `npm run icons:generate` before build/publish, so Windows release artifacts stay in sync with `build/icon-1024.png`.
+
+## Where Icons Appear
+- App executable icon (Windows)
+- Installer / uninstaller icon (NSIS)
+- Taskbar / window icon
+- `.bidveraai` file association icon

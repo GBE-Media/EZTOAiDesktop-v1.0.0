@@ -51,6 +51,9 @@ jobs:
         env:
           npm_config_build_from_source: "false"
 
+      - name: Generate Windows/Linux ICO assets
+        run: npm run icons:generate
+
       - name: Install ImageMagick (macOS)
         if: runner.os == 'macOS'
         run: brew install imagemagick
