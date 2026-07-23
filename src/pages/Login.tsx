@@ -41,18 +41,18 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center bg-background p-4">
+    <div className="min-h-screen w-full flex items-center justify-center bg-black p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center space-y-4">
           <div className="mx-auto w-20 h-20 flex items-center justify-center">
             <img 
               src="./logo.png" 
-              alt="EZTO Ai" 
+              alt="BidveraAi" 
               className="w-full h-full object-contain"
             />
           </div>
           <div>
-            <CardTitle className="text-2xl font-bold">EZTO Ai</CardTitle>
+            <CardTitle className="text-2xl font-bold">BidveraAi</CardTitle>
             <CardDescription className="mt-2">
               Sign in with your account to continue
             </CardDescription>
@@ -148,12 +148,12 @@ export default function Login() {
             <p className="mt-1">
               Sign up at{' '}
               <a 
-                href="https://eztoai.thebemedia.com" 
+                href="https://bidveraai.thebemedia.com" 
                 target="_blank" 
                 rel="noopener noreferrer"
                 className="text-primary hover:underline font-medium"
               >
-                eztoai.thebemedia.com
+                bidveraai.thebemedia.com
               </a>
             </p>
           </div>

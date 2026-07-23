@@ -129,7 +129,7 @@ export function Canvas() {
     render();
   }, [pdfDocument, currentPage, setPageDimensions]); // Note: zoom removed - uses CSS transform
 
-  // Handle file drop - accept both PDFs and .ezto files
+  // Handle file drop - accept both PDFs and .bidveraai files
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragOver(false);
@@ -137,7 +137,7 @@ export function Canvas() {
     const file = e.dataTransfer.files[0];
     if (file) {
       const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-      const isProject = file.name.toLowerCase().endsWith('.ezto');
+      const isProject = file.name.toLowerCase().endsWith('.bidveraai');
       
       if (isPdf || isProject) {
         openFile(file);

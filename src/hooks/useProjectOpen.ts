@@ -100,7 +100,7 @@ export function useProjectOpen() {
           // Add document to store
           addDocument({
             id: newDocId,
-            name: projectFileName || projDoc.name, // Use .ezto filename instead of PDF name
+            name: projectFileName || projDoc.name, // Use .bidveraai filename instead of PDF name
             path: projectPath || '', // Store project path, not individual PDF path
             pages: projDoc.pages || numPages,
             currentPage: projDoc.currentPage || 1,
@@ -190,8 +190,8 @@ export function useProjectOpen() {
       if (!fileData) return;
 
       // Check if it's a project file
-      if (!fileData.name.endsWith('.ezto')) {
-        toast.error('Please select an EZTO project file (.ezto)');
+      if (!fileData.name.endsWith('.bidveraai')) {
+        toast.error('Please select a BidveraAi project file (.bidveraai)');
         return;
       }
 

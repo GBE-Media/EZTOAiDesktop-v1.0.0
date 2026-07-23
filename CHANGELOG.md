@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to EZTO Ai Desktop will be documented in this file.
+All notable changes to BidveraAi Desktop will be documented in this file.
 
 This project uses [Semantic Versioning](https://semver.org/) and [Conventional Commits](https://www.conventionalcommits.org/).
 
@@ -9,7 +9,7 @@ This project uses [Semantic Versioning](https://semver.org/) and [Conventional C
 ### Features
 - PDF viewing and markup tools
 - OCR text recognition (English and Spanish)
-- Project save/load (.ezto files)
+- Project save/load (.bidveraai files)
 - Dark/Light theme support
 - Auto-updates via GitHub Releases
 - Cross-platform support (Windows and macOS)

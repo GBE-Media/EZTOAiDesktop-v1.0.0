@@ -1,4 +1,4 @@
-; Custom installer script for EZTO Ai
+; Custom installer script for BidveraAi
 ; Minimal script - electron-builder handles most configuration
 
 ; Empty macros to satisfy NSIS requirements

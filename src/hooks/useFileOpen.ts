@@ -18,7 +18,7 @@ export function useFileOpen() {
     try {
       // Always clear product counts when opening a new PDF file
       // This ensures the user starts fresh with each new document
-      // Saved projects (.ezto files) load their own measurements via useProjectOpen
+      // Saved projects (.bidveraai files) load their own measurements via useProjectOpen
       useProductStore.getState().clearProductCounts();
       
       // Clone the ArrayBuffer BEFORE loadPDF uses it (it gets detached)
@@ -84,7 +84,7 @@ export function useFileOpen() {
     }
   }, [addDocument, setPdfDocument, setActiveDocument]);
 
-  // Process .ezto project file from ArrayBuffer
+  // Process .bidveraai project file from ArrayBuffer
   const processProjectBuffer = useCallback(async (arrayBuffer: ArrayBuffer, fileName: string, filePath?: string) => {
     try {
       const jsonString = new TextDecoder().decode(arrayBuffer);
@@ -106,8 +106,8 @@ export function useFileOpen() {
   const openFile = useCallback(async (file: File) => {
     const arrayBuffer = await file.arrayBuffer();
     
-    // Handle .ezto project files
-    if (file.name.endsWith('.ezto')) {
+    // Handle .bidveraai project files
+    if (file.name.endsWith('.bidveraai')) {
       await processProjectBuffer(arrayBuffer, file.name);
       return;
     }
@@ -118,7 +118,7 @@ export function useFileOpen() {
       return;
     }
     
-    toast.error('Please select a PDF or EZTO project file');
+    toast.error('Please select a PDF or BidveraAi project file');
   }, [processFileBuffer, processProjectBuffer]);
 
   const triggerFileDialog = useCallback(async () => {
@@ -129,7 +129,7 @@ export function useFileOpen() {
         const fileData = await window.electronAPI.openFile();
         if (fileData) {
           // Determine file type and process accordingly
-          if (fileData.name.endsWith('.ezto')) {
+          if (fileData.name.endsWith('.bidveraai')) {
             await processProjectBuffer(fileData.buffer, fileData.name, fileData.path);
           } else {
             await processFileBuffer(fileData.buffer, fileData.name, fileData.path);
@@ -141,11 +141,11 @@ export function useFileOpen() {
       return;
     }
 
-    // Fallback to browser file input - accept both PDFs and .ezto files
+    // Fallback to browser file input - accept both PDFs and .bidveraai files
     if (!inputRef.current) {
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = 'application/pdf,.ezto';
+      input.accept = 'application/pdf,.bidveraai';
       input.style.display = 'none';
       input.onchange = (e) => {
         const target = e.target as HTMLInputElement;

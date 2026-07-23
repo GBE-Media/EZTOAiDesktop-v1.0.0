@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 import type { ProjectFile, ProjectDocument, SaveProjectResult } from '@/types/project';
 
 const PROJECT_VERSION = '1.0.0';
-const PROJECT_EXTENSION = 'ezto';
+const PROJECT_EXTENSION = 'bidveraai';
 
 export function useProjectSave() {
   const { 
@@ -25,8 +25,8 @@ export function useProjectSave() {
   // Get current project file path from first document (or store separately)
   const getCurrentProjectPath = useCallback((): string | null => {
     // We'll store the project path in a special way
-    // For now, check if any document has a .ezto path
-    const doc = documents.find(d => d.path?.endsWith('.ezto'));
+    // For now, check if any document has a .bidveraai path
+    const doc = documents.find(d => d.path?.endsWith('.bidveraai'));
     return doc?.path || null;
   }, [documents]);
 
@@ -68,7 +68,7 @@ export function useProjectSave() {
         projectDocs.push({
           id: doc.id,
           name: doc.name,
-          originalPath: doc.path?.endsWith('.ezto') ? undefined : doc.path,
+          originalPath: doc.path?.endsWith('.bidveraai') ? undefined : doc.path,
           pdfData: base64Pdf, // Original PDF without markups
           pages: doc.pages,
           currentPage: doc.currentPage,
@@ -148,7 +148,7 @@ export function useProjectSave() {
 
     try {
       // Get project name from path
-      const projectName = projectPath.split(/[\\/]/).pop()?.replace('.ezto', '') || 'Untitled';
+      const projectName = projectPath.split(/[\\/]/).pop()?.replace('.bidveraai', '') || 'Untitled';
       
       const projectData = await createProjectData(projectName);
       const jsonData = JSON.stringify(projectData, null, 2);
@@ -159,7 +159,7 @@ export function useProjectSave() {
         
         if (result.success) {
           // Extract filename from path and update document name
-          const fileName = projectPath.split(/[\\/]/).pop() || 'Untitled.ezto';
+          const fileName = projectPath.split(/[\\/]/).pop() || 'Untitled.bidveraai';
           
           // Mark all documents as saved and update name
           documents.forEach(doc => {
@@ -210,7 +210,7 @@ export function useProjectSave() {
 
         if (result.success && result.path) {
           // Extract filename from path
-          const fileName = result.path.split(/[\\/]/).pop() || result.name || 'Untitled.ezto';
+          const fileName = result.path.split(/[\\/]/).pop() || result.name || 'Untitled.bidveraai';
           
           // Mark all documents as saved and update path and name
           documents.forEach(doc => {

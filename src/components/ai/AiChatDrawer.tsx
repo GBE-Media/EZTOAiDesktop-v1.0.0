@@ -572,7 +572,7 @@ export function AiChatDrawer() {
                   <Bot className="w-4 h-4 text-white" />
                 </div>
                 <div>
-                  <SheetTitle className="text-base">EZTO AI Assistant</SheetTitle>
+                  <SheetTitle className="text-base">BidveraAi Assistant</SheetTitle>
                   <p className="text-xs text-muted-foreground">Blueprint analysis & estimation</p>
                 </div>
               </div>

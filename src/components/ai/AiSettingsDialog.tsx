@@ -88,7 +88,7 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
             <div className="flex items-start gap-2 p-3 bg-violet-500/10 border border-violet-500/20 rounded-lg">
               <Zap className="w-4 h-4 text-violet-500 mt-0.5" />
               <div className="text-sm">
-                <p className="font-medium text-violet-500">AI Powered by EZTO</p>
+                <p className="font-medium text-violet-500">AI Powered by BidveraAi</p>
                 <p className="text-muted-foreground text-xs mt-1">
                   AI features are included with your subscription. No API keys required.
                 </p>

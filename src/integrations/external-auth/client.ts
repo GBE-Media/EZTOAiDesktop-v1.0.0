@@ -8,7 +8,7 @@ const EXTERNAL_SUPABASE_ANON_KEY =
   import.meta.env.VITE_EXTERNAL_SUPABASE_ANON_KEY ||
   'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpbnBkbWFubHBhZHF5cW52Y2NiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUxMjU4OTYsImV4cCI6MjA4MDcwMTg5Nn0.3D-GgnpM-jf8-mUSRqcjFK6QP_OOXWaANtozQqalszA';
 
-// This client authenticates against the external project (eztoai.thebemedia.com)
+// This client authenticates against the external project (bidveraai.thebemedia.com)
 // while the main supabase client handles this project's backend features
 export const externalAuthClient = createClient(EXTERNAL_SUPABASE_URL, EXTERNAL_SUPABASE_ANON_KEY, {
   auth: {

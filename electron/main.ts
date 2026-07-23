@@ -29,7 +29,7 @@ const log = (location: string, message: string, data: any = {}) => {
     
     // Write logs to OS app data so packaged builds can write successfully
     const logDir = app.getPath('logs');
-    const logPath = path.join(logDir, 'ezto-ai.log');
+    const logPath = path.join(logDir, 'bidveraai.log');
     
     console.log(`[DEBUG] Log path: ${logPath}, dir: ${logDir}, exists: ${fs.existsSync(logDir)}`);
     
@@ -74,7 +74,7 @@ function createWindow() {
         : getAssetPath('build', 'icon.ico'),
       show: false,
       backgroundColor: '#0a0a0a',
-      title: 'EZTO Ai - PDF Takeoff',
+      title: 'BidveraAi - PDF Takeoff',
       autoHideMenuBar: true,  // Hide menu bar like Bluebeam
       frame: false,           // Frameless window - custom controls in renderer
       titleBarStyle: 'hidden',
@@ -303,7 +303,7 @@ ipcMain.handle('dialog:openFile', async (_, fileType?: 'pdf' | 'project') => {
   const filters = fileType === 'pdf' 
     ? [{ name: 'PDF Files', extensions: ['pdf'] }]
     : [
-        { name: 'EZTO Project Files', extensions: ['ezto'] },
+        { name: 'BidveraAi Project Files', extensions: ['bidveraai'] },
         { name: 'PDF Files', extensions: ['pdf'] },
         { name: 'All Files', extensions: ['*'] }
       ];
@@ -331,9 +331,9 @@ ipcMain.handle('dialog:openFile', async (_, fileType?: 'pdf' | 'project') => {
 // Save As - shows native dialog, returns path info
 ipcMain.handle('dialog:saveFile', async (_, data: ArrayBuffer, defaultName: string) => {
   // Determine file type from extension
-  const isProject = defaultName.endsWith('.ezto');
+  const isProject = defaultName.endsWith('.bidveraai');
   const filters = isProject
-    ? [{ name: 'EZTO Project Files', extensions: ['ezto'] }]
+    ? [{ name: 'BidveraAi Project Files', extensions: ['bidveraai'] }]
     : [{ name: 'PDF Files', extensions: ['pdf'] }];
 
   const result = await dialog.showSaveDialog(mainWindow!, {
@@ -494,7 +494,7 @@ ipcMain.handle('window:close', () => {
 
 // App lifecycle
 console.log('[DEBUG] Electron starting...', { isDev, isPackaged: app.isPackaged, __dirname: __dirname });
-// Handle opening .ezto files from Windows Explorer (double-click)
+// Handle opening .bidveraai files from Windows Explorer (double-click)
 let fileToOpen: string | null = null;
 
 // On Windows/Linux, this fires when a file is double-clicked
@@ -514,7 +514,7 @@ app.on('open-file', (event, filePath) => {
 // On Windows, check command line args for file path
 if (process.platform === 'win32' && process.argv.length >= 2) {
   const filePath = process.argv[process.argv.length - 1];
-  if (filePath && filePath.endsWith('.ezto') && fs.existsSync(filePath)) {
+  if (filePath && filePath.endsWith('.bidveraai') && fs.existsSync(filePath)) {
     fileToOpen = filePath;
     console.log('[DEBUG] File from command line:', fileToOpen);
   }
@@ -540,7 +540,7 @@ app.whenReady().then(() => {
     autoUpdater.setFeedURL({
       provider: 'github',
       owner: 'GBE-Media',
-      repo: 'EZTOAiDesktop-v1.0.0',
+      repo: 'BidveraAiDesktop-v1.0.0',
     });
     
     // Log the current feed URL configuration
@@ -548,7 +548,7 @@ app.whenReady().then(() => {
       currentVersion: app.getVersion(),
       provider: 'github',
       owner: 'GBE-Media',
-      repo: 'EZTOAiDesktop-v1.0.0'
+      repo: 'BidveraAiDesktop-v1.0.0'
     });
     
     autoUpdater.autoDownload = true;

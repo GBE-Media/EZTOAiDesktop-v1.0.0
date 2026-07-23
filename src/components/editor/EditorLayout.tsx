@@ -67,7 +67,7 @@ export function EditorLayout() {
     return () => clearTimeout(timer);
   }, []);
 
-  // Listen for file open events from Electron (double-click .ezto file)
+  // Listen for file open events from Electron (double-click .bidveraai file)
   useEffect(() => {
     if (window.electronAPI?.onOpenProjectFile) {
       window.electronAPI.onOpenProjectFile(async (filePath: string) => {

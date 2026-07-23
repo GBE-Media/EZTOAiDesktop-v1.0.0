@@ -355,7 +355,7 @@ export function MenuBar() {
 
   // Help menu actions
   const handleDocumentation = useCallback(() => {
-    window.open('https://docs.ezto.ai', '_blank');
+    window.open('https://docs.bidveraai.ai', '_blank');
   }, []);
 
   const handleKeyboardShortcuts = useCallback(() => {
@@ -368,7 +368,7 @@ export function MenuBar() {
     const version = window.electronAPI?.getAppVersion 
       ? await window.electronAPI.getAppVersion() 
       : '1.0.0';
-    toast.info(`EZTO Ai Desktop v${version} - Professional PDF Editor`);
+    toast.info(`BidveraAi Desktop v${version} - Professional PDF Editor`);
   }, []);
 
   // Window control handlers
@@ -397,10 +397,10 @@ export function MenuBar() {
       <div className="flex items-center gap-1.5 px-2 mr-2" style={noDragStyle}>
         <img 
           src="./logo.png" 
-          alt="EZTO Ai" 
+          alt="BidveraAi" 
           className="h-5 w-auto object-contain"
         />
-        <span className="text-xs font-semibold text-foreground">EZTO Ai</span>
+        <span className="text-xs font-semibold text-foreground">BidveraAi</span>
       </div>
 
       <Menubar className="border-none bg-transparent h-auto p-0 space-x-0" style={noDragStyle}>
@@ -654,7 +654,7 @@ export function MenuBar() {
             </MenubarItem>
             <MenubarSeparator />
             <MenubarItem className="text-xs" onClick={handleAbout}>
-              About EZTO Ai
+              About BidveraAi
             </MenubarItem>
           </MenubarContent>
         </MenubarMenu>

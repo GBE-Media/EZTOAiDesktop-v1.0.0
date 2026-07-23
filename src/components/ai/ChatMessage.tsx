@@ -66,7 +66,7 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
         {/* Header */}
         <div className="flex items-center gap-2 mb-1">
           <span className="text-sm font-medium">
-            {isUser ? 'You' : 'EZTO AI'}
+            {isUser ? 'You' : 'BidveraAi'}
           </span>
           {message.metadata?.stage && (
             <span className="flex items-center gap-1 text-xs text-muted-foreground bg-secondary px-1.5 py-0.5 rounded">

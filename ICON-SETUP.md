@@ -16,7 +16,7 @@
 ### Option 2: Using ImageMagick (Command Line)
 If you have ImageMagick installed:
 ```bash
-cd "D:\TheBEMedia\EasyTakeOff\EZTO Ai\ezto-ai-desktopv1-main"
+cd "<your-project-root>"
 magick convert public/logo.png -define icon:auto-resize=256,128,64,48,32,16 public/favicon.ico
 ```
 
@@ -36,7 +36,7 @@ Once you've created the `.ico` file:
 The icon will now appear:
 - In the window title bar
 - In the taskbar
-- For `.ezto` files in Windows Explorer (after building installer)
+- For `.bidveraai` files in Windows Explorer (after building installer)
 
 ## Building the Installer
 To create a distributable installer with the icon:

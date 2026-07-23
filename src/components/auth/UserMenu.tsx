@@ -176,7 +176,7 @@ export function UserMenu() {
         <AlertDialogHeader>
           <AlertDialogTitle>Update Ready to Install</AlertDialogTitle>
           <AlertDialogDescription>
-            A new version of EZTO Ai has been downloaded. Would you like to restart the app now to install the update?
+            A new version of BidveraAi has been downloaded. Would you like to restart the app now to install the update?
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

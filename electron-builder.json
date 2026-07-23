@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "com.ezto.ai",
-  "productName": "EZTO Ai",
+  "appId": "com.bidvera.ai",
+  "productName": "BidveraAi",
   "npmRebuild": false,
   "directories": {
     "output": "release",
@@ -37,9 +37,9 @@
     "artifactName": "${productName}-${version}-${arch}.${ext}",
     "fileAssociations": [
       {
-        "ext": "ezto",
-        "name": "EZTO Project File",
-        "description": "EZTO Ai Takeoff Project",
+        "ext": "bidveraai",
+        "name": "BidveraAi Project File",
+        "description": "BidveraAi Takeoff Project",
         "icon": "build/icon.ico",
         "role": "Editor"
       }
@@ -60,7 +60,7 @@
     {
       "provider": "github",
       "owner": "GBE-Media",
-      "repo": "EZTOAiDesktop-v1.0.0",
+      "repo": "BidveraAiDesktop-v1.0.0",
       "releaseType": "release"
     }
   ],
@@ -80,9 +80,9 @@
     "artifactName": "${productName}-${version}-${arch}.${ext}",
     "fileAssociations": [
       {
-        "ext": "ezto",
-        "name": "EZTO Project File",
-        "description": "EZTO Ai Takeoff Project",
+        "ext": "bidveraai",
+        "name": "BidveraAi Project File",
+        "description": "BidveraAi Takeoff Project",
         "icon": "build/icon.icns",
         "role": "Editor"
       }
@@ -104,10 +104,10 @@
     "artifactName": "${productName}-${version}-${arch}.${ext}",
     "fileAssociations": [
       {
-        "ext": "ezto",
-        "name": "EZTO Project File",
-        "description": "EZTO Ai Takeoff Project",
-        "mimeType": "application/x-ezto"
+        "ext": "bidveraai",
+        "name": "BidveraAi Project File",
+        "description": "BidveraAi Takeoff Project",
+        "mimeType": "application/x-bidveraai"
       }
     ]
   }

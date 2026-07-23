@@ -3,7 +3,7 @@ import App from "./App.tsx";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./index.css";
 
-console.log('[MAIN] Starting EZTO Ai application...');
+console.log('[MAIN] Starting BidveraAi application...');
 console.log('[MAIN] Root element:', document.getElementById("root"));
 
 try {

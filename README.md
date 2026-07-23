@@ -20,7 +20,7 @@ A modern PDF editor desktop application built with Electron, React, TypeScript, 
 1. Clone the repository (if you haven't already):
    ```bash
    git clone <repository-url>
-   cd ezto-ai-desktopv1-main
+   cd <bidveraai-project-folder>
    ```
 
 2. Install dependencies:
