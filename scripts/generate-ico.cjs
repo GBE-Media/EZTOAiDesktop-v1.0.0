@@ -5,11 +5,7 @@
  * Run locally when updating the app icon.
  * 
  * Usage:
- *   npm install sharp to-ico --no-save
- *   node scripts/generate-ico.cjs
- * 
- * These packages are NOT in package.json to avoid CI build failures
- * (sharp has native dependencies that fail on some CI runners).
+ *   npm run icons:generate
  */
 
 const sharp = require('sharp');
@@ -26,23 +22,38 @@ const sizes = [16, 32, 48, 64, 128, 256];
 async function generateIco() {
   try {
     console.log('Reading source image:', inputPath);
-    
-    // First, ensure proper color handling by converting to sRGB
-    const sourceImage = sharp(inputPath)
-      .flatten({ background: { r: 10, g: 10, b: 10 } }) // Match the black background
-      .toColorspace('srgb');
-    
-    // Generate PNGs at different sizes with high quality
+
+    const metadata = await sharp(inputPath).metadata();
+    if (
+      metadata.format !== 'png' ||
+      metadata.width !== 1024 ||
+      metadata.height !== 1024 ||
+      !metadata.hasAlpha
+    ) {
+      throw new Error(
+        'build/icon-1024.png must be a genuine 1024x1024 PNG with an alpha channel.'
+      );
+    }
+
+    const sourceBuffer = await sharp(inputPath)
+      .toColorspace('srgb')
+      .ensureAlpha()
+      .png({ compressionLevel: 9 })
+      .toBuffer();
+
+    // Generate RGBA PNG frames at every Windows icon size.
     const pngBuffers = await Promise.all(
       sizes.map(async size => {
         console.log(`Generating ${size}x${size}...`);
-        return sharp(await sourceImage.toBuffer())
+        return sharp(sourceBuffer)
           .resize(size, size, {
             kernel: sharp.kernel.lanczos3,
             fit: 'contain',
-            background: { r: 10, g: 10, b: 10, alpha: 1 }
+            background: { r: 0, g: 0, b: 0, alpha: 0 }
           })
-          .png({ quality: 100, compressionLevel: 9 })
+          .toColorspace('srgb')
+          .ensureAlpha()
+          .png({ compressionLevel: 9 })
           .toBuffer();
       })
     );
