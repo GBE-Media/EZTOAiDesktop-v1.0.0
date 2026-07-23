@@ -540,7 +540,7 @@ app.whenReady().then(() => {
     autoUpdater.setFeedURL({
       provider: 'github',
       owner: 'GBE-Media',
-      repo: 'BidveraAiDesktop-v1.0.0',
+      repo: 'EZTOAiDesktop-v1.0.0',
     });
     
     // Log the current feed URL configuration
@@ -548,7 +548,7 @@ app.whenReady().then(() => {
       currentVersion: app.getVersion(),
       provider: 'github',
       owner: 'GBE-Media',
-      repo: 'BidveraAiDesktop-v1.0.0'
+      repo: 'EZTOAiDesktop-v1.0.0'
     });
     
     autoUpdater.autoDownload = true;
