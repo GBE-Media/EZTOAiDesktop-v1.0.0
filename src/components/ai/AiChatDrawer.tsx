@@ -34,6 +34,7 @@ import { ChatMessage } from './ChatMessage';
 import { ChatInput } from './ChatInput';
 import { AiToolbar } from './AiToolbar';
 import { AiSettingsDialog } from './AiSettingsDialog';
+import { ProductMatchPanel } from './ProductMatchPanel';
 import { getAIService } from '@/services/ai/aiService';
 import { chat as aiChat, runPipeline } from '@/services/ai/pipeline';
 import { summarizeCatalogForChat, summarizeMarkupsForChat } from '@/services/ai/contextSummary';
@@ -72,6 +73,7 @@ export function AiChatDrawer() {
   const [createNodeType, setCreateNodeType] = useState<'product' | 'folder' | 'assembly'>('product');
   const [createNodeName, setCreateNodeName] = useState('');
   const [createNodeParentId, setCreateNodeParentId] = useState<string | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
   
   // Chat store
   const {
@@ -987,14 +989,14 @@ export function AiChatDrawer() {
       </Dialog>
 
       <Dialog open={productMapOpen} onOpenChange={setProductMapOpen}>
-        <DialogContent className="max-w-lg max-h-[85vh] overflow-hidden">
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle>Map AI Types to Products</DialogTitle>
+            <DialogDescription>
+              Select a detected item on the left, then click its matching product on the right.
+            </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-3 max-h-[65vh]">
-            <div className="text-xs text-muted-foreground">
-              Counts are derived from the placed markups so they match what you see on the canvas.
-            </div>
+          <div className="flex flex-col gap-3 min-h-0 overflow-y-auto pr-1">
             {productsLoading && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Loader2 className="w-4 h-4 animate-spin" />
@@ -1011,88 +1013,83 @@ export function AiChatDrawer() {
                 No products found. Create one below to map AI counts.
               </div>
             )}
-            <div className="rounded-md border border-border p-3 space-y-2">
-              <div className="flex items-center gap-2 text-xs font-medium">
-                {createNodeType === 'product' ? <PackagePlus className="w-4 h-4" /> : createNodeType === 'assembly' ? <Boxes className="w-4 h-4" /> : <FolderPlus className="w-4 h-4" />}
-                Create {createNodeType === 'product' ? 'Product' : createNodeType === 'assembly' ? 'Assembly' : 'Category'}
-              </div>
-              <div className="grid grid-cols-1 gap-2">
-                <Select
-                  value={createNodeType}
-                  onValueChange={(value) => setCreateNodeType(value as 'product' | 'folder' | 'assembly')}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="product">Product</SelectItem>
-                    <SelectItem value="assembly">Assembly</SelectItem>
-                    <SelectItem value="folder">Category</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={createNodeParentId || 'root'}
-                  onValueChange={(value) => setCreateNodeParentId(value === 'root' ? null : value)}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="Choose parent folder" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="root">Top level</SelectItem>
-                    {folderOptions.map((option) => (
-                      <SelectItem key={option.id} value={option.id}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Input
-                  value={createNodeName}
-                  onChange={(event) => setCreateNodeName(event.target.value)}
-                  placeholder={createNodeType === 'product' ? 'Product name' : createNodeType === 'assembly' ? 'Assembly name' : 'Category name'}
-                  className="h-8 text-xs"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-8 text-xs"
-                  onClick={() => void handleCreateNode()}
-                  disabled={!createNodeName.trim()}
-                >
-                  Create
-                </Button>
-              </div>
-            </div>
-            <ScrollArea className="flex-1 min-h-0 pr-2">
-              <div className="space-y-3">
-                {(productMapKeys.length ? productMapKeys : Object.keys(pendingCountMap)).map((key) => (
-                  <div key={key} className="space-y-1">
-                    <Label className="text-xs">
-                      {pendingCountMap[key] ? `${key} (${pendingCountMap[key]})` : key}
-                    </Label>
+
+            <ProductMatchPanel
+              mapKeys={productMapKeys.length ? productMapKeys : Object.keys(pendingCountMap)}
+              counts={pendingCountMap}
+              values={productMapValues}
+              onSelect={(key, productId) =>
+                setProductMapValues((prev) => ({ ...prev, [key]: productId }))
+              }
+              productOptions={productOptions}
+            />
+
+            <div className="border-t border-border pt-2">
+              <button
+                type="button"
+                onClick={() => setShowCreateForm((prev) => !prev)}
+                className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <PackagePlus className="w-3.5 h-3.5" />
+                {showCreateForm ? 'Hide create form' : "Don't see it? Create a new product or category"}
+              </button>
+              {showCreateForm && (
+                <div className="mt-2 rounded-md border border-border p-3 space-y-2">
+                  <div className="flex items-center gap-2 text-xs font-medium">
+                    {createNodeType === 'product' ? <PackagePlus className="w-4 h-4" /> : createNodeType === 'assembly' ? <Boxes className="w-4 h-4" /> : <FolderPlus className="w-4 h-4" />}
+                    Create {createNodeType === 'product' ? 'Product' : createNodeType === 'assembly' ? 'Assembly' : 'Category'}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                     <Select
-                      value={productMapValues[key] || ''}
-                      onValueChange={(value) =>
-                        setProductMapValues((prev) => ({ ...prev, [key]: value }))
-                      }
+                      value={createNodeType}
+                      onValueChange={(value) => setCreateNodeType(value as 'product' | 'folder' | 'assembly')}
                     >
                       <SelectTrigger className="h-8 text-xs">
-                        <SelectValue placeholder="Select a product" />
+                        <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {productOptions.map((node) => (
-                          <SelectItem key={node.id} value={node.id}>
-                            {node.name}
+                        <SelectItem value="product">Product</SelectItem>
+                        <SelectItem value="assembly">Assembly</SelectItem>
+                        <SelectItem value="folder">Category</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Select
+                      value={createNodeParentId || 'root'}
+                      onValueChange={(value) => setCreateNodeParentId(value === 'root' ? null : value)}
+                    >
+                      <SelectTrigger className="h-8 text-xs">
+                        <SelectValue placeholder="Choose parent folder" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="root">Top level</SelectItem>
+                        {folderOptions.map((option) => (
+                          <SelectItem key={option.id} value={option.id}>
+                            {option.label}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                    <Input
+                      value={createNodeName}
+                      onChange={(event) => setCreateNodeName(event.target.value)}
+                      placeholder={createNodeType === 'product' ? 'Product name' : createNodeType === 'assembly' ? 'Assembly name' : 'Category name'}
+                      className="h-8 text-xs"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-8 text-xs"
+                      onClick={() => void handleCreateNode()}
+                      disabled={!createNodeName.trim()}
+                    >
+                      Create
+                    </Button>
                   </div>
-                ))}
-              </div>
-            </ScrollArea>
+                </div>
+              )}
+            </div>
           </div>
-          <div className="flex justify-end gap-2 mt-4">
+          <div className="flex justify-end gap-2 mt-4 flex-shrink-0">
             <Button
               variant="outline"
               onClick={() => setProductMapOpen(false)}
