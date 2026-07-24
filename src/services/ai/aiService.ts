@@ -19,7 +19,24 @@ import {
   type TradeType,
   type AIModelInfo,
 } from './providers';
-import { sendProxyRequest, isProxyAvailable } from './proxyClient';
+import { sendProxyRequest, isProxyAvailable, type ProxyRequest } from './proxyClient';
+
+// Known-good models to fall back to if the configured flagship model is
+// rejected because the underlying account/key isn't permitted to use it yet
+// (e.g. usage tier gating, org verification, workspace model restrictions).
+// These were the previous defaults and are broadly available at low tiers.
+const FALLBACK_MODELS: Partial<Record<AIProviderType, string>> = {
+  openai: 'gpt-4o',
+  anthropic: 'claude-sonnet-4-20250514',
+};
+
+// Matches provider error messages indicating the account/key lacks access to
+// the requested model, as opposed to auth, rate-limit, or transient errors.
+const MODEL_ACCESS_ERROR_PATTERN = /model[^.]*(not permitted|not allowed|not available|does not exist|do(es)? not have access|restricted|permission)|permission[_ ]?error|access denied/i;
+
+function isModelAccessError(message: string): boolean {
+  return MODEL_ACCESS_ERROR_PATTERN.test(message);
+}
 
 export interface AIServiceConfig {
   pipeline: PipelineConfig;
@@ -172,6 +189,32 @@ class AIService {
   }
 
   /**
+   * Send a proxy request, automatically retrying once against a broadly
+   * available fallback model if the configured model comes back as
+   * inaccessible for the current account/key (rather than surfacing a hard
+   * failure to the user for what is usually an account provisioning issue).
+   */
+  private async sendProxyRequestWithFallback(params: ProxyRequest): Promise<AICompletionResponse> {
+    try {
+      return await sendProxyRequest(params);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fallbackModel = FALLBACK_MODELS[params.provider];
+
+      if (fallbackModel && fallbackModel !== params.model && isModelAccessError(message)) {
+        console.warn(
+          `[AIService] Model "${params.model}" (${params.provider}) is not accessible with the current account/key ` +
+          `("${message}"). Retrying with fallback model "${fallbackModel}". Check the account's usage tier / ` +
+          `organization verification in the ${params.provider} console to unlock the flagship model.`
+        );
+        return await sendProxyRequest({ ...params, model: fallbackModel });
+      }
+
+      throw error;
+    }
+  }
+
+  /**
    * Send a completion request using the specified stage's provider
    */
   async complete(
@@ -184,7 +227,7 @@ class AIService {
 
     // Use proxy if enabled (default)
     if (this.config.useProxy) {
-      return sendProxyRequest({
+      return this.sendProxyRequestWithFallback({
         provider,
         model,
         messages: request.messages,
@@ -223,7 +266,7 @@ class AIService {
         images: msg.images,
       }));
 
-      return sendProxyRequest({
+      return this.sendProxyRequestWithFallback({
         provider,
         model,
         messages,
