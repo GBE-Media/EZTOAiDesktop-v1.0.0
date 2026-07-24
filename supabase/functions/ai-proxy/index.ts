@@ -33,6 +33,8 @@ interface AIRequest {
   temperature?: number;
   maxTokens?: number;
   responseFormat?: 'text' | 'json';
+  tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
+  toolChoice?: 'auto' | 'none' | { name: string };
 }
 
 interface RateLimitResult {
@@ -85,7 +87,7 @@ serve(async (req: Request) => {
 
     // Parse request body
     const body: AIRequest = await req.json();
-    const { provider, model, messages, temperature, maxTokens, responseFormat } = body;
+    const { provider, model, messages, temperature, maxTokens, responseFormat, tools, toolChoice } = body;
 
     // Validate required fields
     if (!provider || !model || !messages || messages.length === 0) {
@@ -128,9 +130,9 @@ serve(async (req: Request) => {
     let tokensOutput = 0;
 
     if (provider === 'openai') {
-      aiResponse = await callOpenAI(model, messages, temperature, maxTokens, responseFormat);
+      aiResponse = await callOpenAI(model, messages, temperature, maxTokens, responseFormat, tools, toolChoice);
     } else if (provider === 'anthropic') {
-      aiResponse = await callAnthropic(model, messages, temperature, maxTokens);
+      aiResponse = await callAnthropic(model, messages, temperature, maxTokens, tools, toolChoice);
     } else {
       return new Response(
         JSON.stringify({ error: `Unsupported provider: ${provider}` }),
@@ -170,16 +172,34 @@ serve(async (req: Request) => {
 
     // Format response consistently
     let content = '';
+    let toolCalls: Array<{ id: string; name: string; input: unknown }> = [];
     if (provider === 'openai') {
       content = aiData.choices?.[0]?.message?.content || '';
+      toolCalls = (aiData.choices?.[0]?.message?.tool_calls || []).map((call: any) => ({
+        id: call.id,
+        name: call.function?.name,
+        input: (() => {
+          try { return JSON.parse(call.function?.arguments || '{}'); } catch { return {}; }
+        })(),
+      }));
     } else if (provider === 'anthropic') {
-      content = aiData.content?.[0]?.text || '';
+      content = (aiData.content || [])
+        .filter((block: any) => block.type === 'text')
+        .map((block: any) => block.text)
+        .join('\n');
+      toolCalls = (aiData.content || [])
+        .filter((block: any) => block.type === 'tool_use')
+        .map((block: any) => ({ id: block.id, name: block.name, input: block.input }));
     }
 
     return new Response(
       JSON.stringify({
         content,
         model: aiData.model || model,
+        finishReason: provider === 'openai'
+          ? aiData.choices?.[0]?.finish_reason
+          : aiData.stop_reason,
+        toolCalls,
         usage: {
           promptTokens: tokensInput,
           completionTokens: tokensOutput,
@@ -203,7 +223,9 @@ async function callOpenAI(
   messages: AIRequest['messages'],
   temperature?: number,
   maxTokens?: number,
-  responseFormat?: string
+  responseFormat?: string,
+  tools?: AIRequest['tools'],
+  toolChoice?: AIRequest['toolChoice']
 ): Promise<Response> {
   // Build OpenAI messages format
   const openaiMessages = messages.map(msg => {
@@ -235,11 +257,31 @@ async function callOpenAI(
     model,
     messages: openaiMessages,
     temperature: temperature ?? 0.7,
-    max_tokens: maxTokens ?? 4096,
   };
+
+  if (/^gpt-5/i.test(model)) {
+    body.max_completion_tokens = maxTokens ?? 16384;
+  } else {
+    body.max_tokens = maxTokens ?? 4096;
+  }
 
   if (responseFormat === 'json') {
     body.response_format = { type: 'json_object' };
+  }
+  if (tools?.length) {
+    body.tools = tools.map(tool => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      },
+    }));
+    body.tool_choice = toolChoice === 'none'
+      ? 'none'
+      : typeof toolChoice === 'object'
+        ? { type: 'function', function: { name: toolChoice.name } }
+        : 'auto';
   }
 
   return fetch(OPENAI_API_URL, {
@@ -256,7 +298,9 @@ async function callAnthropic(
   model: string,
   messages: AIRequest['messages'],
   temperature?: number,
-  maxTokens?: number
+  maxTokens?: number,
+  tools?: AIRequest['tools'],
+  toolChoice?: AIRequest['toolChoice']
 ): Promise<Response> {
   // Extract system message
   const systemMessage = messages.find(m => m.role === 'system')?.content;
@@ -316,6 +360,16 @@ async function callAnthropic(
 
   if (systemMessage) {
     body.system = systemMessage;
+  }
+  if (tools?.length && toolChoice !== 'none') {
+    body.tools = tools.map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema,
+    }));
+    body.tool_choice = typeof toolChoice === 'object'
+      ? { type: 'tool', name: toolChoice.name }
+      : { type: 'auto' };
   }
 
   return fetch(ANTHROPIC_API_URL, {

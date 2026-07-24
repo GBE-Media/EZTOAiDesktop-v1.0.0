@@ -21,6 +21,20 @@ export interface AICompletionRequest {
   temperature?: number;
   maxTokens?: number;
   responseFormat?: 'text' | 'json';
+  tools?: AIToolDefinition[];
+  toolChoice?: 'auto' | 'none' | { name: string };
+}
+
+export interface AIToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+}
+
+export interface AIToolCall {
+  id: string;
+  name: string;
+  input: unknown;
 }
 
 export interface AICompletionResponse {
@@ -32,11 +46,13 @@ export interface AICompletionResponse {
     totalTokens: number;
   };
   finishReason?: 'stop' | 'length' | 'content_filter' | 'error';
+  toolCalls?: AIToolCall[];
 }
 
-export interface AIVisionRequest extends AICompletionRequest {
-  images: string[]; // Base64 encoded images
-}
+// Vision images live on the individual user messages. Keeping a second,
+// required top-level images array made the type disagree with every real
+// request and with the proxy contract.
+export type AIVisionRequest = AICompletionRequest;
 
 export interface AIProvider {
   name: AIProviderType;
@@ -136,7 +152,15 @@ export interface DetectedItem {
     width?: number;
     height?: number;
   };
+  /** Normalized 0-100 bounds used for tile reconciliation. */
+  boundingBox?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
   confidence: number;
+  evidence?: string;
   codeReference?: string;
   notes?: string;
 }
@@ -162,7 +186,9 @@ export interface ExtractedText {
 export interface DetectedSymbol {
   type: string;
   trade: TradeType;
-  location: { x: number; y: number };
+  location: { x: number; y: number; width?: number; height?: number };
+  confidence?: number;
+  evidence?: string;
   rotation?: number;
   scale?: number;
 }
@@ -211,7 +237,7 @@ export interface CanvasPlacement {
 
 export interface PlacementMarkup {
   id: string;
-  type: 'count-marker' | 'measurement-length' | 'measurement-area' | 'polyline' | 'polygon' | 'text';
+  type: 'count-marker' | 'rectangle' | 'measurement-length' | 'measurement-area' | 'polyline' | 'polygon' | 'text';
   page: number;
   points: { x: number; y: number }[];
   style: {
@@ -221,6 +247,7 @@ export interface PlacementMarkup {
   };
   label?: string;
   aiNote?: string;
+  confidence?: number;
   linkedItemId?: string;
   pending: boolean; // For suggest-and-confirm mode
 }
@@ -238,11 +265,18 @@ export interface PlacementNote {
 // Coordinates are percentages of the page image so the model doesn't need to
 // know pixel dimensions - the client converts to page-space pixels itself.
 export interface ChatMarkupPointer {
-  type: 'count-marker' | 'text';
+  type: 'count-marker' | 'text' | 'rectangle';
   xPct: number; // 0-100, left-to-right
   yPct: number; // 0-100, top-to-bottom
+  boundsPct?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
   label?: string;
   note?: string;
+  confidence?: number;
 }
 
 export interface LayoutSuggestion {

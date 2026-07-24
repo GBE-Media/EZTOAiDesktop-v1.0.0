@@ -5,8 +5,19 @@
 
 import { getAIService } from './aiService';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
-import { capturePageCrop } from './imageCapture';
-import { getTextContentWithBounds, groupTextIntoLines } from '@/lib/pdfLoader';
+import {
+  capturePageCrop,
+  capturePageVisionBundle,
+  type PageTileRegion,
+} from './imageCapture';
+import {
+  getTextContentWithBounds,
+  groupTextIntoLines,
+  renderPageForOcr,
+  type TextItemWithBounds,
+} from '@/lib/pdfLoader';
+import { isScannedDocument, performOcr } from '@/lib/ocrEngine';
+import { z } from 'zod';
 import type {
   TradeType,
   BlueprintAnalysisResult,
@@ -40,6 +51,9 @@ export interface PipelineOptions {
   highAccuracyMode?: boolean;
   refinePlacements?: boolean;
   visibleOnly?: boolean;
+  analysisRegion?: { x: number; y: number; width: number; height: number };
+  getCachedText?: (page: number) => TextItemWithBounds[];
+  setCachedText?: (page: number, items: TextItemWithBounds[]) => void;
 }
 
 const KEYWORDS = [
@@ -79,15 +93,91 @@ const buildTextContext = (lines: string[]): string => {
   return text.length > maxChars ? `${text.slice(0, maxChars)}\n...[truncated]` : text;
 };
 
-const extractPageTextContext = async (pdfDoc: PDFDocumentProxy, page: number): Promise<string> => {
+export interface PageTextEvidence {
+  context: string;
+  source: 'native' | 'ocr' | 'none';
+  confidence?: number;
+  items: TextItemWithBounds[];
+}
+
+export const extractPageTextEvidence = async (
+  pdfDoc: PDFDocumentProxy,
+  page: number,
+  pageWidth: number,
+  pageHeight: number,
+  getCachedText?: (page: number) => TextItemWithBounds[],
+  setCachedText?: (page: number, items: TextItemWithBounds[]) => void
+): Promise<PageTextEvidence> => {
   try {
-    const textItems = await getTextContentWithBounds(pdfDoc, page, 1.0);
-    const lines = groupTextIntoLines(textItems, 5)
-      .map(line => line.items.map(item => item.str).join(' ').trim())
-      .filter(Boolean);
-    return buildTextContext(lines);
+    const cachedItems = getCachedText?.(page) || [];
+    const nativeItems = cachedItems.length > 0
+      ? cachedItems
+      : await getTextContentWithBounds(pdfDoc, page, 1.0);
+    const scanned = isScannedDocument(nativeItems.length, pageWidth * pageHeight);
+
+    if (!scanned) {
+      if (cachedItems.length === 0) setCachedText?.(page, nativeItems);
+      const lines = groupTextIntoLines(nativeItems, 5)
+        .map(line => line.items.map(item => item.str).join(' ').trim())
+        .filter(Boolean);
+      return {
+        context: buildTextContext(lines),
+        source: 'native',
+        confidence: 1,
+        items: nativeItems,
+      };
+    }
+
+    const canvas = await renderPageForOcr(pdfDoc, page, 300);
+    const ocr = await performOcr(canvas);
+    const scaleX = pageWidth / Math.max(1, canvas.width);
+    const scaleY = pageHeight / Math.max(1, canvas.height);
+    const ocrItems: TextItemWithBounds[] = ocr.words
+      .filter(word => word.text.trim().length > 0)
+      .map(word => ({
+        str: word.text,
+        x: word.x * scaleX,
+        y: word.y * scaleY,
+        width: word.width * scaleX,
+        height: word.height * scaleY,
+      }));
+    setCachedText?.(page, ocrItems);
+    const lines = ocr.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    return {
+      context: buildTextContext(lines),
+      source: 'ocr',
+      confidence: Math.max(0, Math.min(1, ocr.confidence / 100)),
+      items: ocrItems,
+    };
   } catch (error) {
-    console.warn('[AI] Failed to extract page text context:', error);
+    console.warn('[AI] Failed to extract page text/OCR evidence:', error);
+    return { context: '', source: 'none', items: [] };
+  }
+};
+
+const extractPageTextContext = async (
+  pdfDoc: PDFDocumentProxy,
+  page: number,
+  pageWidth: number,
+  pageHeight: number,
+  getCachedText?: (page: number) => TextItemWithBounds[],
+  setCachedText?: (page: number, items: TextItemWithBounds[]) => void
+): Promise<string> => {
+  try {
+    const evidence = await extractPageTextEvidence(
+      pdfDoc,
+      page,
+      pageWidth,
+      pageHeight,
+      getCachedText,
+      setCachedText
+    );
+    const sourceLabel = evidence.source === 'ocr'
+      ? `OCR text (confidence ${Math.round((evidence.confidence || 0) * 100)}%; verify uncertain characters)`
+      : 'Native PDF text';
+    return evidence.context ? `${sourceLabel}:\n${evidence.context}` : '';
+  } catch (error) {
+    console.warn('[AI] Failed to build page text context:', error);
     return '';
   }
 };
@@ -157,6 +247,355 @@ const mergeTypeCounts = (entries: Array<Record<string, number> | undefined>) => 
   }, {} as Record<string, number>);
 };
 
+const visionAnalysisSchema = z.object({
+  items: z.array(z.record(z.unknown())).default([]),
+  dimensions: z.array(z.record(z.unknown())).default([]),
+  text: z.array(z.record(z.unknown())).default([]),
+  symbols: z.array(z.record(z.unknown())).default([]),
+  typeCounts: z.record(z.number()).optional(),
+  questions: z.array(z.string()).optional(),
+  questionOptions: z.array(z.record(z.unknown())).optional(),
+  evidence: z.array(z.string()).optional(),
+  projectInfo: z.record(z.unknown()).optional(),
+});
+
+function normalizePercent(value: unknown): number {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.min(100, number));
+}
+
+function normalizeAnalysis(
+  raw: unknown,
+  page: number,
+  trade: TradeType
+): BlueprintAnalysisResult | null {
+  const parsed = visionAnalysisSchema.safeParse(raw);
+  if (!parsed.success) return null;
+  const data = parsed.data;
+
+  const items = data.items.map((candidate, index) => {
+    const location = (candidate.location || {}) as Record<string, unknown>;
+    const bounds = (candidate.boundingBox || {}) as Record<string, unknown>;
+    return {
+      id: typeof candidate.id === 'string' ? candidate.id : `detected_${page}_${index}`,
+      type: typeof candidate.type === 'string' ? candidate.type : 'unknown',
+      trade,
+      name: typeof candidate.name === 'string'
+        ? candidate.name
+        : (typeof candidate.type === 'string' ? candidate.type : 'Unknown item'),
+      quantity: 1,
+      location: {
+        x: normalizePercent(location.x),
+        y: normalizePercent(location.y),
+        width: Number.isFinite(Number(location.width)) ? normalizePercent(location.width) : undefined,
+        height: Number.isFinite(Number(location.height)) ? normalizePercent(location.height) : undefined,
+      },
+      boundingBox: Number.isFinite(Number(bounds.x)) && Number.isFinite(Number(bounds.y))
+        ? {
+            x: normalizePercent(bounds.x),
+            y: normalizePercent(bounds.y),
+            width: normalizePercent(bounds.width),
+            height: normalizePercent(bounds.height),
+          }
+        : undefined,
+      confidence: Math.max(0, Math.min(1, Number(candidate.confidence) || 0.5)),
+      evidence: typeof candidate.evidence === 'string' ? candidate.evidence : undefined,
+      codeReference: typeof candidate.codeReference === 'string' ? candidate.codeReference : undefined,
+      notes: typeof candidate.notes === 'string' ? candidate.notes : undefined,
+    };
+  });
+
+  return {
+    page,
+    items,
+    dimensions: data.dimensions as unknown as BlueprintAnalysisResult['dimensions'],
+    text: data.text as unknown as BlueprintAnalysisResult['text'],
+    symbols: data.symbols as unknown as BlueprintAnalysisResult['symbols'],
+    typeCounts: data.typeCounts,
+    questions: data.questions,
+    questionOptions: data.questionOptions as unknown as BlueprintAnalysisResult['questionOptions'],
+    evidence: data.evidence,
+    location: typeof data.projectInfo?.address === 'string'
+      ? { address: data.projectInfo.address }
+      : undefined,
+  };
+}
+
+async function requestStructuredAnalysis(
+  imageBase64: string,
+  trade: TradeType,
+  prompt: string,
+  page: number
+): Promise<BlueprintAnalysisResult> {
+  const aiService = getAIService();
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await aiService.analyzeBlueprint(
+      imageBase64,
+      trade,
+      attempt === 0
+        ? prompt
+        : `${prompt}\n\nREPAIR: The previous response was malformed or incomplete. Return only one valid JSON object matching the requested schema.`
+    );
+    const parsed = parseJsonResponse(response.content);
+    const normalized = normalizeAnalysis(parsed, page, trade);
+    if (normalized) return normalized;
+  }
+
+  throw new Error(`Vision model returned invalid structured data for page ${page}`);
+}
+
+function mapTileItemToPage(
+  item: BlueprintAnalysisResult['items'][number],
+  region: PageTileRegion,
+  pageWidth: number,
+  pageHeight: number
+): BlueprintAnalysisResult['items'][number] {
+  const localX = normalizePercent(item.location.x);
+  const localY = normalizePercent(item.location.y);
+  const pageX = region.x + (localX / 100) * region.width;
+  const pageY = region.y + (localY / 100) * region.height;
+  const bounds = item.boundingBox;
+
+  return {
+    ...item,
+    id: `${region.id}_${item.id}`,
+    quantity: 1,
+    location: {
+      ...item.location,
+      x: (pageX / pageWidth) * 100,
+      y: (pageY / pageHeight) * 100,
+      width: item.location.width === undefined
+        ? undefined
+        : (item.location.width / 100) * region.width / pageWidth * 100,
+      height: item.location.height === undefined
+        ? undefined
+        : (item.location.height / 100) * region.height / pageHeight * 100,
+    },
+    boundingBox: bounds
+      ? {
+          x: ((region.x + (bounds.x / 100) * region.width) / pageWidth) * 100,
+          y: ((region.y + (bounds.y / 100) * region.height) / pageHeight) * 100,
+          width: ((bounds.width / 100) * region.width / pageWidth) * 100,
+          height: ((bounds.height / 100) * region.height / pageHeight) * 100,
+        }
+      : undefined,
+  };
+}
+
+function isOwnedByTile(
+  item: BlueprintAnalysisResult['items'][number],
+  region: PageTileRegion,
+  pageWidth: number,
+  pageHeight: number
+): boolean {
+  const pageX = (item.location.x / 100) * pageWidth;
+  const pageY = (item.location.y / 100) * pageHeight;
+  const right = region.ownership.x + region.ownership.width;
+  const bottom = region.ownership.y + region.ownership.height;
+  return pageX >= region.ownership.x && pageX <= right &&
+    pageY >= region.ownership.y && pageY <= bottom;
+}
+
+function normalizedType(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+}
+
+function detectionsOverlap(
+  left: BlueprintAnalysisResult['items'][number],
+  right: BlueprintAnalysisResult['items'][number]
+): boolean {
+  if (normalizedType(left.type) !== normalizedType(right.type)) return false;
+  const dx = left.location.x - right.location.x;
+  const dy = left.location.y - right.location.y;
+  return Math.hypot(dx, dy) <= 1.5;
+}
+
+export function reconcileTileDetections(
+  tileResults: Array<{ region: PageTileRegion; result: BlueprintAnalysisResult }>,
+  pageWidth: number,
+  pageHeight: number
+): BlueprintAnalysisResult['items'] {
+  const candidates = tileResults.flatMap(({ region, result }) =>
+    result.items
+      .map(item => mapTileItemToPage(item, region, pageWidth, pageHeight))
+      .filter(item => isOwnedByTile(item, region, pageWidth, pageHeight))
+  );
+  const reconciled: BlueprintAnalysisResult['items'] = [];
+
+  candidates
+    .sort((a, b) => b.confidence - a.confidence)
+    .forEach(candidate => {
+      if (!reconciled.some(existing => detectionsOverlap(existing, candidate))) {
+        reconciled.push(candidate);
+      }
+    });
+
+  return reconciled;
+}
+
+function countsFromDetections(items: BlueprintAnalysisResult['items']): Record<string, number> {
+  return items.reduce<Record<string, number>>((counts, item) => {
+    const key = item.type || item.name || 'Unknown';
+    counts[key] = (counts[key] || 0) + 1;
+    return counts;
+  }, {});
+}
+
+export interface MaximumAccuracyPageResult {
+  analysis: BlueprintAnalysisResult;
+  overviewImage: string;
+  textEvidence: PageTextEvidence;
+}
+
+export async function analyzePageMaximumAccuracy(options: {
+  pdfDoc: PDFDocumentProxy;
+  page: number;
+  pageWidth: number;
+  pageHeight: number;
+  trade: TradeType;
+  userPrompt?: string;
+  trainingContext?: string;
+  visibleOnly?: boolean;
+  analysisRegion?: { x: number; y: number; width: number; height: number };
+  getCachedText?: (page: number) => TextItemWithBounds[];
+  setCachedText?: (page: number, items: TextItemWithBounds[]) => void;
+  onProgress?: (message: string, progress: number) => void;
+}): Promise<MaximumAccuracyPageResult> {
+  const {
+    pdfDoc,
+    page,
+    pageWidth,
+    pageHeight,
+    trade,
+    userPrompt,
+    trainingContext,
+    visibleOnly,
+    analysisRegion,
+    getCachedText,
+    setCachedText,
+    onProgress,
+  } = options;
+
+  onProgress?.(`Rendering high-resolution page ${page}...`, 5);
+  const [bundle, textEvidence] = await Promise.all([
+    capturePageVisionBundle(pdfDoc, page, pageWidth, pageHeight, { region: analysisRegion }),
+    extractPageTextEvidence(pdfDoc, page, pageWidth, pageHeight, getCachedText, setCachedText),
+  ]);
+  const textContext = visibleOnly || !textEvidence.context
+    ? ''
+    : `${textEvidence.source === 'ocr' ? 'OCR' : 'Native PDF'} text evidence:\n${textEvidence.context}`;
+  const commonContext = [
+    visibleOnly
+      ? 'VISIBLE-ONLY MODE: Count only physical symbols visible in the drawing. Never use schedule rows as quantities.'
+      : 'Use schedules and legends only to identify symbol types; never treat schedule rows as placed quantities.',
+    userPrompt ? `User request: ${userPrompt}` : undefined,
+    trainingContext,
+    textContext,
+  ].filter(Boolean).join('\n\n');
+
+  onProgress?.(`Analyzing page ${page} overview...`, 12);
+  let overview = await requestStructuredAnalysis(
+    bundle.overview.base64,
+    trade,
+    `${commonContext}\n\nOVERVIEW PASS: Understand the drawing, legend, and schedule relationships. Report detections for context, but do not infer counts from schedule rows.`,
+    page
+  );
+  if (analysisRegion) {
+    const overviewRegion: PageTileRegion = {
+      id: 'overview-region',
+      row: 0,
+      col: 0,
+      ...analysisRegion,
+      ownership: analysisRegion,
+    };
+    overview = {
+      ...overview,
+      items: overview.items.map(item => mapTileItemToPage(item, overviewRegion, pageWidth, pageHeight)),
+    };
+  }
+
+  const tileResults: Array<{ region: PageTileRegion; result: BlueprintAnalysisResult }> = [];
+  for (let index = 0; index < bundle.tiles.length; index += 1) {
+    const tile = bundle.tiles[index];
+    onProgress?.(
+      `Analyzing page ${page} detail tile ${index + 1}/${bundle.tiles.length}...`,
+      15 + Math.round(((index + 1) / bundle.tiles.length) * 60)
+    );
+    const result = await requestStructuredAnalysis(
+      tile.base64,
+      trade,
+      `${commonContext}\n\nDETAIL TILE ${tile.region.id}: Find every physical instance visible in this crop. ` +
+      'Return one item per physical symbol with quantity 1, center location and boundingBox in 0-100 coordinates relative to this tile, confidence, and visual evidence. ' +
+      'Do not count schedule/legend rows as installed items.',
+      page
+    );
+    tileResults.push({ region: tile.region, result });
+  }
+
+  onProgress?.(`Reconciling page ${page} detections...`, 80);
+  const tileItems = reconcileTileDetections(tileResults, pageWidth, pageHeight);
+  const items = tileItems.length > 0 ? tileItems : overview.items;
+  const typeCounts = countsFromDetections(items);
+  const questions = [
+    ...(overview.questions || []),
+    ...tileResults.flatMap(({ result }) => result.questions || []),
+  ];
+  const evidence = Array.from(new Set([
+    ...(overview.evidence || []),
+    ...tileResults.flatMap(({ result }) => result.evidence || []),
+    ...items.map(item => item.evidence).filter((value): value is string => !!value),
+  ]));
+
+  onProgress?.(`Verifying page ${page} results...`, 90);
+  const verifierPrompt = `Audit this construction-drawing detection manifest.
+Do not invent or remove coordinates. Check whether counts equal the number of unique detections, flag low-confidence or conflicting identifications, and return JSON:
+{"questions": string[], "evidence": string[]}
+
+Page ${page}; text source: ${textEvidence.source}; detections:
+${JSON.stringify(items.map(item => ({
+    type: item.type,
+    name: item.name,
+    x: item.location.x,
+    y: item.location.y,
+    confidence: item.confidence,
+    evidence: item.evidence,
+  })))}`;
+  const verifierResponse = await getAIService().complete('estimation', {
+    messages: [
+      { role: 'system', content: 'You verify construction blueprint detections. Return only valid JSON and preserve observed facts.' },
+      { role: 'user', content: verifierPrompt },
+    ],
+    responseFormat: 'json',
+    temperature: 0.1,
+    maxTokens: 8192,
+  });
+  const verifier = parseJsonResponse(verifierResponse.content) as {
+    questions?: unknown;
+    evidence?: unknown;
+  } | null;
+  const verifiedQuestions = Array.isArray(verifier?.questions)
+    ? verifier.questions.filter((value): value is string => typeof value === 'string')
+    : [];
+  const verifiedEvidence = Array.isArray(verifier?.evidence)
+    ? verifier.evidence.filter((value): value is string => typeof value === 'string')
+    : [];
+
+  return {
+    overviewImage: bundle.overview.base64,
+    textEvidence,
+    analysis: {
+      ...overview,
+      page,
+      items,
+      typeCounts,
+      questions: Array.from(new Set([...questions, ...verifiedQuestions])),
+      evidence: Array.from(new Set([...evidence, ...verifiedEvidence])),
+    },
+  };
+}
+
 export interface PipelineResult {
   success: boolean;
   analysis?: BlueprintAnalysisResult[];
@@ -195,6 +634,9 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     highAccuracyMode = false,
     refinePlacements = true,
     visibleOnly = false,
+    analysisRegion,
+    getCachedText,
+    setCachedText,
   } = options;
 
   const reportProgress = (stage: PipelineProgress['stage'], progress: number, message: string, data?: unknown) => {
@@ -211,10 +653,35 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
       const page = pages[i];
       const pageProgress = Math.round((i / pages.length) * 100);
       reportProgress('vision', pageProgress, `Analyzing page ${page}...`);
+
+      // Every PDF-backed request now uses the same maximum-accuracy overview,
+      // overlapping tile, text/OCR, reconciliation, and verification path.
+      if (pdfDoc) {
+        const maximumResult = await analyzePageMaximumAccuracy({
+          pdfDoc,
+          page,
+          pageWidth,
+          pageHeight,
+          trade,
+          userPrompt,
+          trainingContext,
+          visibleOnly,
+          analysisRegion,
+          getCachedText,
+          setCachedText,
+          onProgress: (message, progress) => reportProgress(
+            'vision',
+            Math.min(99, Math.round(((i + progress / 100) / pages.length) * 100)),
+            message
+          ),
+        });
+        analysisResults.push(maximumResult.analysis);
+        continue;
+      }
       
       // Get page image
       const imageBase64 = await imageGenerator(page);
-      const textContext = pdfDoc && !visibleOnly ? await extractPageTextContext(pdfDoc, page) : '';
+      const textContext = '';
       const promptParts = [
         visibleOnly ? 'VISIBLE-ONLY MODE: Count only symbols visible in the image. Ignore schedule/legend totals or text-only counts.' : undefined,
         userPrompt ? `User request: ${userPrompt}` : undefined,
@@ -404,7 +871,11 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     
     let estimate: MaterialEstimate;
     try {
-      const estimateData = parseJsonResponse(estimationResponse.content);
+      const estimateData = parseJsonResponse(estimationResponse.content) as {
+        items?: MaterialEstimate['items'];
+        codeReferences?: MaterialEstimate['codeReferences'];
+        notes?: string[];
+      } | null;
       if (!estimateData) {
         throw new Error('Empty or invalid JSON');
       }
@@ -438,7 +909,10 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     
     let placements: CanvasPlacement;
     try {
-      const placementData = parseJsonResponse(placementResponse.content);
+      const placementData = parseJsonResponse(placementResponse.content) as {
+        markups?: CanvasPlacement['markups'];
+        notes?: CanvasPlacement['notes'];
+      } | null;
       if (!placementData) {
         throw new Error('Empty or invalid JSON');
       }
@@ -503,7 +977,13 @@ export async function analyzeOnly(options: {
       options.userPrompt
     );
     
-    const data = parseJsonResponse(response.content);
+    const data = parseJsonResponse(response.content) as {
+      items?: BlueprintAnalysisResult['items'];
+      dimensions?: BlueprintAnalysisResult['dimensions'];
+      text?: BlueprintAnalysisResult['text'];
+      symbols?: BlueprintAnalysisResult['symbols'];
+      projectInfo?: { address?: string };
+    } | null;
     if (!data) {
       throw new Error('Failed to parse analysis response');
     }
@@ -537,17 +1017,56 @@ export async function chat(options: {
     catalogSummary?: string;
   };
   imageBase64?: string;
+  pdfDoc?: PDFDocumentProxy;
+  pageWidth?: number;
+  pageHeight?: number;
+  getCachedText?: (page: number) => TextItemWithBounds[];
+  setCachedText?: (page: number, items: TextItemWithBounds[]) => void;
+  onProgress?: (message: string, progress: number) => void;
 }): Promise<{ text: string; markupPointers: ChatMarkupPointer[] }> {
   const aiService = getAIService();
+  const page = options.context?.currentPage || 1;
+  const maximumResult = !options.imageBase64 && options.pdfDoc && options.pageWidth && options.pageHeight
+    ? await analyzePageMaximumAccuracy({
+        pdfDoc: options.pdfDoc,
+        page,
+        pageWidth: options.pageWidth,
+        pageHeight: options.pageHeight,
+        trade: options.context?.trade || 'electrical',
+        userPrompt: options.message,
+        getCachedText: options.getCachedText,
+        setCachedText: options.setCachedText,
+        onProgress: options.onProgress,
+      })
+    : null;
+  const effectiveImage = maximumResult?.overviewImage || options.imageBase64;
+  const verifiedVisionContext = maximumResult
+    ? `\nVerified maximum-accuracy page evidence:\n${JSON.stringify({
+        page,
+        textSource: maximumResult.textEvidence.source,
+        textConfidence: maximumResult.textEvidence.confidence,
+        typeCounts: maximumResult.analysis.typeCounts,
+        detections: maximumResult.analysis.items.map(item => ({
+          type: item.type,
+          name: item.name,
+          xPct: item.location.x,
+          yPct: item.location.y,
+          confidence: item.confidence,
+          evidence: item.evidence,
+        })),
+        questions: maximumResult.analysis.questions,
+        evidence: maximumResult.analysis.evidence,
+      })}`
+    : '';
 
-  const pointerInstructions = options.imageBase64
+  const pointerInstructions = effectiveImage
     ? `
 
 If you want to visually point out a specific location on the page image you're looking at (e.g. something you just mentioned), end your reply with a fenced json code block in this exact shape - coordinates are percentages of the image, top-left origin:
 \`\`\`json
-{"markups": [{"type": "count-marker", "xPct": 42.5, "yPct": 18.0, "label": "Panel", "note": "Looks like the electrical panel"}]}
+{"markups": [{"type": "rectangle", "xPct": 42.5, "yPct": 18.0, "boundsPct": {"x": 39, "y": 14, "width": 7, "height": 8}, "label": "Panel", "note": "Looks like the electrical panel", "confidence": 0.94}]}
 \`\`\`
-Use "type": "text" instead of "count-marker" for a short floating note rather than a numbered marker. Only include this block when pointing at something specific, include at most 10 markers, and never mention the block itself in your written answer.`
+Use "rectangle" when visible bounds are known, "count-marker" for a point-only location, or "text" for a short floating note. Only include this block when pointing at something specific, include at most 10 callouts, and never mention the block itself in your written answer.`
     : '';
 
   const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string; images?: string[] }> = [
@@ -565,8 +1084,11 @@ ${options.context?.trade ? `Current trade focus: ${options.context.trade}` : ''}
 ${options.context?.currentPage ? `Current page: ${options.context.currentPage}` : ''}
 ${options.context?.markupsSummary ? `\nExisting markups on the current page:\n${options.context.markupsSummary}` : ''}
 ${options.context?.catalogSummary ? `\nUser's product/assembly catalog:\n${options.context.catalogSummary}` : ''}
+${verifiedVisionContext}
 ${pointerInstructions}
 
+Base document claims on the verified evidence above. State uncertainty when evidence conflicts or confidence is low.
+Give concise conclusions and observable evidence. Do not expose private chain-of-thought or hidden reasoning.
 Be helpful, accurate, and reference specific codes when applicable.`,
     },
   ];
@@ -577,11 +1099,11 @@ Be helpful, accurate, and reference specific codes when applicable.`,
   }
   
   // Add current message
-  if (options.imageBase64) {
+  if (effectiveImage) {
     messages.push({
       role: 'user',
       content: options.message,
-      images: [options.imageBase64],
+      images: [effectiveImage],
     });
   } else {
     messages.push({
@@ -592,13 +1114,26 @@ Be helpful, accurate, and reference specific codes when applicable.`,
   
   try {
     let response;
-    if (options.imageBase64) {
+    if (effectiveImage) {
       response = await aiService.vision({ messages });
     } else {
       response = await aiService.complete('estimation', { messages });
     }
 
-    return extractChatMarkupPointers(response.content);
+    const extracted = extractChatMarkupPointers(response.content);
+    if (!maximumResult) return extracted;
+
+    // Prefer reconciled detection coordinates over freehand model percentages
+    // whenever the response names a detected object.
+    const evidencePointers = buildVerifiedCalloutPointers(
+      maximumResult.analysis,
+      extracted.text
+    );
+
+    return {
+      text: extracted.text,
+      markupPointers: evidencePointers.length > 0 ? evidencePointers : extracted.markupPointers,
+    };
   } catch (error) {
     console.error('Chat failed:', error);
     throw error;
@@ -606,7 +1141,31 @@ Be helpful, accurate, and reference specific codes when applicable.`,
 }
 
 const MAX_CHAT_MARKUP_POINTERS = 10;
-const CHAT_MARKUP_POINTER_TYPES = new Set(['count-marker', 'text']);
+const CHAT_MARKUP_POINTER_TYPES = new Set(['count-marker', 'text', 'rectangle']);
+
+export function buildVerifiedCalloutPointers(
+  analysis: BlueprintAnalysisResult,
+  responseText: string
+): ChatMarkupPointer[] {
+  const normalizedResponse = responseText.toLowerCase();
+  return analysis.items
+    .filter(item => {
+      const type = item.type.trim().toLowerCase();
+      const name = item.name.trim().toLowerCase();
+      return (type.length > 1 && normalizedResponse.includes(type)) ||
+        (name.length > 1 && normalizedResponse.includes(name));
+    })
+    .slice(0, MAX_CHAT_MARKUP_POINTERS)
+    .map((item): ChatMarkupPointer => ({
+      type: item.boundingBox ? 'rectangle' : 'count-marker',
+      xPct: item.location.x,
+      yPct: item.location.y,
+      boundsPct: item.boundingBox,
+      label: item.name,
+      note: item.evidence || `Verified ${item.type} detection`,
+      confidence: item.confidence,
+    }));
+}
 
 // Pulls an optional trailing `{"markups": [...]}` block (see the pointer
 // instructions appended to the chat system prompt above) out of a chat
@@ -633,19 +1192,52 @@ function extractChatMarkupPointers(content: string): { text: string; markupPoint
     if (markupPointers.length >= MAX_CHAT_MARKUP_POINTERS) break;
     if (!item || typeof item !== 'object') continue;
     const candidate = item as Record<string, unknown>;
-    const type = candidate.type === 'text' ? 'text' : 'count-marker';
+    const type = candidate.type === 'rectangle'
+      ? 'rectangle'
+      : candidate.type === 'text'
+        ? 'text'
+        : 'count-marker';
     const xPct = Number(candidate.xPct);
     const yPct = Number(candidate.yPct);
     if (!CHAT_MARKUP_POINTER_TYPES.has(type)) continue;
     if (!Number.isFinite(xPct) || !Number.isFinite(yPct)) continue;
     if (xPct < 0 || xPct > 100 || yPct < 0 || yPct > 100) continue;
 
+    const rawBounds = candidate.boundsPct;
+    const bounds = rawBounds && typeof rawBounds === 'object'
+      ? rawBounds as Record<string, unknown>
+      : null;
+    const boundsPct = bounds
+      ? {
+          x: Number(bounds.x),
+          y: Number(bounds.y),
+          width: Number(bounds.width),
+          height: Number(bounds.height),
+        }
+      : undefined;
+    const validBounds = boundsPct &&
+      Number.isFinite(boundsPct.x) &&
+      Number.isFinite(boundsPct.y) &&
+      Number.isFinite(boundsPct.width) &&
+      Number.isFinite(boundsPct.height) &&
+      boundsPct.width > 0 &&
+      boundsPct.height > 0;
+
     markupPointers.push({
       type,
       xPct,
       yPct,
+      boundsPct: validBounds ? {
+        x: Math.max(0, Math.min(100, boundsPct.x)),
+        y: Math.max(0, Math.min(100, boundsPct.y)),
+        width: Math.max(0.1, Math.min(100, boundsPct.width)),
+        height: Math.max(0.1, Math.min(100, boundsPct.height)),
+      } : undefined,
       label: typeof candidate.label === 'string' ? candidate.label : undefined,
       note: typeof candidate.note === 'string' ? candidate.note : undefined,
+      confidence: Number.isFinite(Number(candidate.confidence))
+        ? Math.max(0, Math.min(1, Number(candidate.confidence)))
+        : undefined,
     });
   }
 
@@ -653,7 +1245,7 @@ function extractChatMarkupPointers(content: string): { text: string; markupPoint
   return { text: text || content.trim(), markupPointers };
 }
 
-function parseJsonResponse(content: string): any | null {
+function parseJsonResponse(content: string): unknown | null {
   if (!content) return null;
   // Try direct parse first
   try {
@@ -729,14 +1321,14 @@ Only return the JSON object.`;
           temperature: 0.1,
         });
         
-        const refined = parseJsonResponse(response.content);
+        const refined = parseJsonResponse(response.content) as { x?: unknown; y?: unknown } | null;
         if (!refined || typeof refined.x !== 'number' || typeof refined.y !== 'number') {
           return markup;
         }
         
         const refinedPoint = {
-          x: Math.max(0, Math.min(pageWidth, cropX + refined.x)),
-          y: Math.max(0, Math.min(pageHeight, cropY + refined.y)),
+          x: Math.max(0, Math.min(pageWidth, cropX + refined.x / crop.scale)),
+          y: Math.max(0, Math.min(pageHeight, cropY + refined.y / crop.scale)),
         };
         
         return {

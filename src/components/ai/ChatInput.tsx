@@ -4,7 +4,7 @@
  */
 
 import { useState, useRef, useCallback, type KeyboardEvent } from 'react';
-import { Send, Paperclip, Image, X, Loader2 } from 'lucide-react';
+import { Send, Image, X, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
@@ -14,6 +14,8 @@ interface ChatInputProps {
   isLoading?: boolean;
   placeholder?: string;
   disabled?: boolean;
+  onStop?: () => void;
+  contextChips?: string[];
 }
 
 export function ChatInput({
@@ -21,11 +23,15 @@ export function ChatInput({
   isLoading = false,
   placeholder = 'Ask about your blueprints...',
   disabled = false,
+  onStop,
+  contextChips = [],
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const historyRef = useRef<string[]>([]);
+  const historyIndexRef = useRef(-1);
 
   const handleSend = useCallback(() => {
     const trimmedMessage = message.trim();
@@ -33,6 +39,8 @@ export function ChatInput({
     if (isLoading || disabled) return;
     
     onSend(trimmedMessage, attachedImages.length > 0 ? attachedImages : undefined);
+    historyRef.current = [trimmedMessage, ...historyRef.current.filter(item => item !== trimmedMessage)].slice(0, 30);
+    historyIndexRef.current = -1;
     setMessage('');
     setAttachedImages([]);
     
@@ -46,8 +54,16 @@ export function ChatInput({
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
+    } else if (e.key === 'ArrowUp' && !message && historyRef.current.length) {
+      e.preventDefault();
+      historyIndexRef.current = Math.min(historyIndexRef.current + 1, historyRef.current.length - 1);
+      setMessage(historyRef.current[historyIndexRef.current]);
+    } else if (e.key === 'ArrowDown' && historyIndexRef.current >= 0) {
+      e.preventDefault();
+      historyIndexRef.current -= 1;
+      setMessage(historyIndexRef.current >= 0 ? historyRef.current[historyIndexRef.current] : '');
     }
-  }, [handleSend]);
+  }, [handleSend, message]);
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setMessage(e.target.value);
@@ -85,6 +101,15 @@ export function ChatInput({
 
   return (
     <div className="border-t border-border bg-background p-4">
+      {contextChips.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {contextChips.map(chip => (
+            <span key={chip} className="rounded-full border border-border bg-secondary/40 px-2 py-0.5 text-[10px] text-muted-foreground">
+              {chip}
+            </span>
+          ))}
+        </div>
+      )}
       {/* Attached images preview */}
       {attachedImages.length > 0 && (
         <div className="flex gap-2 mb-3 flex-wrap">
@@ -146,7 +171,15 @@ export function ChatInput({
         </div>
         
         {/* Send button */}
-        <Button
+        {isLoading && onStop ? <Button
+          onClick={onStop}
+          size="icon"
+          variant="destructive"
+          className="h-11 w-11 shrink-0"
+          title="Stop assistant"
+        >
+          <Square className="h-3.5 w-3.5 fill-current" />
+        </Button> : <Button
           onClick={handleSend}
           disabled={!canSend}
           size="icon"
@@ -155,12 +188,8 @@ export function ChatInput({
             canSend && 'bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700'
           )}
         >
-          {isLoading ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Send className="w-4 h-4" />
-          )}
-        </Button>
+          <Send className="w-4 h-4" />
+        </Button>}
       </div>
       
       {/* Helper text */}

@@ -5,8 +5,12 @@ import { useHistoryStore } from './historyStore';
 import { useEditorStore } from './editorStore';
 import { useProductStore } from './productStore';
 import type { TextItemWithBounds, TextWord } from '@/lib/pdfLoader';
+import type { LinkedMeasurement } from '@/types/product';
 
-const buildMeasurementFromMarkup = (markup: CanvasMarkup, documentId: string) => {
+const buildMeasurementFromMarkup = (
+  markup: CanvasMarkup,
+  documentId: string
+): Omit<LinkedMeasurement, 'id' | 'createdAt'> | null => {
   if (!documentId) return null;
 
   if (markup.type === 'count-marker') {
@@ -1184,6 +1188,11 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     const docData = state.pdfDocuments[state.activeDocId];
     if (!docData) return;
     
+    const affectedPages = [...new Set(markups.map(item => item.page))];
+    const beforeByPage = Object.fromEntries(
+      affectedPages.map(page => [page, [...(docData.markupsByPage[page] || [])]])
+    );
+
     // Group markups by page
     const markupsByPage = { ...docData.markupsByPage };
     
@@ -1199,6 +1208,18 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
       }
       markupsByPage[page] = [...markupsByPage[page], aiMarkup];
     }
+
+    useHistoryStore.getState().pushHistory({
+      action: 'batch',
+      page: affectedPages[0] || get().getCurrentPage(),
+      before: null,
+      after: null,
+      pages: Object.fromEntries(affectedPages.map(page => [
+        page,
+        { before: beforeByPage[page], after: [...(markupsByPage[page] || [])] },
+      ])),
+      description: `Placed ${markups.length} AI markup${markups.length === 1 ? '' : 's'}`,
+    });
     
     set({
       pdfDocuments: {
@@ -1296,7 +1317,31 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   
   undo: () => {
     const historyEntry = useHistoryStore.getState().undo();
-    if (!historyEntry || !historyEntry.before || !historyEntry.after) return;
+    if (!historyEntry) return;
+    if (historyEntry.pages) {
+      const state = get();
+      if (!state.activeDocId) return;
+      const docData = state.pdfDocuments[state.activeDocId];
+      if (!docData) return;
+      const productStore = useProductStore.getState();
+      const markupsByPage = { ...docData.markupsByPage };
+      Object.entries(historyEntry.pages).forEach(([pageKey, snapshot]) => {
+        const beforeIds = new Set(snapshot.before.map(markup => markup.id));
+        snapshot.after
+          .filter(markup => !beforeIds.has(markup.id))
+          .forEach(markup => productStore.unlinkMeasurementByMarkupId(markup.id));
+        markupsByPage[Number(pageKey)] = snapshot.before;
+      });
+      set({
+        pdfDocuments: {
+          ...state.pdfDocuments,
+          [state.activeDocId]: { ...docData, markupsByPage },
+        },
+      });
+      useEditorStore.getState().updateDocument(state.activeDocId, { modified: true });
+      return;
+    }
+    if (!historyEntry.before || !historyEntry.after) return;
 
     const state = get();
     const productStore = useProductStore.getState();
@@ -1355,7 +1400,38 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   
   redo: () => {
     const historyEntry = useHistoryStore.getState().redo();
-    if (!historyEntry || !historyEntry.before || !historyEntry.after) return;
+    if (!historyEntry) return;
+    if (historyEntry.pages) {
+      const state = get();
+      if (!state.activeDocId) return;
+      const docData = state.pdfDocuments[state.activeDocId];
+      if (!docData) return;
+      const productStore = useProductStore.getState();
+      const markupsByPage = { ...docData.markupsByPage };
+      Object.entries(historyEntry.pages).forEach(([pageKey, snapshot]) => {
+        const beforeIds = new Set(snapshot.before.map(markup => markup.id));
+        snapshot.after
+          .filter(markup => !beforeIds.has(markup.id))
+          .forEach(markup => {
+            const productId = markup.productId;
+            if (!productId || !state.activeDocId) return;
+            const measurement = buildMeasurementFromMarkup(markup, state.activeDocId);
+            if (measurement && !productStore.getMeasurementByMarkupId(measurement.markupId)) {
+              productStore.linkMeasurement(productId, measurement);
+            }
+          });
+        markupsByPage[Number(pageKey)] = snapshot.after;
+      });
+      set({
+        pdfDocuments: {
+          ...state.pdfDocuments,
+          [state.activeDocId]: { ...docData, markupsByPage },
+        },
+      });
+      useEditorStore.getState().updateDocument(state.activeDocId, { modified: true });
+      return;
+    }
+    if (!historyEntry.before || !historyEntry.after) return;
 
     const state = get();
     const productStore = useProductStore.getState();

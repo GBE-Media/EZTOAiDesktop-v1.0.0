@@ -3,11 +3,14 @@
  * Renders individual chat messages with support for AI responses and loading states
  */
 
-import { memo } from 'react';
-import { Bot, User, Loader2, AlertCircle, Zap, Eye, Calculator, MapPin } from 'lucide-react';
+import { memo, useState } from 'react';
+import { Bot, User, Loader2, AlertCircle, Zap, Eye, Calculator, MapPin, Copy, Check, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ChatMessage as ChatMessageType } from '@/store/aiChatStore';
 import type { PipelineStage } from '@/services/ai/providers/types';
+import { AssistantMessageBlocks } from './AssistantMessageBlocks';
+import { Button } from '@/components/ui/button';
+import { useAIChatStore } from '@/store/aiChatStore';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -29,6 +32,22 @@ const StageIcon = ({ stage }: { stage?: PipelineStage }) => {
 export const ChatMessage = memo(function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
+  const [copied, setCopied] = useState(false);
+  const messages = useAIChatStore(state => state.messages);
+  const retry = () => {
+    const index = messages.findIndex(candidate => candidate.id === message.id);
+    const source = [...messages.slice(0, index)].reverse().find(candidate => candidate.role === 'user');
+    if (source) {
+      window.dispatchEvent(new CustomEvent('bidveraai:retry', {
+        detail: { content: source.content, images: source.images },
+      }));
+    }
+  };
+  const copy = async () => {
+    await navigator.clipboard.writeText(message.content || '');
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
   
   if (isSystem) {
     return (
@@ -77,6 +96,16 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
           <span className="text-xs text-muted-foreground">
             {formatTime(message.timestamp)}
           </span>
+          {!isUser && !message.isLoading && (
+            <div className="ml-auto flex items-center">
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={copy} title="Copy answer">
+                {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+              </Button>
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={retry} title="Retry">
+                <RotateCcw className="h-3 w-3" />
+              </Button>
+            </div>
+          )}
         </div>
         
         {/* Message content */}
@@ -95,6 +124,7 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
             {formatContent(message.content)}
           </div>
         )}
+        <AssistantMessageBlocks blocks={message.blocks} />
         
         {/* Images if any */}
         {message.images && message.images.length > 0 && (

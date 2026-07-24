@@ -4,7 +4,12 @@
  */
 
 import { externalAuthClient } from '@/integrations/external-auth/client';
-import type { AICompletionResponse, AIProviderType } from './providers/types';
+import type {
+  AICompletionResponse,
+  AIProviderType,
+  AIToolCall,
+  AIToolDefinition,
+} from './providers/types';
 
 const AI_PROXY_URL = 'https://einpdmanlpadqyqnvccb.supabase.co/functions/v1/ai-proxy';
 
@@ -19,11 +24,15 @@ export interface ProxyRequest {
   temperature?: number;
   maxTokens?: number;
   responseFormat?: 'text' | 'json';
+  tools?: AIToolDefinition[];
+  toolChoice?: 'auto' | 'none' | { name: string };
 }
 
 export interface ProxyResponse {
   content: string;
   model: string;
+  finishReason?: string;
+  toolCalls?: AIToolCall[];
   usage: {
     promptTokens: number;
     completionTokens: number;
@@ -107,6 +116,10 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
       throw new Error('Session expired. Please log in again.');
     }
 
+    if (response.status === 413) {
+      throw new Error('The blueprint image payload is too large. Reduce the selected page area and try again.');
+    }
+
     throw new Error(errorData.error || `AI request failed (${response.status})`);
   }
 
@@ -124,7 +137,12 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
       completionTokens: proxyResponse.usage?.completionTokens || 0,
       totalTokens: proxyResponse.usage?.totalTokens || 0,
     },
-    finishReason: 'stop',
+    finishReason: proxyResponse.finishReason === 'length' || proxyResponse.finishReason === 'max_tokens'
+      ? 'length'
+      : proxyResponse.finishReason === 'content_filter'
+        ? 'content_filter'
+        : 'stop',
+    toolCalls: proxyResponse.toolCalls || [],
   };
 }
 

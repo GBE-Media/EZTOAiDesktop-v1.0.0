@@ -20,6 +20,9 @@ import {
   type AIModelInfo,
 } from './providers';
 import { sendProxyRequest, isProxyAvailable, type ProxyRequest } from './proxyClient';
+import { ELECTRICAL_VISION_PROMPT } from './trades/electrical';
+import { PLUMBING_VISION_PROMPT } from './trades/plumbing';
+import { HVAC_VISION_PROMPT } from './trades/hvac';
 
 // Known-good models to fall back to if the configured flagship model is
 // rejected because the underlying account/key isn't permitted to use it yet
@@ -196,7 +199,9 @@ class AIService {
    */
   private async sendProxyRequestWithFallback(params: ProxyRequest): Promise<AICompletionResponse> {
     try {
-      return await sendProxyRequest(params);
+      const response = await sendProxyRequest(params);
+      console.info(`[AIService] ${params.provider} pass completed with model "${response.model || params.model}".`);
+      return response;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const fallbackModel = FALLBACK_MODELS[params.provider];
@@ -207,7 +212,9 @@ class AIService {
           `("${message}"). Retrying with fallback model "${fallbackModel}". Check the account's usage tier / ` +
           `organization verification in the ${params.provider} console to unlock the flagship model.`
         );
-        return await sendProxyRequest({ ...params, model: fallbackModel });
+        const fallbackResponse = await sendProxyRequest({ ...params, model: fallbackModel });
+        console.info(`[AIService] ${params.provider} fallback pass completed with model "${fallbackResponse.model || fallbackModel}".`);
+        return fallbackResponse;
       }
 
       throw error;
@@ -234,6 +241,8 @@ class AIService {
         temperature: request.temperature,
         maxTokens: request.maxTokens,
         responseFormat: request.responseFormat,
+        tools: request.tools,
+        toolChoice: request.toolChoice,
       });
     }
 
@@ -273,6 +282,8 @@ class AIService {
         temperature: request.temperature,
         maxTokens: request.maxTokens,
         responseFormat: request.responseFormat,
+        tools: request.tools,
+        toolChoice: request.toolChoice,
       });
     }
 
@@ -309,6 +320,7 @@ class AIService {
       ],
       responseFormat: 'json',
       temperature: 0.2,
+      maxTokens: 16384,
     });
   }
 
@@ -359,6 +371,11 @@ class AIService {
   }
 
   private getBlueprintAnalysisPrompt(trade: TradeType): string {
+    const symbolGuidance: Record<TradeType, string> = {
+      electrical: ELECTRICAL_VISION_PROMPT,
+      plumbing: PLUMBING_VISION_PROMPT,
+      hvac: HVAC_VISION_PROMPT,
+    };
     const tradePrompts: Record<TradeType, string> = {
       electrical: `You are an expert electrical estimator analyzing construction blueprints.
 Identify all electrical components including:
@@ -425,7 +442,16 @@ If you are uncertain about symbol meaning, schedule mapping, or counts, add clea
 Also provide structured question options in "questionOptions" with id, prompt, options[], and allowMultiple when applicable.`,
     };
 
-    return `${tradePrompts[trade]}
+    return `${symbolGuidance[trade]}
+
+${tradePrompts[trade]}
+
+Accuracy rules:
+- Return one item per physical symbol instance with quantity 1.
+- Coordinates and bounding boxes must use 0-100 values relative to the supplied image.
+- Include confidence and short visual evidence for every item.
+- Use schedules and legends to identify symbol types only; never count schedule rows as installed quantities.
+- If a symbol is ambiguous, report the uncertainty in questions instead of guessing.
 
 Respond with a JSON object in this format:
 {
@@ -436,7 +462,9 @@ Respond with a JSON object in this format:
       "name": "descriptive name",
       "quantity": 1,
       "location": { "x": 50, "y": 30 },
+      "boundingBox": { "x": 48, "y": 28, "width": 4, "height": 4 },
       "confidence": 0.95,
+      "evidence": "Visible symbol and adjacent type callout",
       "codeReference": "NEC 210.52",
       "notes": "any relevant notes"
     }

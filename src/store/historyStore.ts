@@ -9,6 +9,7 @@ interface HistoryEntry {
   page: number;
   before: CanvasMarkup[] | null;
   after: CanvasMarkup[] | null;
+  pages?: Record<number, { before: CanvasMarkup[]; after: CanvasMarkup[] }>;
   description: string;
   linkedMeasurements?: Array<{
     productId: string;

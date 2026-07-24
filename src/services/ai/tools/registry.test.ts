@@ -1,0 +1,61 @@
+import { describe, expect, it, vi } from 'vitest';
+import {
+  executeApprovedAssistantAction,
+  executeAssistantTool,
+} from './registry';
+import type { AssistantToolContext } from './types';
+
+function makeContext(): AssistantToolContext {
+  return {
+    runId: 'run-1',
+    messageId: 'message-1',
+    getDocumentContext: vi.fn(() => ({ page: 3 })),
+    analyzePage: vi.fn(async input => input),
+    searchDocument: vi.fn(async () => []),
+    inspectCatalog: vi.fn(() => []),
+    inspectMarkups: vi.fn(() => []),
+    navigateToPage: vi.fn(),
+    activateEditorTool: vi.fn(),
+    placeMarkups: vi.fn(payload => payload),
+    updateMarkups: vi.fn(payload => payload),
+    deleteMarkups: vi.fn(payload => payload),
+    linkCatalog: vi.fn(payload => payload),
+    addApproval: vi.fn(),
+  };
+}
+
+describe('assistant tool registry', () => {
+  it('validates input and automatically executes read tools', async () => {
+    const context = makeContext();
+    const result = await executeAssistantTool('analyze_page', { page: 2, scope: 'full' }, context);
+    expect(result.status).toBe('completed');
+    expect(context.analyzePage).toHaveBeenCalledWith({ page: 2, scope: 'full' });
+    await expect(executeAssistantTool('analyze_page', { page: 0 }, context)).rejects.toThrow();
+  });
+
+  it('requires approval for every document mutation', async () => {
+    const context = makeContext();
+    const result = await executeAssistantTool('place_markups', {
+      payload: [{ id: 'markup-1' }],
+      description: 'Place one verified callout',
+    }, context);
+    expect(result.status).toBe('approval-required');
+    expect(result.approval).toMatchObject({
+      toolId: 'place_markups',
+      status: 'pending',
+      undoable: true,
+    });
+    expect(context.placeMarkups).not.toHaveBeenCalled();
+    expect(context.addApproval).toHaveBeenCalledOnce();
+  });
+
+  it('executes only an explicitly approved action', async () => {
+    const context = makeContext();
+    const result = await executeAssistantTool('place_markups', {
+      payload: [{ id: 'markup-1' }],
+      description: 'Place one verified callout',
+    }, context);
+    await executeApprovedAssistantAction(result.approval!, context);
+    expect(context.placeMarkups).toHaveBeenCalledWith([{ id: 'markup-1' }]);
+  });
+});

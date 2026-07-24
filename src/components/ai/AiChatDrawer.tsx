@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
-import { X, Bot, Sparkles, AlertCircle, Loader2, FolderPlus, PackagePlus, Boxes } from 'lucide-react';
+import { Sparkles, AlertCircle, Loader2, FolderPlus, PackagePlus, Boxes } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -31,21 +31,29 @@ import { useProductStore } from '@/store/productStore';
 import { useEditorStore } from '@/store/editorStore';
 import { useProductSync } from '@/hooks/useProductSync';
 import { ChatMessage } from './ChatMessage';
-import { ChatInput } from './ChatInput';
 import { AiToolbar } from './AiToolbar';
 import { AiSettingsDialog } from './AiSettingsDialog';
 import { ProductMatchPanel } from './ProductMatchPanel';
 import { getAIService } from '@/services/ai/aiService';
 import { chat as aiChat, runPipeline } from '@/services/ai/pipeline';
 import { summarizeCatalogForChat, summarizeMarkupsForChat } from '@/services/ai/contextSummary';
-import { renderPageForOcr } from '@/lib/pdfLoader';
 import { cn } from '@/lib/utils';
 import { capturePageCrop, createPageImageGenerator, getOptimalScale } from '@/services/ai/imageCapture';
+import { chatPointersToGreenPlacements } from '@/services/ai/callouts';
 import { fetchTrainingContext } from '@/services/ai/trainingService';
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
 import type { BlueprintAnalysisResult, CanvasPlacement, PlacementMarkup } from '@/services/ai/providers/types';
 import { useAuth } from '@/hooks/useAuth';
 import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
+import {
+  cancelAssistantRun,
+  registerAssistantRunController,
+  releaseAssistantRunController,
+} from '@/services/ai/assistantOrchestrator';
+import type { EvidenceCitation } from '@/types/assistant';
+import { proposeAssistantMutation } from '@/services/ai/tools/registry';
+import { AssistantHeader } from './AssistantHeader';
+import { AssistantComposer } from './AssistantComposer';
 
 export function AiChatDrawer() {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -66,7 +74,7 @@ export function AiChatDrawer() {
   const [takeoffOpen, setTakeoffOpen] = useState(false);
   const [takeoffPrompt, setTakeoffPrompt] = useState('');
   const [takeoffScope, setTakeoffScope] = useState<'ask' | 'viewport' | 'full' | 'selection'>('ask');
-  const [highAccuracy, setHighAccuracy] = useState(false);
+  const highAccuracy = true;
   const [visibleOnly, setVisibleOnly] = useState(false);
   const [takeoffError, setTakeoffError] = useState<string | null>(null);
   const [calibrationTypeInput, setCalibrationTypeInput] = useState('');
@@ -88,6 +96,12 @@ export function AiChatDrawer() {
     pipelineStatus,
     setPipelineStatus,
     setPendingPlacements,
+    setConversationContext,
+    runs,
+    conversation,
+    conversationList,
+    createConversation,
+    selectConversation,
   } = useAIChatStore();
 
   const { user } = useAuth();
@@ -115,6 +129,8 @@ export function AiChatDrawer() {
     aiCalibrationSamples,
     getMarkupsByPage,
     getCurrentPage,
+    getTextContent,
+    setTextContent,
   } = useCanvasStore();
   // `currentPage` is not a top-level store field (it lives per-document at
   // pdfDocuments[docId].currentPage) - always derive it via getCurrentPage()
@@ -126,6 +142,12 @@ export function AiChatDrawer() {
   
   // Editor store for document info
   const { documents, activeDocument } = useEditorStore();
+  const activeDocumentRecord = documents.find(document => document.id === activeDocument);
+
+  useEffect(() => {
+    const contextId = activeDocId || (user?.id ? `user:${user.id}:general` : 'local:general');
+    void setConversationContext(contextId, activeDocumentRecord?.name || 'General assistant');
+  }, [activeDocId, activeDocumentRecord?.name, setConversationContext, user?.id]);
   
   // Initialize settings on mount
   useEffect(() => {
@@ -149,40 +171,41 @@ export function AiChatDrawer() {
     }
   }, [messages]);
   
-  // Get current page image for context
-  const getCurrentPageImage = useCallback(async (): Promise<string | undefined> => {
-    if (!activeDocId || !pdfDocuments[activeDocId]) {
-      console.log('[AI] No active document to capture');
-      return undefined;
-    }
-    
-    const docData = pdfDocuments[activeDocId];
-    const page = docData.currentPage || 1;
-    const pdfDoc = docData.pdfDocument;
-    
-    if (!pdfDoc) {
-      console.log('[AI] PDF document not loaded');
-      return undefined;
-    }
-    
-    try {
-      // renderPageForOcr expects (pdfDoc, pageNumber, dpi)
-      // Use 150 DPI for good quality without excessive size
-      const canvas = await renderPageForOcr(pdfDoc, page, 150);
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.85); // Use JPEG for smaller size
-      console.log('[AI] Page', page, 'captured, canvas size:', canvas.width, 'x', canvas.height);
-      return dataUrl;
-    } catch (error) {
-      console.error('[AI] Failed to get page image:', error);
-      return undefined;
-    }
-  }, [activeDocId, pdfDocuments]);
-  
   const totalPages = activeDocId ? pdfDocuments[activeDocId]?.totalPages || 0 : 0;
   const selectedPages = useMemo(
     () => parsePageSelection(pageSelection, totalPages, currentPage || 1),
     [pageSelection, totalPages, currentPage]
   );
+
+  const queueMarkupApproval = useCallback((options: {
+    assistantMsgId: string;
+    runId: string;
+    markups: Array<{ page: number; markup: CanvasMarkup }>;
+    description: string;
+  }) => {
+    setPendingMarkups(options.markups);
+    setPendingDetectedKeys([]);
+    setPendingAssistantId(options.assistantMsgId);
+    const approval = proposeAssistantMutation('place_markups', {
+      payload: options.markups,
+      description: options.description,
+      preview: { count: options.markups.length, pages: [...new Set(options.markups.map(item => item.page))] },
+    }, {
+      runId: options.runId,
+      messageId: options.assistantMsgId,
+    });
+    const store = useAIChatStore.getState();
+    store.addApproval(approval);
+    store.addMessageBlock(options.assistantMsgId, {
+      id: `block_${approval.id}`,
+      type: 'approval',
+      approvalId: approval.id,
+    });
+    const run = store.runs[options.runId];
+    if (run) {
+      store.finishRun(options.runId, 'waiting-approval');
+    }
+  }, []);
   
   // Handle sending a message
   const handleSendMessage = useCallback(async (
@@ -206,29 +229,21 @@ export function AiChatDrawer() {
       content: '',
       isLoading: true,
     });
+    const runId = useAIChatStore.getState().createRun(assistantMsgId, content || 'Analyze attached document');
+    const runSignal = registerAssistantRunController(runId);
+    let failed = false;
     
     try {
       setPipelineStatus({ isRunning: true, message: 'Processing...' });
       
-      // Always capture the current page if a document is open
-      // This ensures the AI can see and analyze the blueprint
+      // User attachments remain supported; PDF pages are captured by the
+      // shared maximum-accuracy pipeline below instead of this component.
       let imageBase64: string | undefined;
       
       if (images?.length) {
-        // User attached an image
         imageBase64 = images[0];
         console.log('[AI] Using user-attached image');
-      } else if (activeDocId) {
-        // Capture the current page from the open document
-        console.log('[AI] Capturing current page image...');
-        setPipelineStatus({ isRunning: true, message: 'Capturing page...' });
-        imageBase64 = await getCurrentPageImage();
-        if (imageBase64) {
-          console.log('[AI] Page captured successfully, size:', Math.round(imageBase64.length / 1024), 'KB');
-        } else {
-          console.warn('[AI] Failed to capture page image');
-        }
-      } else {
+      } else if (!activeDocId) {
         console.log('[AI] No document open, sending text-only message');
       }
       
@@ -270,6 +285,7 @@ export function AiChatDrawer() {
           format: 'jpeg',
           quality: 0.9,
         });
+        let analysisRegion: { x: number; y: number; width: number; height: number } | undefined;
         
         if (scope === 'viewport' || scope === 'selection') {
           const cropRect = scope === 'selection'
@@ -282,6 +298,7 @@ export function AiChatDrawer() {
               : 'Unable to determine the visible viewport. Try zooming or fit-to-canvas and retry.'
             );
           }
+          analysisRegion = cropRect;
           
           imageGenerator = async (page: number) => {
             const cropped = await capturePageCrop(docData.pdfDocument, page, cropRect, {
@@ -304,16 +321,30 @@ export function AiChatDrawer() {
           pdfDoc: docData.pdfDocument,
           highAccuracyMode,
           visibleOnly: options?.visibleOnly ?? false,
+          analysisRegion,
           refinePlacements: true,
+          getCachedText: getTextContent,
+          setCachedText: setTextContent,
           onProgress: (progress) => {
+            if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
             setPipelineStatus({
               isRunning: true,
               currentStage: progress.stage,
               progress: progress.progress,
               message: progress.message,
             });
+            useAIChatStore.getState().upsertRunStep(runId, {
+              id: `step_${progress.stage}`,
+              label: progress.message,
+              stage: progress.stage === 'error' ? 'tool' : progress.stage,
+              status: progress.stage === 'error' ? 'error' : progress.progress >= 100 ? 'completed' : 'running',
+              progress: progress.progress,
+              startedAt: new Date().toISOString(),
+              completedAt: progress.progress >= 100 ? new Date().toISOString() : undefined,
+            });
           },
         });
+        if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
         
         if (!pipelineResult.success) {
           throw new Error(pipelineResult.error || 'AI pipeline failed');
@@ -340,6 +371,25 @@ export function AiChatDrawer() {
         const countMap = Object.keys(analysisTypeCounts).length > 0 ? analysisTypeCounts : estimateCountMap;
         const estimateCount = pipelineResult.estimate?.items?.length || 0;
         const countSummary = formatCountMap(countMap);
+        useAIChatStore.getState().upsertRunStep(runId, {
+          id: 'step_evidence',
+          label: 'Verify document evidence',
+          summary: countSummary
+            ? `Reconciled detections: ${countSummary}`
+            : `Reviewed ${pagesToAnalyze.length} page${pagesToAnalyze.length === 1 ? '' : 's'}; no countable symbols verified.`,
+          stage: 'tool',
+          status: 'completed',
+          progress: 100,
+          startedAt: new Date().toISOString(),
+          completedAt: new Date().toISOString(),
+          citations: pagesToAnalyze.map(page => ({
+            id: `run_citation_${runId}_${page}`,
+            documentId: activeDocId,
+            documentName: activeDocumentRecord?.name,
+            page,
+            label: `${activeDocumentRecord?.name || 'Document'}, page ${page}`,
+          })),
+        });
         const responseText = [
           `Analyzed pages: ${pagesToAnalyze.join(', ')}`,
           `Detected items: ${estimateCount}`,
@@ -361,6 +411,27 @@ export function AiChatDrawer() {
           isLoading: false,
           metadata: { trade: selectedTrade },
         });
+        addDocumentEvidenceBlock(
+          assistantMsgId,
+          activeDocumentRecord?.name,
+          pagesToAnalyze,
+          pipelineResult.evidence
+        );
+        if (pipelineResult.placements?.markups.length) {
+          const proposedMarkups = convertPlacementsToMarkups(
+            pipelineResult.placements,
+            defaultStyle,
+            `takeoff_${assistantMsgId}`,
+            1,
+            1
+          );
+          queueMarkupApproval({
+            assistantMsgId,
+            runId,
+            markups: proposedMarkups,
+            description: `Place ${proposedMarkups.length} verified green callout${proposedMarkups.length === 1 ? '' : 's'} from this takeoff.`,
+          });
+        }
         return;
       }
       
@@ -380,7 +451,31 @@ export function AiChatDrawer() {
           catalogSummary,
         },
         imageBase64,
+        pdfDoc: docData?.pdfDocument,
+        pageWidth: docData?.originalPageWidth || pageWidth,
+        pageHeight: docData?.originalPageHeight || pageHeight,
+        getCachedText: getTextContent,
+        setCachedText: setTextContent,
+        onProgress: (message, progress) => {
+          if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
+          setPipelineStatus({
+            isRunning: true,
+            currentStage: 'vision',
+            progress,
+            message,
+          });
+          useAIChatStore.getState().upsertRunStep(runId, {
+            id: `step_vision_${Math.floor(progress / 20)}`,
+            label: message,
+            stage: 'vision',
+            status: progress >= 100 ? 'completed' : 'running',
+            progress,
+            startedAt: new Date().toISOString(),
+            completedAt: progress >= 100 ? new Date().toISOString() : undefined,
+          });
+        },
       });
+      if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
       
       // Update assistant message with response
       updateMessage(assistantMsgId, {
@@ -390,6 +485,9 @@ export function AiChatDrawer() {
           trade: selectedTrade,
         },
       });
+      if (activeDocId) {
+        addDocumentEvidenceBlock(assistantMsgId, activeDocumentRecord?.name, [currentPage || 1]);
+      }
 
       // The assistant may have pointed at specific locations on the current
       // page (see the pointer instructions appended in pipeline.ts). Convert
@@ -398,43 +496,65 @@ export function AiChatDrawer() {
         const targetPage = currentPage || 1;
         const pageWidthPx = docData.originalPageWidth || pageWidth;
         const pageHeightPx = docData.originalPageHeight || pageHeight;
-        const chatPlacements: CanvasPlacement = {
-          markups: response.markupPointers.map((pointer, index) => ({
-            id: `chat_${assistantMsgId}_${index}`,
-            type: pointer.type,
-            page: targetPage,
-            points: [{ x: (pointer.xPct / 100) * pageWidthPx, y: (pointer.yPct / 100) * pageHeightPx }],
-            style: {
-              strokeColor: defaultStyle.strokeColor,
-              fillColor: defaultStyle.fillColor,
-              strokeWidth: defaultStyle.strokeWidth,
-            },
-            label: pointer.label,
-            aiNote: pointer.note,
-            pending: true,
-          })),
-          notes: [],
-        };
+        const chatPlacements = chatPointersToGreenPlacements({
+          pointers: response.markupPointers,
+          page: targetPage,
+          pageWidth: pageWidthPx,
+          pageHeight: pageHeightPx,
+          idPrefix: `chat_${assistantMsgId}`,
+        });
 
-        setPendingMarkups(convertPlacementsToMarkups(chatPlacements, defaultStyle, `chat_${assistantMsgId}`, 1, 1));
-        setPendingDetectedKeys([]);
-        setPendingAssistantId(assistantMsgId);
-        setPlaceMarkupsOpen(true);
+        const proposedMarkups = convertPlacementsToMarkups(chatPlacements, defaultStyle, `chat_${assistantMsgId}`, 1, 1);
+        queueMarkupApproval({
+          assistantMsgId,
+          runId,
+          markups: proposedMarkups,
+          description: `Place ${proposedMarkups.length} verified green callout${proposedMarkups.length === 1 ? '' : 's'} on page ${targetPage}.`,
+        });
+        useAIChatStore.getState().addMessageBlock(assistantMsgId, {
+          id: `block_pointer_citations_${assistantMsgId}`,
+          type: 'citations',
+          citations: response.markupPointers.map((pointer, index) => ({
+            id: `pointer_citation_${assistantMsgId}_${index}`,
+            documentId: activeDocId,
+            documentName: activeDocumentRecord?.name,
+            page: targetPage,
+            label: pointer.label || `Callout ${index + 1}`,
+            confidence: pointer.confidence,
+            bounds: pointer.boundsPct
+              ? {
+                  x: (pointer.boundsPct.x / 100) * pageWidthPx,
+                  y: (pointer.boundsPct.y / 100) * pageHeightPx,
+                  width: (pointer.boundsPct.width / 100) * pageWidthPx,
+                  height: (pointer.boundsPct.height / 100) * pageHeightPx,
+                }
+              : undefined,
+          })),
+        });
       }
     } catch (error) {
+      failed = true;
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       updateMessage(assistantMsgId, {
-        content: '',
+        content: runSignal.aborted ? 'Stopped.' : '',
         isLoading: false,
-        error: errorMessage,
+        error: runSignal.aborted ? undefined : errorMessage,
       });
+      useAIChatStore.getState().finishRun(
+        runId,
+        runSignal.aborted ? 'cancelled' : 'error',
+        runSignal.aborted ? undefined : errorMessage
+      );
     } finally {
+      if (!failed && useAIChatStore.getState().runs[runId]?.status === 'running') {
+        useAIChatStore.getState().finishRun(runId, 'completed');
+      }
       setPipelineStatus({ isRunning: false, progress: 0, message: '' });
+      releaseAssistantRunController(runId);
     }
   }, [
     addMessage,
     setPipelineStatus,
-    getCurrentPageImage,
     messages,
     selectedTrade,
     currentPage,
@@ -447,18 +567,27 @@ export function AiChatDrawer() {
     getAiSelectionForPage,
     getAiViewportForPage,
     updateMessage,
-    setPendingMarkups,
-    setPendingDetectedKeys,
-    setPendingAssistantId,
-    setPlaceMarkupsOpen,
     documents,
     activeDocument,
     user,
     getMarkupsByPage,
+    getTextContent,
+    setTextContent,
     nodes,
     rootIds,
     activeProductId,
+    activeDocumentRecord?.name,
+    queueMarkupApproval,
   ]);
+
+  useEffect(() => {
+    const retry = (event: Event) => {
+      const detail = (event as CustomEvent<{ content: string; images?: string[] }>).detail;
+      if (detail?.content) void handleSendMessage(detail.content, detail.images);
+    };
+    window.addEventListener('bidveraai:retry', retry);
+    return () => window.removeEventListener('bidveraai:retry', retry);
+  }, [handleSendMessage]);
   
   // Handle keyboard shortcut to open drawer
   useEffect(() => {
@@ -475,6 +604,7 @@ export function AiChatDrawer() {
   }, []);
   
   const hasMessages = messages.length > 0;
+  const activeRun = Object.values(runs).find(run => run.status === 'running');
   // AI is always available when authenticated (uses company API keys via proxy)
   const isAIAvailable = isInitialized;
   const activePageNumber = currentPage || 1;
@@ -619,6 +749,52 @@ export function AiChatDrawer() {
     updateMessage,
   ]);
 
+  useEffect(() => {
+    const handleApproval = (event: Event) => {
+      const detail = (event as CustomEvent<{ approvalId: string; decision: 'approved' | 'rejected' }>).detail;
+      const store = useAIChatStore.getState();
+      const approval = store.approvals[detail.approvalId];
+      if (!approval || approval.status !== 'pending') return;
+
+      if (detail.decision === 'rejected') {
+        store.resolveApproval(approval.id, 'rejected');
+        store.finishRun(approval.runId, 'completed');
+        const existing = store.messages.find(message => message.id === approval.messageId);
+        store.updateMessage(approval.messageId, {
+          content: `${existing?.content || ''}\n\nCallout placement was declined. The document was not changed.`,
+        });
+        return;
+      }
+
+      try {
+        const markups = approval.payload as Array<{ page: number; markup: CanvasMarkup }>;
+        addAIMarkupBatch(markups, placementMode === 'confirm');
+        if (placementMode === 'confirm') {
+          setPendingPlacements(markups.map(({ markup }) => ({
+            id: markup.id,
+            type: markup.type,
+            page: markup.page,
+            data: markup,
+          })));
+        }
+        store.resolveApproval(approval.id, 'executed');
+        store.finishRun(approval.runId, 'completed');
+        const existing = store.messages.find(message => message.id === approval.messageId);
+        store.updateMessage(approval.messageId, {
+          content: `${existing?.content || ''}\n\n✓ Placed ${markups.length} callout${markups.length === 1 ? '' : 's'}. Use Undo to revert this batch.`,
+        });
+      } catch (error) {
+        store.resolveApproval(
+          approval.id,
+          'failed',
+          error instanceof Error ? error.message : String(error)
+        );
+      }
+    };
+    window.addEventListener('bidveraai:approval', handleApproval);
+    return () => window.removeEventListener('bidveraai:approval', handleApproval);
+  }, [addAIMarkupBatch, placementMode, setPendingPlacements]);
+
   const handleQuestionToggle = useCallback((questionId: string, option: string, allowMultiple?: boolean) => {
     setQuestionAnswers((prev) => {
       const current = prev[questionId] || [];
@@ -656,36 +832,28 @@ export function AiChatDrawer() {
   return (
     <>
       <div className="h-full w-full flex flex-col bg-panel">
-          {/* Header */}
-          <div className="px-4 py-3 border-b border-border flex-shrink-0">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center">
-                  <Bot className="w-4 h-4 text-white" />
-                </div>
-                <div>
-                  <h2 className="text-base font-semibold text-foreground">BidveraAi Assistant</h2>
-                  <p className="text-xs text-muted-foreground">Blueprint analysis & estimation</p>
-                </div>
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                onClick={closeDrawer}
-                title="Collapse chat panel"
-              >
-                <X className="w-4 h-4" />
-              </Button>
-            </div>
-          </div>
+          <AssistantHeader
+            conversation={conversation}
+            conversations={conversationList}
+            documentName={activeDocumentRecord?.name}
+            page={currentPage || 1}
+            trade={selectedTrade}
+            onSelectConversation={value => void selectConversation(value)}
+            onNewConversation={() => createConversation()}
+            onClose={closeDrawer}
+          />
           
           {/* Toolbar */}
-          <AiToolbar
-            onOpenSettings={() => setSettingsOpen(true)}
-            onClearChat={clearMessages}
-            onRunTakeoff={openTakeoffDialog}
-          />
+          <details className="border-b border-border bg-secondary/10">
+            <summary className="cursor-pointer px-4 py-2 text-xs font-medium text-muted-foreground hover:text-foreground">
+              Assistant commands
+            </summary>
+            <AiToolbar
+              onOpenSettings={() => setSettingsOpen(true)}
+              onClearChat={clearMessages}
+              onRunTakeoff={openTakeoffDialog}
+            />
+          </details>
           
           {/* Page Selection */}
           {activeDocId && totalPages > 0 && (
@@ -745,28 +913,25 @@ export function AiChatDrawer() {
             )}
           </ScrollArea>
           
-          {/* Pipeline Status */}
-          {pipelineStatus.isRunning && (
-            <div className="px-4 py-2 bg-secondary/50 border-t border-border">
-              <div className="flex items-center gap-2 text-sm">
-                <div className="w-2 h-2 rounded-full bg-violet-500 animate-pulse" />
-                <span className="text-muted-foreground">{pipelineStatus.message}</span>
-              </div>
-              <div className="mt-1.5 h-1 bg-secondary rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-gradient-to-r from-violet-500 to-purple-600 transition-all duration-300"
-                  style={{ width: `${pipelineStatus.progress}%` }}
-                />
-              </div>
-            </div>
-          )}
-          
           {/* Input */}
-          <ChatInput
-            onSend={handleSendMessage}
+          <AssistantComposer
+            onSend={(message, images) => {
+              if (message.trim().toLowerCase().startsWith('/takeoff')) {
+                const prompt = message.replace(/^\/takeoff\s*/i, '') || 'Run a takeoff for the active page.';
+                void handleSendMessage(prompt, images, { forcePipeline: true, scope: 'full', highAccuracy: true });
+                return;
+              }
+              void handleSendMessage(message, images);
+            }}
             isLoading={isLoading || pipelineStatus.isRunning}
             disabled={!isAIAvailable}
-            placeholder="Ask about your blueprints..."
+            onStop={activeRun ? () => cancelAssistantRun(activeRun.id) : undefined}
+            contextChips={[
+              activeDocumentRecord?.name || 'No document',
+              `Page ${currentPage || 1}`,
+              selectedTrade,
+              takeoffScope === 'ask' ? 'Active page' : takeoffScope,
+            ]}
           />
       </div>
 
@@ -873,13 +1038,13 @@ export function AiChatDrawer() {
             </div>
             <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
               <div>
-                <p className="text-sm font-medium">High Accuracy (slow)</p>
-                <p className="text-xs text-muted-foreground">Runs multi-pass analysis for better counts.</p>
+                <p className="text-sm font-medium">Maximum Accuracy</p>
+                <p className="text-xs text-muted-foreground">Always uses overview, tile, OCR, reconciliation, and verification passes.</p>
               </div>
               <input
                 type="checkbox"
                 checked={highAccuracy}
-                onChange={(event) => setHighAccuracy(event.target.checked)}
+                disabled
                 className="h-4 w-4"
               />
             </div>
@@ -1122,6 +1287,28 @@ export function AiChatDrawer() {
   );
 }
 
+function addDocumentEvidenceBlock(
+  messageId: string,
+  documentName: string | undefined,
+  pages: number[],
+  evidence: string[] = []
+): void {
+  const citations: EvidenceCitation[] = pages.map((page, index) => ({
+    id: `citation_${messageId}_${page}`,
+    documentName,
+    page,
+    label: `${documentName || 'Document'}, page ${page}`,
+    snippet: evidence[index] || evidence[0],
+  }));
+  useAIChatStore.getState().addMessageBlock(messageId, {
+    id: `block_evidence_${messageId}`,
+    type: 'evidence',
+    title: 'Document evidence',
+    summary: evidence.length ? evidence.slice(0, 3).join(' · ') : 'Answer grounded in the active document page.',
+    citations,
+  });
+}
+
 // Quick prompt button component
 function QuickPrompt({
   text,
@@ -1338,8 +1525,26 @@ function convertPlacementsToMarkups(
       aiGenerated: true,
       aiPending: placement.pending,
       aiNote: placement.aiNote,
+      aiConfidence: placement.confidence,
       aiLinkedItemId: placement.linkedItemId,
     } as const;
+
+    if (placement.type === 'rectangle') {
+      const start = placement.points?.[0] || { x: 0, y: 0 };
+      const end = placement.points?.[1] || start;
+      markups.push({
+        page: placement.page,
+        markup: {
+          ...base,
+          type: 'rectangle',
+          x: Math.min(start.x, end.x) * scaleX,
+          y: Math.min(start.y, end.y) * scaleY,
+          width: Math.abs(end.x - start.x) * scaleX,
+          height: Math.abs(end.y - start.y) * scaleY,
+        },
+      });
+      return;
+    }
     
     if (placement.type === 'count-marker') {
       const point = placement.points?.[0] || { x: 0, y: 0 };

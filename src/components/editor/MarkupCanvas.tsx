@@ -444,6 +444,24 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           ctx.fillRect(m.x, m.y, m.width, m.height);
         }
         ctx.strokeRect(m.x, m.y, m.width, m.height);
+        if (m.aiGenerated && m.label && !isEraserHovered) {
+          const fontSize = Math.max(10, m.style.fontSize || 11);
+          ctx.save();
+          ctx.font = `600 ${fontSize}px ${m.style.fontFamily || 'Arial'}`;
+          const labelWidth = Math.min(
+            Math.max(60, ctx.measureText(m.label).width + 12),
+            Math.max(60, m.width)
+          );
+          const labelHeight = fontSize + 8;
+          const labelY = Math.max(0, m.y - labelHeight);
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = '#10b981';
+          ctx.fillRect(m.x, labelY, labelWidth, labelHeight);
+          ctx.fillStyle = '#ffffff';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(m.label, m.x + 6, labelY + labelHeight / 2, labelWidth - 12);
+          ctx.restore();
+        }
         break;
       }
       
