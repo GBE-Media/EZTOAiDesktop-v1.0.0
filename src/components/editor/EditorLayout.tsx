@@ -18,6 +18,7 @@ import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useWindowClose } from '@/hooks/useWindowClose';
 import { useProjectOpen } from '@/hooks/useProjectOpen';
 import { useEditorStore } from '@/store/editorStore';
+import { useAIChatStore } from '@/store/aiChatStore';
 import { toast } from 'sonner';
 import {
   ResizableHandle,
@@ -39,9 +40,11 @@ export function EditorLayout() {
   const [mode, setMode] = useState<'documents' | 'products'>('documents');
   
   const { activeTool, activeDocument } = useEditorStore();
+  const isAiChatOpen = useAIChatStore((state) => state.isOpen);
   
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
   const rightPanelRef = useRef<ImperativePanelHandle>(null);
+  const aiPanelRef = useRef<ImperativePanelHandle>(null);
   
   // Initialize keyboard shortcuts
   useKeyboardShortcuts();
@@ -63,9 +66,23 @@ export function EditorLayout() {
     const timer = setTimeout(() => {
       leftPanelRef.current?.collapse();
       rightPanelRef.current?.collapse();
+      aiPanelRef.current?.collapse();
     }, 0);
     return () => clearTimeout(timer);
   }, []);
+
+  // Keep the AI chat panel's collapsed state in sync with the chat store,
+  // so the Toolbar button and Ctrl/Cmd+Shift+A shortcut still work now that
+  // the chat lives in a docked panel instead of a modal drawer.
+  useEffect(() => {
+    const panel = aiPanelRef.current;
+    if (!panel) return;
+    if (isAiChatOpen && panel.isCollapsed()) {
+      panel.expand();
+    } else if (!isAiChatOpen && !panel.isCollapsed()) {
+      panel.collapse();
+    }
+  }, [isAiChatOpen]);
 
   // Listen for file open events from Electron (double-click .bidveraai file)
   useEffect(() => {
@@ -129,6 +146,17 @@ export function EditorLayout() {
     const panel = rightPanelRef.current;
     if (panel) {
       if (rightPanelCollapsed) {
+        panel.expand();
+      } else {
+        panel.collapse();
+      }
+    }
+  };
+
+  const toggleAiPanel = () => {
+    const panel = aiPanelRef.current;
+    if (panel) {
+      if (panel.isCollapsed()) {
         panel.expand();
       } else {
         panel.collapse();
@@ -312,6 +340,39 @@ export function EditorLayout() {
               )}
             </div>
           </ResizablePanel>
+
+          {/* AI chat resize handle with collapse toggle */}
+          <ResizableHandle withHandle className="relative">
+            <button
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 w-4 h-8 flex items-center justify-center bg-panel-header hover:bg-secondary border border-panel-border rounded-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleAiPanel();
+              }}
+            >
+              {isAiChatOpen ? (
+                <ChevronRight className="w-3 h-3 text-muted-foreground" />
+              ) : (
+                <ChevronLeft className="w-3 h-3 text-muted-foreground" />
+              )}
+            </button>
+          </ResizableHandle>
+
+          {/* AI chat panel - docked so the canvas and other panels stay usable while it's open */}
+          <ResizablePanel
+            ref={aiPanelRef}
+            defaultSize={25}
+            minSize={20}
+            maxSize={35}
+            collapsible
+            collapsedSize={0}
+            onCollapse={() => useAIChatStore.getState().closeDrawer()}
+            onExpand={() => useAIChatStore.getState().openDrawer()}
+          >
+            <div className="h-full border-l border-panel-border">
+              <AiChatDrawer />
+            </div>
+          </ResizablePanel>
         </ResizablePanelGroup>
       </div>
 
@@ -332,9 +393,6 @@ export function EditorLayout() {
           onCancel={onCancelClose}
         />
       )}
-      
-      {/* AI Chat Drawer */}
-      <AiChatDrawer />
     </div>
   );
 }

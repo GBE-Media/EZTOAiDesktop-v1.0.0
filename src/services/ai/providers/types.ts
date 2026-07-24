@@ -233,6 +233,18 @@ export interface PlacementNote {
   linkedMarkupId?: string;
 }
 
+// A lightweight "point this out on the page" marker the assistant can emit
+// during normal chat (as opposed to the full takeoff pipeline's placements).
+// Coordinates are percentages of the page image so the model doesn't need to
+// know pixel dimensions - the client converts to page-space pixels itself.
+export interface ChatMarkupPointer {
+  type: 'count-marker' | 'text';
+  xPct: number; // 0-100, left-to-right
+  yPct: number; // 0-100, top-to-bottom
+  label?: string;
+  note?: string;
+}
+
 export interface LayoutSuggestion {
   id: string;
   trade: TradeType;

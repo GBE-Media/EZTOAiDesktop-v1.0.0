@@ -24,7 +24,6 @@ import {
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 import { useCanvasStore } from '@/store/canvasStore';
@@ -76,7 +75,6 @@ export function AiChatDrawer() {
   
   // Chat store
   const {
-    isOpen,
     closeDrawer,
     messages,
     isLoading,
@@ -379,12 +377,43 @@ export function AiChatDrawer() {
       
       // Update assistant message with response
       updateMessage(assistantMsgId, {
-        content: response,
+        content: response.text,
         isLoading: false,
         metadata: {
           trade: selectedTrade,
         },
       });
+
+      // The assistant may have pointed at specific locations on the current
+      // page (see the pointer instructions appended in pipeline.ts). Convert
+      // those into real markups and let the user confirm before placing them.
+      if (response.markupPointers.length > 0 && activeDocId && docData) {
+        const targetPage = currentPage || 1;
+        const pageWidthPx = docData.originalPageWidth || pageWidth;
+        const pageHeightPx = docData.originalPageHeight || pageHeight;
+        const chatPlacements: CanvasPlacement = {
+          markups: response.markupPointers.map((pointer, index) => ({
+            id: `chat_${assistantMsgId}_${index}`,
+            type: pointer.type,
+            page: targetPage,
+            points: [{ x: (pointer.xPct / 100) * pageWidthPx, y: (pointer.yPct / 100) * pageHeightPx }],
+            style: {
+              strokeColor: defaultStyle.strokeColor,
+              fillColor: defaultStyle.fillColor,
+              strokeWidth: defaultStyle.strokeWidth,
+            },
+            label: pointer.label,
+            aiNote: pointer.note,
+            pending: true,
+          })),
+          notes: [],
+        };
+
+        setPendingMarkups(convertPlacementsToMarkups(chatPlacements, defaultStyle, `chat_${assistantMsgId}`, 1, 1));
+        setPendingDetectedKeys([]);
+        setPendingAssistantId(assistantMsgId);
+        setPlaceMarkupsOpen(true);
+      }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An error occurred';
       updateMessage(assistantMsgId, {
@@ -558,8 +587,13 @@ export function AiChatDrawer() {
     }
 
     if (pendingAssistantId) {
+      // Append rather than overwrite - the assistant's actual chat answer may
+      // already be in this message (e.g. when pointers came from normal chat).
+      const existing = messages.find((message) => message.id === pendingAssistantId);
+      const count = pendingMarkups.length;
+      const suffix = `\n\n✓ Placed ${count} marker${count === 1 ? '' : 's'} on the canvas.`;
       updateMessage(pendingAssistantId, {
-        content: `${pendingMarkups.length} markups placed on the canvas.`,
+        content: `${existing?.content || ''}${suffix}`,
       });
     }
 
@@ -569,6 +603,7 @@ export function AiChatDrawer() {
     setPlaceMarkupsOpen(false);
   }, [
     addAIMarkupBatch,
+    messages,
     pendingAssistantId,
     pendingDetectedKeys,
     pendingMarkups,
@@ -613,21 +648,16 @@ export function AiChatDrawer() {
 
   return (
     <>
-      <Sheet open={isOpen} onOpenChange={(open) => !open && closeDrawer()}>
-        <SheetContent
-          side="right"
-          className="w-[450px] sm:w-[500px] p-0 flex flex-col"
-          hideCloseButton
-        >
+      <div className="h-full w-full flex flex-col bg-panel">
           {/* Header */}
-          <SheetHeader className="px-4 py-3 border-b border-border flex-shrink-0">
+          <div className="px-4 py-3 border-b border-border flex-shrink-0">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center">
                   <Bot className="w-4 h-4 text-white" />
                 </div>
                 <div>
-                  <SheetTitle className="text-base">BidveraAi Assistant</SheetTitle>
+                  <h2 className="text-base font-semibold text-foreground">BidveraAi Assistant</h2>
                   <p className="text-xs text-muted-foreground">Blueprint analysis & estimation</p>
                 </div>
               </div>
@@ -636,11 +666,12 @@ export function AiChatDrawer() {
                 size="icon"
                 className="h-8 w-8"
                 onClick={closeDrawer}
+                title="Collapse chat panel"
               >
                 <X className="w-4 h-4" />
               </Button>
             </div>
-          </SheetHeader>
+          </div>
           
           {/* Toolbar */}
           <AiToolbar
@@ -730,9 +761,8 @@ export function AiChatDrawer() {
             disabled={!isAIAvailable}
             placeholder="Ask about your blueprints..."
           />
-        </SheetContent>
-      </Sheet>
-      
+      </div>
+
       {/* Settings Dialog */}
       <AiSettingsDialog
         open={settingsOpen}
@@ -878,7 +908,7 @@ export function AiChatDrawer() {
           <DialogHeader>
             <DialogTitle>Place markups?</DialogTitle>
             <DialogDescription>
-              The AI prepared markups from this takeoff. Would you like to place them on the canvas?
+              The AI wants to mark {pendingMarkups.length} location{pendingMarkups.length === 1 ? '' : 's'} on the canvas. Place them?
             </DialogDescription>
           </DialogHeader>
           <div className="flex justify-end gap-2 mt-4">
@@ -886,7 +916,11 @@ export function AiChatDrawer() {
               variant="outline"
               onClick={() => {
                 if (pendingAssistantId) {
-                  updateMessage(pendingAssistantId, { content: 'Markups not placed.' });
+                  // Append rather than overwrite - keep the assistant's actual answer intact.
+                  const existing = messages.find((message) => message.id === pendingAssistantId);
+                  updateMessage(pendingAssistantId, {
+                    content: `${existing?.content || ''}\n\nMarkups not placed.`,
+                  });
                 }
                 setPendingMarkups([]);
                 setPendingDetectedKeys([]);

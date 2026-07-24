@@ -14,6 +14,7 @@ import type {
   CanvasPlacement,
   LayoutSuggestion,
   PipelineStage,
+  ChatMarkupPointer,
 } from './providers/types';
 
 export interface PipelineProgress {
@@ -536,9 +537,19 @@ export async function chat(options: {
     catalogSummary?: string;
   };
   imageBase64?: string;
-}): Promise<string> {
+}): Promise<{ text: string; markupPointers: ChatMarkupPointer[] }> {
   const aiService = getAIService();
-  
+
+  const pointerInstructions = options.imageBase64
+    ? `
+
+If you want to visually point out a specific location on the page image you're looking at (e.g. something you just mentioned), end your reply with a fenced json code block in this exact shape - coordinates are percentages of the image, top-left origin:
+\`\`\`json
+{"markups": [{"type": "count-marker", "xPct": 42.5, "yPct": 18.0, "label": "Panel", "note": "Looks like the electrical panel"}]}
+\`\`\`
+Use "type": "text" instead of "count-marker" for a short floating note rather than a numbered marker. Only include this block when pointing at something specific, include at most 10 markers, and never mention the block itself in your written answer.`
+    : '';
+
   const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string; images?: string[] }> = [
     {
       role: 'system',
@@ -554,6 +565,7 @@ ${options.context?.trade ? `Current trade focus: ${options.context.trade}` : ''}
 ${options.context?.currentPage ? `Current page: ${options.context.currentPage}` : ''}
 ${options.context?.markupsSummary ? `\nExisting markups on the current page:\n${options.context.markupsSummary}` : ''}
 ${options.context?.catalogSummary ? `\nUser's product/assembly catalog:\n${options.context.catalogSummary}` : ''}
+${pointerInstructions}
 
 Be helpful, accurate, and reference specific codes when applicable.`,
     },
@@ -585,12 +597,60 @@ Be helpful, accurate, and reference specific codes when applicable.`,
     } else {
       response = await aiService.complete('estimation', { messages });
     }
-    
-    return response.content;
+
+    return extractChatMarkupPointers(response.content);
   } catch (error) {
     console.error('Chat failed:', error);
     throw error;
   }
+}
+
+const MAX_CHAT_MARKUP_POINTERS = 10;
+const CHAT_MARKUP_POINTER_TYPES = new Set(['count-marker', 'text']);
+
+// Pulls an optional trailing `{"markups": [...]}` block (see the pointer
+// instructions appended to the chat system prompt above) out of a chat
+// response, validating each pointer and stripping the raw JSON out of the
+// text shown to the user.
+function extractChatMarkupPointers(content: string): { text: string; markupPointers: ChatMarkupPointer[] } {
+  if (!content) return { text: content, markupPointers: [] };
+
+  const fencedMatch = content.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/i);
+  if (!fencedMatch) return { text: content, markupPointers: [] };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fencedMatch[1]);
+  } catch {
+    return { text: content, markupPointers: [] };
+  }
+
+  const rawMarkups = (parsed as { markups?: unknown } | null)?.markups;
+  if (!Array.isArray(rawMarkups)) return { text: content, markupPointers: [] };
+
+  const markupPointers: ChatMarkupPointer[] = [];
+  for (const item of rawMarkups) {
+    if (markupPointers.length >= MAX_CHAT_MARKUP_POINTERS) break;
+    if (!item || typeof item !== 'object') continue;
+    const candidate = item as Record<string, unknown>;
+    const type = candidate.type === 'text' ? 'text' : 'count-marker';
+    const xPct = Number(candidate.xPct);
+    const yPct = Number(candidate.yPct);
+    if (!CHAT_MARKUP_POINTER_TYPES.has(type)) continue;
+    if (!Number.isFinite(xPct) || !Number.isFinite(yPct)) continue;
+    if (xPct < 0 || xPct > 100 || yPct < 0 || yPct > 100) continue;
+
+    markupPointers.push({
+      type,
+      xPct,
+      yPct,
+      label: typeof candidate.label === 'string' ? candidate.label : undefined,
+      note: typeof candidate.note === 'string' ? candidate.note : undefined,
+    });
+  }
+
+  const text = content.slice(0, fencedMatch.index).trim();
+  return { text: text || content.trim(), markupPointers };
 }
 
 function parseJsonResponse(content: string): any | null {
