@@ -17,6 +17,36 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 const OPENAI_MODELS: AIModelInfo[] = [
   {
+    id: 'gpt-5.6-sol',
+    name: 'GPT-5.6 Sol',
+    provider: 'openai',
+    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code', 'reasoning'],
+    contextWindow: 1050000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.005, output: 0.03 },
+  },
+  {
+    id: 'gpt-5.6-terra',
+    name: 'GPT-5.6 Terra',
+    provider: 'openai',
+    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code', 'reasoning'],
+    contextWindow: 1050000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.0025, output: 0.015 },
+  },
+  {
+    id: 'gpt-5.6-luna',
+    name: 'GPT-5.6 Luna',
+    provider: 'openai',
+    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code'],
+    contextWindow: 1050000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.0005, output: 0.002 },
+  },
+  {
     id: 'gpt-4o',
     name: 'GPT-4o',
     provider: 'openai',
@@ -91,13 +121,13 @@ export class OpenAIProvider implements AIProvider {
   getDefaultModel(stage: PipelineStage): string {
     switch (stage) {
       case 'vision':
-        return 'gpt-4o'; // Best for image analysis
+        return 'gpt-5.6-sol'; // Frontier vision + reasoning for image analysis
       case 'estimation':
-        return 'gpt-4o'; // Good reasoning for estimation
+        return 'gpt-5.6-sol'; // Strongest reasoning for estimation
       case 'placement':
-        return 'gpt-4o'; // Structured output for coordinates
+        return 'gpt-5.6-sol'; // Structured output for coordinates
       default:
-        return 'gpt-4o';
+        return 'gpt-5.6-sol';
     }
   }
 
@@ -106,7 +136,7 @@ export class OpenAIProvider implements AIProvider {
       throw new Error('OpenAI API key not configured');
     }
 
-    const model = request.model || 'gpt-4o';
+    const model = request.model || 'gpt-5.6-sol';
     
     const messages = request.messages.map(msg => ({
       role: msg.role,
@@ -158,7 +188,7 @@ export class OpenAIProvider implements AIProvider {
       throw new Error('OpenAI API key not configured');
     }
 
-    const model = request.model || 'gpt-4o';
+    const model = request.model || 'gpt-5.6-sol';
     
     // Build messages with images
     const messages = request.messages.map(msg => {

@@ -18,6 +18,16 @@ const ANTHROPIC_VERSION = '2023-06-01';
 
 const ANTHROPIC_MODELS: AIModelInfo[] = [
   {
+    id: 'claude-opus-4-8',
+    name: 'Claude Opus 4.8',
+    provider: 'anthropic',
+    capabilities: ['text', 'vision', 'code', 'reasoning'],
+    contextWindow: 1000000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.005, output: 0.025 },
+  },
+  {
     id: 'claude-sonnet-4-20250514',
     name: 'Claude Sonnet 4',
     provider: 'anthropic',
@@ -82,13 +92,13 @@ export class AnthropicProvider implements AIProvider {
   getDefaultModel(stage: PipelineStage): string {
     switch (stage) {
       case 'vision':
-        return 'claude-sonnet-4-20250514'; // Excellent vision capabilities
+        return 'claude-opus-4-8'; // Flagship vision + reasoning capabilities
       case 'estimation':
-        return 'claude-sonnet-4-20250514'; // Best reasoning for construction estimation
+        return 'claude-opus-4-8'; // Best reasoning for construction estimation
       case 'placement':
-        return 'claude-3-haiku-20240307'; // Fast and accurate for structured output
+        return 'claude-opus-4-8'; // Structured output for coordinates
       default:
-        return 'claude-sonnet-4-20250514';
+        return 'claude-opus-4-8';
     }
   }
 
@@ -97,7 +107,7 @@ export class AnthropicProvider implements AIProvider {
       throw new Error('Anthropic API key not configured');
     }
 
-    const model = request.model || 'claude-sonnet-4-20250514';
+    const model = request.model || 'claude-opus-4-8';
     
     // Extract system message if present
     const systemMessage = request.messages.find(m => m.role === 'system')?.content;
@@ -153,7 +163,7 @@ export class AnthropicProvider implements AIProvider {
       throw new Error('Anthropic API key not configured');
     }
 
-    const model = request.model || 'claude-sonnet-4-20250514';
+    const model = request.model || 'claude-opus-4-8';
     
     // Extract system message if present
     const systemMessage = request.messages.find(m => m.role === 'system')?.content;

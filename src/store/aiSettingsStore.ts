@@ -6,6 +6,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AIProviderType, PipelineStage, TradeType } from '@/services/ai/providers/types';
+import { getAIService } from '@/services/ai/aiService';
 
 export interface ModelSelection {
   provider: AIProviderType;
@@ -67,10 +68,18 @@ interface AISettingsState extends AISettings {
 }
 
 const DEFAULT_PIPELINE_MODELS = {
-  vision: { provider: 'openai' as AIProviderType, model: 'gpt-4o' },
-  estimation: { provider: 'anthropic' as AIProviderType, model: 'claude-sonnet-4-20250514' },
-  placement: { provider: 'openai' as AIProviderType, model: 'gpt-4o' },
+  vision: { provider: 'openai' as AIProviderType, model: 'gpt-5.6-sol' },
+  estimation: { provider: 'anthropic' as AIProviderType, model: 'claude-opus-4-8' },
+  placement: { provider: 'openai' as AIProviderType, model: 'gpt-5.6-sol' },
 };
+
+function applyPipelineModelsToService(pipelineModels: AISettings['pipelineModels']) {
+  getAIService().setPipelineConfig({
+    visionModel: pipelineModels.vision,
+    estimationModel: pipelineModels.estimation,
+    placementModel: pipelineModels.placement,
+  });
+}
 
 const DEFAULT_SETTINGS: AISettings = {
   apiKeys: {},
@@ -116,6 +125,9 @@ export const useAISettingsStore = create<AISettingsState>()(
             [stage]: selection,
           },
         }));
+        // Propagate to the live AIService immediately so the change actually
+        // takes effect on the next request, not just in the persisted UI state.
+        applyPipelineModelsToService({ ...get().pipelineModels, [stage]: selection });
       },
       
       // Default preferences
@@ -149,6 +161,11 @@ export const useAISettingsStore = create<AISettingsState>()(
             }
           }
           
+          // Apply the persisted (or default) pipeline model selection to the
+          // live AIService singleton, since it otherwise only ever uses its
+          // own hardcoded defaults until a settings change fires.
+          applyPipelineModelsToService(get().pipelineModels);
+
           set({ isInitialized: true });
         } catch (error) {
           console.error('Failed to initialize AI settings:', error);
@@ -235,6 +252,26 @@ export const useAISettingsStore = create<AISettingsState>()(
         if (pipelineModels.estimation.model === 'claude-sonnet-4-5-20250514') {
           pipelineModels.estimation.model = 'claude-sonnet-4-20250514';
         }
+
+        // Force-upgrade stale, previously-persisted models to the current
+        // flagship tier. Without this, users who already have settings saved
+        // in localStorage would stay pinned to the old models forever, since
+        // persisted values normally take precedence over new defaults.
+        const RETIRED_OPENAI_MODELS = new Set(['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo']);
+        const RETIRED_ANTHROPIC_MODELS = new Set([
+          'claude-sonnet-4-20250514',
+          'claude-3-5-sonnet-20241022',
+          'claude-3-opus-20240229',
+          'claude-3-haiku-20240307',
+        ]);
+        (['vision', 'estimation', 'placement'] as const).forEach((stage) => {
+          const selection = pipelineModels[stage];
+          if (selection.provider === 'openai' && RETIRED_OPENAI_MODELS.has(selection.model)) {
+            pipelineModels[stage] = { provider: 'openai', model: DEFAULT_PIPELINE_MODELS.vision.model };
+          } else if (selection.provider === 'anthropic' && RETIRED_ANTHROPIC_MODELS.has(selection.model)) {
+            pipelineModels[stage] = { provider: 'anthropic', model: DEFAULT_PIPELINE_MODELS.estimation.model };
+          }
+        });
         
         return {
           ...currentState,

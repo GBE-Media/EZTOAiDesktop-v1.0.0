@@ -213,7 +213,7 @@ function ModelSelector({
 }) {
   // Default fallback if currentModel is undefined
   const provider = currentModel?.provider || 'openai';
-  const model = currentModel?.model || 'gpt-4o';
+  const model = currentModel?.model || 'gpt-5.6-sol';
   const value = `${provider}:${model}`;
 
   return (

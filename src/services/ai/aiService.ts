@@ -34,15 +34,15 @@ export interface AIServiceConfig {
 const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
   visionModel: {
     provider: 'openai',
-    model: 'gpt-4o',
+    model: 'gpt-5.6-sol',
   },
   estimationModel: {
-    provider: 'openai',
-    model: 'gpt-4o',
+    provider: 'anthropic',
+    model: 'claude-opus-4-8',
   },
   placementModel: {
     provider: 'openai',
-    model: 'gpt-4o',
+    model: 'gpt-5.6-sol',
   },
 };
 

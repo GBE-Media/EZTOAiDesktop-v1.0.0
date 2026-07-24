@@ -100,7 +100,6 @@ export function AiChatDrawer() {
   const { 
     activeDocId,
     pdfDocuments,
-    currentPage,
     pageWidth,
     pageHeight,
     defaultStyle,
@@ -115,7 +114,13 @@ export function AiChatDrawer() {
     aiCalibrationType,
     aiCalibrationSamples,
     getMarkupsByPage,
+    getCurrentPage,
   } = useCanvasStore();
+  // `currentPage` is not a top-level store field (it lives per-document at
+  // pdfDocuments[docId].currentPage) - always derive it via getCurrentPage()
+  // so chat context, markup summaries, and pointer placement target the page
+  // actually shown on the canvas instead of silently defaulting to page 1.
+  const currentPage = getCurrentPage();
   const { nodes, rootIds, activeProductId, linkMeasurement } = useProductStore();
   const { isLoading: productsLoading, error: productsError } = useProductSync();
   
