@@ -212,8 +212,8 @@ function ModelSelector({
   onChange: (selection: { provider: AIProviderType; model: string }) => void;
 }) {
   // Default fallback if currentModel is undefined
-  const provider = currentModel?.provider || 'openai';
-  const model = currentModel?.model || 'gpt-5.6-sol';
+  const provider = currentModel?.provider || 'lovable';
+  const model = currentModel?.model || 'openai/gpt-5.6-sol';
   const value = `${provider}:${model}`;
 
   return (
@@ -240,7 +240,8 @@ function ModelSelector({
                   'w-2 h-2 rounded-full',
                   model.provider === 'openai' && 'bg-green-500',
                   model.provider === 'anthropic' && 'bg-orange-500',
-                  model.provider === 'gemini' && 'bg-blue-500'
+                  model.provider === 'gemini' && 'bg-blue-500',
+                  model.provider === 'lovable' && 'bg-pink-500'
                 )} />
                 {model.name}
               </div>

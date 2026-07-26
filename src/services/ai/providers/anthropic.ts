@@ -18,18 +18,18 @@ const ANTHROPIC_VERSION = '2023-06-01';
 
 const ANTHROPIC_MODELS: AIModelInfo[] = [
   {
-    id: 'claude-opus-4-8',
-    name: 'Claude Opus 4.8',
+    id: 'claude-opus-4-5',
+    name: 'Claude Opus 4.5',
     provider: 'anthropic',
     capabilities: ['text', 'vision', 'code', 'reasoning'],
-    contextWindow: 1000000,
+    contextWindow: 200000,
     supportsVision: true,
     supportsStructuredOutput: true,
     costPer1kTokens: { input: 0.005, output: 0.025 },
   },
   {
-    id: 'claude-sonnet-4-20250514',
-    name: 'Claude Sonnet 4',
+    id: 'claude-sonnet-4-5',
+    name: 'Claude Sonnet 4.5',
     provider: 'anthropic',
     capabilities: ['text', 'vision', 'code', 'reasoning'],
     contextWindow: 200000,
@@ -38,34 +38,14 @@ const ANTHROPIC_MODELS: AIModelInfo[] = [
     costPer1kTokens: { input: 0.003, output: 0.015 },
   },
   {
-    id: 'claude-3-5-sonnet-20241022',
-    name: 'Claude 3.5 Sonnet',
-    provider: 'anthropic',
-    capabilities: ['text', 'vision', 'code', 'reasoning'],
-    contextWindow: 200000,
-    supportsVision: true,
-    supportsStructuredOutput: true,
-    costPer1kTokens: { input: 0.003, output: 0.015 },
-  },
-  {
-    id: 'claude-3-opus-20240229',
-    name: 'Claude 3 Opus',
-    provider: 'anthropic',
-    capabilities: ['text', 'vision', 'code', 'reasoning'],
-    contextWindow: 200000,
-    supportsVision: true,
-    supportsStructuredOutput: true,
-    costPer1kTokens: { input: 0.015, output: 0.075 },
-  },
-  {
-    id: 'claude-3-haiku-20240307',
-    name: 'Claude 3 Haiku',
+    id: 'claude-haiku-4-5',
+    name: 'Claude Haiku 4.5',
     provider: 'anthropic',
     capabilities: ['text', 'vision', 'code'],
     contextWindow: 200000,
     supportsVision: true,
     supportsStructuredOutput: true,
-    costPer1kTokens: { input: 0.00025, output: 0.00125 },
+    costPer1kTokens: { input: 0.001, output: 0.005 },
   },
 ];
 
@@ -92,13 +72,13 @@ export class AnthropicProvider implements AIProvider {
   getDefaultModel(stage: PipelineStage): string {
     switch (stage) {
       case 'vision':
-        return 'claude-opus-4-8'; // Flagship vision + reasoning capabilities
+        return 'claude-opus-4-5'; // Flagship vision + reasoning capabilities
       case 'estimation':
-        return 'claude-opus-4-8'; // Best reasoning for construction estimation
+        return 'claude-opus-4-5'; // Best reasoning for construction estimation
       case 'placement':
-        return 'claude-opus-4-8'; // Structured output for coordinates
+        return 'claude-opus-4-5'; // Structured output for coordinates
       default:
-        return 'claude-opus-4-8';
+        return 'claude-opus-4-5';
     }
   }
 
@@ -107,7 +87,7 @@ export class AnthropicProvider implements AIProvider {
       throw new Error('Anthropic API key not configured');
     }
 
-    const model = request.model || 'claude-opus-4-8';
+    const model = request.model || 'claude-opus-4-5';
     
     // Extract system message if present
     const systemMessage = request.messages.find(m => m.role === 'system')?.content;
@@ -163,7 +143,7 @@ export class AnthropicProvider implements AIProvider {
       throw new Error('Anthropic API key not configured');
     }
 
-    const model = request.model || 'claude-opus-4-8';
+    const model = request.model || 'claude-opus-4-5';
     
     // Extract system message if present
     const systemMessage = request.messages.find(m => m.role === 'system')?.content;

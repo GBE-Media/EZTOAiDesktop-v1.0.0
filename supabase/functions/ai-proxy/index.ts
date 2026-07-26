@@ -11,10 +11,14 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY') || '';
 const ANTHROPIC_API_KEY = Deno.env.get('ANTHROPIC_API_KEY') || '';
+const LOVABLE_API_KEY = Deno.env.get('LOVABLE_API_KEY') || '';
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
+// Lovable AI Gateway - OpenAI-compatible chat completions endpoint serving
+// models like "openai/gpt-5.6-sol" and "google/gemini-3.1-pro-preview".
+const LOVABLE_API_URL = 'https://ai.gateway.lovable.dev/v1/chat/completions';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -23,7 +27,7 @@ const corsHeaders = {
 };
 
 interface AIRequest {
-  provider: 'openai' | 'anthropic';
+  provider: 'openai' | 'anthropic' | 'lovable';
   model: string;
   messages: Array<{
     role: 'user' | 'assistant' | 'system';
@@ -133,6 +137,8 @@ serve(async (req: Request) => {
       aiResponse = await callOpenAI(model, messages, temperature, maxTokens, responseFormat, tools, toolChoice);
     } else if (provider === 'anthropic') {
       aiResponse = await callAnthropic(model, messages, temperature, maxTokens, tools, toolChoice);
+    } else if (provider === 'lovable') {
+      aiResponse = await callLovable(model, messages, temperature, maxTokens, responseFormat, tools, toolChoice);
     } else {
       return new Response(
         JSON.stringify({ error: `Unsupported provider: ${provider}` }),
@@ -150,8 +156,8 @@ serve(async (req: Request) => {
       );
     }
 
-    // Extract token usage
-    if (provider === 'openai') {
+    // Extract token usage (the Lovable gateway is OpenAI-compatible)
+    if (provider === 'openai' || provider === 'lovable') {
       tokensInput = aiData.usage?.prompt_tokens || 0;
       tokensOutput = aiData.usage?.completion_tokens || 0;
     } else if (provider === 'anthropic') {
@@ -173,7 +179,7 @@ serve(async (req: Request) => {
     // Format response consistently
     let content = '';
     let toolCalls: Array<{ id: string; name: string; input: unknown }> = [];
-    if (provider === 'openai') {
+    if (provider === 'openai' || provider === 'lovable') {
       content = aiData.choices?.[0]?.message?.content || '';
       toolCalls = (aiData.choices?.[0]?.message?.tool_calls || []).map((call: any) => ({
         id: call.id,
@@ -196,9 +202,9 @@ serve(async (req: Request) => {
       JSON.stringify({
         content,
         model: aiData.model || model,
-        finishReason: provider === 'openai'
-          ? aiData.choices?.[0]?.finish_reason
-          : aiData.stop_reason,
+        finishReason: provider === 'anthropic'
+          ? aiData.stop_reason
+          : aiData.choices?.[0]?.finish_reason,
         toolCalls,
         usage: {
           promptTokens: tokensInput,
@@ -289,6 +295,77 @@ async function callOpenAI(
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+async function callLovable(
+  model: string,
+  messages: AIRequest['messages'],
+  temperature?: number,
+  maxTokens?: number,
+  responseFormat?: string,
+  tools?: AIRequest['tools'],
+  toolChoice?: AIRequest['toolChoice']
+): Promise<Response> {
+  // The Lovable AI Gateway is OpenAI-compatible; model IDs are namespaced,
+  // e.g. "openai/gpt-5.6-sol" or "google/gemini-3.1-pro-preview".
+  const gatewayMessages = messages.map(msg => {
+    if (msg.role === 'user' && msg.images && msg.images.length > 0) {
+      const content: Array<{ type: string; text?: string; image_url?: { url: string; detail?: string } }> = [];
+
+      if (msg.content) {
+        content.push({ type: 'text', text: msg.content });
+      }
+
+      for (const image of msg.images) {
+        content.push({
+          type: 'image_url',
+          image_url: {
+            url: image.startsWith('data:') ? image : `data:image/png;base64,${image}`,
+            detail: 'high',
+          },
+        });
+      }
+
+      return { role: msg.role, content };
+    }
+
+    return { role: msg.role, content: msg.content };
+  });
+
+  const body: Record<string, unknown> = {
+    model,
+    messages: gatewayMessages,
+    temperature: temperature ?? 0.7,
+    max_completion_tokens: maxTokens ?? 16384,
+  };
+
+  if (responseFormat === 'json') {
+    body.response_format = { type: 'json_object' };
+  }
+  if (tools?.length) {
+    body.tools = tools.map(tool => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema,
+      },
+    }));
+    body.tool_choice = toolChoice === 'none'
+      ? 'none'
+      : typeof toolChoice === 'object'
+        ? { type: 'function', function: { name: toolChoice.name } }
+        : 'auto';
+  }
+
+  return fetch(LOVABLE_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${LOVABLE_API_KEY}`,
     },
     body: JSON.stringify(body),
   });

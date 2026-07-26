@@ -17,34 +17,44 @@ const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 const OPENAI_MODELS: AIModelInfo[] = [
   {
-    id: 'gpt-5.6-sol',
-    name: 'GPT-5.6 Sol',
+    id: 'gpt-5',
+    name: 'GPT-5',
     provider: 'openai',
     capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code', 'reasoning'],
-    contextWindow: 1050000,
+    contextWindow: 400000,
     supportsVision: true,
     supportsStructuredOutput: true,
-    costPer1kTokens: { input: 0.005, output: 0.03 },
+    costPer1kTokens: { input: 0.00125, output: 0.01 },
   },
   {
-    id: 'gpt-5.6-terra',
-    name: 'GPT-5.6 Terra',
-    provider: 'openai',
-    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code', 'reasoning'],
-    contextWindow: 1050000,
-    supportsVision: true,
-    supportsStructuredOutput: true,
-    costPer1kTokens: { input: 0.0025, output: 0.015 },
-  },
-  {
-    id: 'gpt-5.6-luna',
-    name: 'GPT-5.6 Luna',
+    id: 'gpt-5-mini',
+    name: 'GPT-5 Mini',
     provider: 'openai',
     capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code'],
-    contextWindow: 1050000,
+    contextWindow: 400000,
     supportsVision: true,
     supportsStructuredOutput: true,
-    costPer1kTokens: { input: 0.0005, output: 0.002 },
+    costPer1kTokens: { input: 0.00025, output: 0.002 },
+  },
+  {
+    id: 'gpt-5-nano',
+    name: 'GPT-5 Nano',
+    provider: 'openai',
+    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code'],
+    contextWindow: 400000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.00005, output: 0.0004 },
+  },
+  {
+    id: 'gpt-4.1',
+    name: 'GPT-4.1',
+    provider: 'openai',
+    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code', 'reasoning'],
+    contextWindow: 1000000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.002, output: 0.008 },
   },
   {
     id: 'gpt-4o',
@@ -55,46 +65,6 @@ const OPENAI_MODELS: AIModelInfo[] = [
     supportsVision: true,
     supportsStructuredOutput: true,
     costPer1kTokens: { input: 0.005, output: 0.015 },
-  },
-  {
-    id: 'gpt-4o-mini',
-    name: 'GPT-4o Mini',
-    provider: 'openai',
-    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code'],
-    contextWindow: 128000,
-    supportsVision: true,
-    supportsStructuredOutput: true,
-    costPer1kTokens: { input: 0.00015, output: 0.0006 },
-  },
-  {
-    id: 'gpt-4-turbo',
-    name: 'GPT-4 Turbo',
-    provider: 'openai',
-    capabilities: ['text', 'vision', 'function-calling', 'code', 'reasoning'],
-    contextWindow: 128000,
-    supportsVision: true,
-    supportsStructuredOutput: false,
-    costPer1kTokens: { input: 0.01, output: 0.03 },
-  },
-  {
-    id: 'gpt-4',
-    name: 'GPT-4',
-    provider: 'openai',
-    capabilities: ['text', 'function-calling', 'code', 'reasoning'],
-    contextWindow: 8192,
-    supportsVision: false,
-    supportsStructuredOutput: false,
-    costPer1kTokens: { input: 0.03, output: 0.06 },
-  },
-  {
-    id: 'gpt-3.5-turbo',
-    name: 'GPT-3.5 Turbo',
-    provider: 'openai',
-    capabilities: ['text', 'function-calling', 'code'],
-    contextWindow: 16385,
-    supportsVision: false,
-    supportsStructuredOutput: false,
-    costPer1kTokens: { input: 0.0005, output: 0.0015 },
   },
 ];
 
@@ -121,13 +91,13 @@ export class OpenAIProvider implements AIProvider {
   getDefaultModel(stage: PipelineStage): string {
     switch (stage) {
       case 'vision':
-        return 'gpt-5.6-sol'; // Frontier vision + reasoning for image analysis
+        return 'gpt-5'; // Strongest direct-API vision + reasoning
       case 'estimation':
-        return 'gpt-5.6-sol'; // Strongest reasoning for estimation
+        return 'gpt-5'; // Strongest reasoning for estimation
       case 'placement':
-        return 'gpt-5.6-sol'; // Structured output for coordinates
+        return 'gpt-5'; // Structured output for coordinates
       default:
-        return 'gpt-5.6-sol';
+        return 'gpt-5';
     }
   }
 
@@ -136,7 +106,7 @@ export class OpenAIProvider implements AIProvider {
       throw new Error('OpenAI API key not configured');
     }
 
-    const model = request.model || 'gpt-5.6-sol';
+    const model = request.model || 'gpt-5';
     
     const messages = request.messages.map(msg => ({
       role: msg.role,
@@ -188,7 +158,7 @@ export class OpenAIProvider implements AIProvider {
       throw new Error('OpenAI API key not configured');
     }
 
-    const model = request.model || 'gpt-5.6-sol';
+    const model = request.model || 'gpt-5';
     
     // Build messages with images
     const messages = request.messages.map(msg => {

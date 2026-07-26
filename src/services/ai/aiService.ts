@@ -24,13 +24,22 @@ import { ELECTRICAL_VISION_PROMPT } from './trades/electrical';
 import { PLUMBING_VISION_PROMPT } from './trades/plumbing';
 import { HVAC_VISION_PROMPT } from './trades/hvac';
 
-// Known-good models to fall back to if the configured flagship model is
-// rejected because the underlying account/key isn't permitted to use it yet
-// (e.g. usage tier gating, org verification, workspace model restrictions).
-// These were the previous defaults and are broadly available at low tiers.
-const FALLBACK_MODELS: Partial<Record<AIProviderType, string>> = {
-  openai: 'gpt-4o',
-  anthropic: 'claude-sonnet-4-20250514',
+// Ordered fallback chains, tried in sequence when the configured model is
+// rejected as inaccessible (allow-list, tier gating, retired model, etc.).
+// Entries may switch provider - e.g. the Lovable gateway falls back to a
+// direct OpenAI model as its last resort.
+const FALLBACK_CHAINS: Partial<Record<AIProviderType, Array<{ provider: AIProviderType; model: string }>>> = {
+  lovable: [
+    { provider: 'lovable', model: 'openai/gpt-5.5' },
+    { provider: 'openai', model: 'gpt-5' },
+  ],
+  openai: [
+    { provider: 'openai', model: 'gpt-4.1' },
+    { provider: 'openai', model: 'gpt-4o' },
+  ],
+  anthropic: [
+    { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+  ],
 };
 
 // Matches provider error messages indicating the account/key lacks access to
@@ -53,16 +62,16 @@ export interface AIServiceConfig {
 
 const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
   visionModel: {
-    provider: 'openai',
-    model: 'gpt-5.6-sol',
+    provider: 'lovable',
+    model: 'openai/gpt-5.6-sol',
   },
   estimationModel: {
     provider: 'anthropic',
-    model: 'claude-opus-4-8',
+    model: 'claude-opus-4-5',
   },
   placementModel: {
-    provider: 'openai',
-    model: 'gpt-5.6-sol',
+    provider: 'lovable',
+    model: 'openai/gpt-5.6-sol',
   },
 };
 
@@ -192,33 +201,49 @@ class AIService {
   }
 
   /**
-   * Send a proxy request, automatically retrying once against a broadly
-   * available fallback model if the configured model comes back as
-   * inaccessible for the current account/key (rather than surfacing a hard
-   * failure to the user for what is usually an account provisioning issue).
+   * Send a proxy request, walking the provider's fallback chain if the
+   * configured model comes back as inaccessible for the current account/key
+   * (rather than surfacing a hard failure to the user for what is usually an
+   * account/backend provisioning issue). Every attempt is wrapped, so the
+   * final error is a clear summary rather than a raw provider message.
    */
   private async sendProxyRequestWithFallback(params: ProxyRequest): Promise<AICompletionResponse> {
-    try {
-      const response = await sendProxyRequest(params);
-      console.info(`[AIService] ${params.provider} pass completed with model "${response.model || params.model}".`);
-      return response;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const fallbackModel = FALLBACK_MODELS[params.provider];
+    const attempts: Array<{ provider: AIProviderType; model: string }> = [
+      { provider: params.provider, model: params.model },
+      ...(FALLBACK_CHAINS[params.provider] || []).filter(
+        candidate => !(candidate.provider === params.provider && candidate.model === params.model)
+      ),
+    ];
 
-      if (fallbackModel && fallbackModel !== params.model && isModelAccessError(message)) {
+    let lastError: unknown;
+    for (const [index, attempt] of attempts.entries()) {
+      try {
+        const response = await sendProxyRequest({ ...params, provider: attempt.provider, model: attempt.model });
+        if (index > 0) {
+          console.warn(`[AIService] Fell back to ${attempt.provider}/"${attempt.model}" after "${params.model}" was inaccessible.`);
+        }
+        console.info(`[AIService] ${attempt.provider} pass completed with model "${response.model || attempt.model}".`);
+        return response;
+      } catch (error) {
+        lastError = error;
+        const message = error instanceof Error ? error.message : String(error);
+        const hasNextFallback = index < attempts.length - 1;
+        if (!hasNextFallback || !isModelAccessError(message)) {
+          break;
+        }
         console.warn(
-          `[AIService] Model "${params.model}" (${params.provider}) is not accessible with the current account/key ` +
-          `("${message}"). Retrying with fallback model "${fallbackModel}". Check the account's usage tier / ` +
-          `organization verification in the ${params.provider} console to unlock the flagship model.`
+          `[AIService] Model "${attempt.model}" (${attempt.provider}) is not accessible ("${message}"). ` +
+          `Trying fallback ${attempts[index + 1].provider}/"${attempts[index + 1].model}".`
         );
-        const fallbackResponse = await sendProxyRequest({ ...params, model: fallbackModel });
-        console.info(`[AIService] ${params.provider} fallback pass completed with model "${fallbackResponse.model || fallbackModel}".`);
-        return fallbackResponse;
       }
-
-      throw error;
     }
+
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    if (isModelAccessError(message)) {
+      const tried = attempts.map(attempt => `${attempt.provider}/${attempt.model}`).join(', ');
+      throw new Error(`No accessible AI model found. Tried: ${tried}. Last error: ${message}`);
+    }
+    throw lastError;
   }
 
   /**

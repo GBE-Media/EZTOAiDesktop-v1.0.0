@@ -6,10 +6,12 @@
 export * from './types';
 export { OpenAIProvider, getOpenAIProvider } from './openai';
 export { AnthropicProvider, getAnthropicProvider } from './anthropic';
+export { LovableProvider, getLovableProvider } from './lovable';
 
 import type { AIProvider, AIProviderType } from './types';
 import { getOpenAIProvider } from './openai';
 import { getAnthropicProvider } from './anthropic';
+import { getLovableProvider } from './lovable';
 
 /**
  * Get a provider instance by type
@@ -20,6 +22,8 @@ export function getProvider(type: AIProviderType): AIProvider {
       return getOpenAIProvider();
     case 'anthropic':
       return getAnthropicProvider();
+    case 'lovable':
+      return getLovableProvider();
     case 'gemini':
       // TODO: Implement Gemini provider
       throw new Error('Gemini provider not yet implemented');
@@ -33,6 +37,7 @@ export function getProvider(type: AIProviderType): AIProvider {
  */
 export function getAllProviders(): AIProvider[] {
   return [
+    getLovableProvider(),
     getOpenAIProvider(),
     getAnthropicProvider(),
   ];

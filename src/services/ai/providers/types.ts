@@ -3,7 +3,7 @@
  * Defines the contract for all AI providers (OpenAI, Anthropic, etc.)
  */
 
-export type AIProviderType = 'openai' | 'anthropic' | 'gemini';
+export type AIProviderType = 'openai' | 'anthropic' | 'gemini' | 'lovable';
 
 export type PipelineStage = 'vision' | 'estimation' | 'placement';
 

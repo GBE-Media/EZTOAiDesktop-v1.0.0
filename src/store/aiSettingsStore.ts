@@ -68,9 +68,9 @@ interface AISettingsState extends AISettings {
 }
 
 const DEFAULT_PIPELINE_MODELS = {
-  vision: { provider: 'openai' as AIProviderType, model: 'gpt-5.6-sol' },
-  estimation: { provider: 'anthropic' as AIProviderType, model: 'claude-opus-4-8' },
-  placement: { provider: 'openai' as AIProviderType, model: 'gpt-5.6-sol' },
+  vision: { provider: 'lovable' as AIProviderType, model: 'openai/gpt-5.6-sol' },
+  estimation: { provider: 'anthropic' as AIProviderType, model: 'claude-opus-4-5' },
+  placement: { provider: 'lovable' as AIProviderType, model: 'openai/gpt-5.6-sol' },
 };
 
 function applyPipelineModelsToService(pipelineModels: AISettings['pipelineModels']) {
@@ -248,28 +248,29 @@ export const useAISettingsStore = create<AISettingsState>()(
           placement: persisted?.pipelineModels?.placement || DEFAULT_PIPELINE_MODELS.placement,
         };
         
-        // Migrate invalid model IDs back to valid ones
-        if (pipelineModels.estimation.model === 'claude-sonnet-4-5-20250514') {
-          pipelineModels.estimation.model = 'claude-sonnet-4-20250514';
-        }
-
-        // Force-upgrade stale, previously-persisted models to the current
-        // flagship tier. Without this, users who already have settings saved
-        // in localStorage would stay pinned to the old models forever, since
-        // persisted values normally take precedence over new defaults.
-        const RETIRED_OPENAI_MODELS = new Set(['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo']);
-        const RETIRED_ANTHROPIC_MODELS = new Set([
-          'claude-sonnet-4-20250514',
-          'claude-3-5-sonnet-20241022',
-          'claude-3-opus-20240229',
-          'claude-3-haiku-20240307',
-        ]);
+        // Remap stale persisted selections onto the models the backend
+        // actually serves. Without this, users who already have settings
+        // saved in localStorage would stay pinned to broken IDs forever,
+        // since persisted values normally take precedence over new defaults.
+        const STALE_OPENAI_TO_LOVABLE = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
+        const RETIRED_OPENAI_MODELS = new Set(['gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo']);
+        const STALE_ANTHROPIC_REMAP: Record<string, string> = {
+          'claude-opus-4-8': 'claude-opus-4-5',
+          'claude-sonnet-4-20250514': 'claude-sonnet-4-5',
+          'claude-sonnet-4-5-20250514': 'claude-sonnet-4-5',
+          'claude-3-5-sonnet-20241022': 'claude-sonnet-4-5',
+          'claude-3-opus-20240229': 'claude-opus-4-5',
+          'claude-3-haiku-20240307': 'claude-haiku-4-5',
+        };
         (['vision', 'estimation', 'placement'] as const).forEach((stage) => {
           const selection = pipelineModels[stage];
-          if (selection.provider === 'openai' && RETIRED_OPENAI_MODELS.has(selection.model)) {
-            pipelineModels[stage] = { provider: 'openai', model: DEFAULT_PIPELINE_MODELS.vision.model };
-          } else if (selection.provider === 'anthropic' && RETIRED_ANTHROPIC_MODELS.has(selection.model)) {
-            pipelineModels[stage] = { provider: 'anthropic', model: DEFAULT_PIPELINE_MODELS.estimation.model };
+          if (selection.provider === 'openai' && STALE_OPENAI_TO_LOVABLE.has(selection.model)) {
+            // 5.6-series models moved behind the Lovable AI Gateway.
+            pipelineModels[stage] = { provider: 'lovable', model: `openai/${selection.model}` };
+          } else if (selection.provider === 'openai' && RETIRED_OPENAI_MODELS.has(selection.model)) {
+            pipelineModels[stage] = { provider: 'openai', model: 'gpt-5' };
+          } else if (selection.provider === 'anthropic' && STALE_ANTHROPIC_REMAP[selection.model]) {
+            pipelineModels[stage] = { provider: 'anthropic', model: STALE_ANTHROPIC_REMAP[selection.model] };
           }
         });
         
