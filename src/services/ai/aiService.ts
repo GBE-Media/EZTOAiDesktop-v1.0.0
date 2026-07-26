@@ -19,7 +19,7 @@ import {
   type TradeType,
   type AIModelInfo,
 } from './providers';
-import { sendProxyRequest, isProxyAvailable, type ProxyRequest } from './proxyClient';
+import { sendProxyRequest, isProxyAvailable, ProxyRequestError, type ProxyRequest } from './proxyClient';
 import { ELECTRICAL_VISION_PROMPT } from './trades/electrical';
 import { PLUMBING_VISION_PROMPT } from './trades/plumbing';
 import { HVAC_VISION_PROMPT } from './trades/hvac';
@@ -31,7 +31,7 @@ import { HVAC_VISION_PROMPT } from './trades/hvac';
 const FALLBACK_CHAINS: Partial<Record<AIProviderType, Array<{ provider: AIProviderType; model: string }>>> = {
   lovable: [
     { provider: 'lovable', model: 'openai/gpt-5.5' },
-    { provider: 'openai', model: 'gpt-5' },
+    { provider: 'openai', model: 'gpt-4o' },
   ],
   openai: [
     { provider: 'openai', model: 'gpt-4.1' },
@@ -48,6 +48,22 @@ const MODEL_ACCESS_ERROR_PATTERN = /model[^.]*(not permitted|not allowed|not ava
 
 function isModelAccessError(message: string): boolean {
   return MODEL_ACCESS_ERROR_PATTERN.test(message);
+}
+
+// Statuses that indicate the request/model/provider combination itself is
+// the problem (bad request, not found, upstream provider/gateway error) and
+// are worth retrying against a fallback model. 401 (auth), 429 (rate limit),
+// and 413 (payload too large) are deliberately excluded - switching models
+// will not fix those, so we should surface them immediately instead of
+// burning extra requests on a doomed retry loop.
+const RETRYABLE_STATUS_CODES = new Set([400, 404, 422, 500, 502, 503]);
+
+function isRetryableProxyError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  if (isModelAccessError(message)) {
+    return true;
+  }
+  return error instanceof ProxyRequestError && RETRYABLE_STATUS_CODES.has(error.status);
 }
 
 export interface AIServiceConfig {
@@ -228,20 +244,20 @@ class AIService {
         lastError = error;
         const message = error instanceof Error ? error.message : String(error);
         const hasNextFallback = index < attempts.length - 1;
-        if (!hasNextFallback || !isModelAccessError(message)) {
+        if (!hasNextFallback || !isRetryableProxyError(error)) {
           break;
         }
         console.warn(
-          `[AIService] Model "${attempt.model}" (${attempt.provider}) is not accessible ("${message}"). ` +
+          `[AIService] Model "${attempt.model}" (${attempt.provider}) failed ("${message}"). ` +
           `Trying fallback ${attempts[index + 1].provider}/"${attempts[index + 1].model}".`
         );
       }
     }
 
     const message = lastError instanceof Error ? lastError.message : String(lastError);
-    if (isModelAccessError(message)) {
+    if (attempts.length > 1) {
       const tried = attempts.map(attempt => `${attempt.provider}/${attempt.model}`).join(', ');
-      throw new Error(`No accessible AI model found. Tried: ${tried}. Last error: ${message}`);
+      throw new Error(`AI request failed after trying: ${tried}. Last error: ${message}`);
     }
     throw lastError;
   }

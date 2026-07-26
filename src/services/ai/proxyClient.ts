@@ -53,6 +53,23 @@ export interface RateLimitError {
 }
 
 /**
+ * Thrown when the proxy responds with a non-2xx status. Carries the HTTP
+ * status code so callers can decide whether a request is worth retrying
+ * against a fallback model/provider (e.g. 400/404/500) versus a
+ * user-actionable failure that no amount of retrying will fix (401 auth,
+ * 429 rate-limit, 413 payload-too-large).
+ */
+export class ProxyRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ProxyRequestError';
+    this.status = status;
+  }
+}
+
+/**
  * Send a request through the AI proxy
  */
 export async function sendProxyRequest(request: ProxyRequest): Promise<AICompletionResponse> {
@@ -84,9 +101,9 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
   if (!contentType?.includes('application/json')) {
     console.error('[AI Proxy] Non-JSON response:', response.status, contentType);
     if (response.status === 404) {
-      throw new Error('AI service not found. The Edge Function needs to be deployed. Please contact support.');
+      throw new ProxyRequestError('AI service not found. The Edge Function needs to be deployed. Please contact support.', response.status);
     }
-    throw new Error(`AI service error (${response.status}). Please try again later.`);
+    throw new ProxyRequestError(`AI service error (${response.status}). Please try again later.`, response.status);
   }
 
   let data: unknown;
@@ -94,7 +111,7 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
     data = await response.json();
   } catch (parseError) {
     console.error('[AI Proxy] JSON parse error:', parseError);
-    throw new Error('Invalid response from AI service. Please try again.');
+    throw new ProxyRequestError('Invalid response from AI service. Please try again.', response.status);
   }
 
   console.log('[AI Proxy] Response status:', response.status);
@@ -106,21 +123,22 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
     // Check for rate limit error
     if (response.status === 429) {
       const rateLimitError = data as RateLimitError;
-      throw new Error(
-        `Rate limit exceeded. You've used ${rateLimitError.details?.currentTokens?.toLocaleString() || '?'} of ${rateLimitError.details?.tokenLimit?.toLocaleString() || '?'} tokens this month.`
+      throw new ProxyRequestError(
+        `Rate limit exceeded. You've used ${rateLimitError.details?.currentTokens?.toLocaleString() || '?'} of ${rateLimitError.details?.tokenLimit?.toLocaleString() || '?'} tokens this month.`,
+        response.status
       );
     }
 
     // Check for auth error
     if (response.status === 401) {
-      throw new Error('Session expired. Please log in again.');
+      throw new ProxyRequestError('Session expired. Please log in again.', response.status);
     }
 
     if (response.status === 413) {
-      throw new Error('The blueprint image payload is too large. Reduce the selected page area and try again.');
+      throw new ProxyRequestError('The blueprint image payload is too large. Reduce the selected page area and try again.', response.status);
     }
 
-    throw new Error(errorData.error || `AI request failed (${response.status})`);
+    throw new ProxyRequestError(errorData.error || `AI request failed (${response.status})`, response.status);
   }
 
   const proxyResponse = data as ProxyResponse;
