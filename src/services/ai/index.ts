@@ -11,3 +11,4 @@ export * from './trades';
 export * from './locationExtractor';
 export * from './layouts';
 export * from './proxyClient';
+export * from './agent';

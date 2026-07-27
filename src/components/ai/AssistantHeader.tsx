@@ -69,7 +69,7 @@ export function AssistantHeader(props: {
             <Bot className="h-4 w-4 text-white" />
           </div>
           <div className="min-w-0">
-            <h2 className="text-base font-semibold text-foreground">BidveraAi Assistant</h2>
+            <h2 className="text-base font-semibold text-foreground">BidveraAi Agent</h2>
             <p className="truncate text-xs text-muted-foreground">
               {props.documentName || 'No document'} · Page {props.page} · {props.trade}
             </p>

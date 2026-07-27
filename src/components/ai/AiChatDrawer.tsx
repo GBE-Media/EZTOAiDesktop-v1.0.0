@@ -1,6 +1,6 @@
 /**
- * AI Chat Drawer Component
- * Floating slide-out panel for AI interaction
+ * BidveraAi Agent Assistant Panel
+ * Docked agent (tool loop, approvals, verification) — replaces the old one-shot chat drawer.
  */
 
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
@@ -35,14 +35,14 @@ import { AiToolbar } from './AiToolbar';
 import { AiSettingsDialog } from './AiSettingsDialog';
 import { ProductMatchPanel } from './ProductMatchPanel';
 import { getAIService } from '@/services/ai/aiService';
-import { chat as aiChat, runPipeline } from '@/services/ai/pipeline';
+import { runPipeline } from '@/services/ai/pipeline';
 import { summarizeCatalogForChat, summarizeMarkupsForChat } from '@/services/ai/contextSummary';
 import { cn } from '@/lib/utils';
 import { capturePageCrop, createPageImageGenerator, getOptimalScale } from '@/services/ai/imageCapture';
 import { chatPointersToGreenPlacements, ensureNumberedCalloutMentions } from '@/services/ai/callouts';
 import { fetchTrainingContext } from '@/services/ai/trainingService';
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
-import type { BlueprintAnalysisResult, CanvasPlacement, PlacementMarkup } from '@/services/ai/providers/types';
+import type { BlueprintAnalysisResult, CanvasPlacement, ChatMarkupPointer, PlacementMarkup } from '@/services/ai/providers/types';
 import { useAuth } from '@/hooks/useAuth';
 import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
 import {
@@ -51,11 +51,28 @@ import {
   releaseAssistantRunController,
 } from '@/services/ai/assistantOrchestrator';
 import type { EvidenceCitation } from '@/types/assistant';
-import { proposeAssistantMutation } from '@/services/ai/tools/registry';
+import {
+  executeApprovedAssistantAction,
+  proposeAssistantMutation,
+} from '@/services/ai/tools/registry';
+import {
+  buildAgentContext,
+  createAgentToolContext,
+  getAgentSession,
+  registerAllAgentTools,
+  resumeAgentAfterApproval,
+  runAgentTurn,
+} from '@/services/ai/agent';
 import { AssistantHeader } from './AssistantHeader';
 import { AssistantComposer } from './AssistantComposer';
 
+/** @deprecated Prefer AgentAssistantDrawer — same implementation. */
 export function AiChatDrawer() {
+  return <AgentAssistantDrawer />;
+}
+
+/** Primary docked agent panel used by the editor. */
+export function AgentAssistantDrawer() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pageSelection, setPageSelection] = useState('current');
@@ -143,6 +160,10 @@ export function AiChatDrawer() {
   // Editor store for document info
   const { documents, activeDocument } = useEditorStore();
   const activeDocumentRecord = documents.find(document => document.id === activeDocument);
+
+  useEffect(() => {
+    registerAllAgentTools();
+  }, []);
 
   useEffect(() => {
     const contextId = activeDocId || (user?.id ? `user:${user.id}:general` : 'local:general');
@@ -435,127 +456,152 @@ export function AiChatDrawer() {
         return;
       }
       
-      // Send to AI (chat-only)
+      // Agent chat path (tool loop). Forced takeoff pipeline stays above.
       const markupsSummary = activeDocId
         ? summarizeMarkupsForChat(getMarkupsByPage(activeDocId), currentPage || 1)
         : undefined;
       const catalogSummary = summarizeCatalogForChat(nodes, rootIds, activeProductId);
+      const materialCounts = useProductStore.getState().exportProducts(activeDocumentRecord?.name || 'project');
+      const materialCountsSummary = materialCounts.products.length
+        ? materialCounts.products
+          .slice(0, 30)
+          .map(p => `- ${p.name}: count=${p.measurements.totalCount}, length=${p.measurements.totalLength}, area=${p.measurements.totalArea}`)
+          .join('\n')
+        : undefined;
 
-      const response = await aiChat({
-        message: content,
-        context: {
-          trade: selectedTrade,
-          currentPage: currentPage,
-          previousMessages,
-          markupsSummary,
-          catalogSummary,
-        },
-        imageBase64,
-        pdfDoc: docData?.pdfDocument,
-        pageWidth: docData?.originalPageWidth || pageWidth,
-        pageHeight: docData?.originalPageHeight || pageHeight,
-        getCachedText: getTextContent,
-        setCachedText: setTextContent,
-        onProgress: (message, progress) => {
-          if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
+      let agentImage = imageBase64;
+      if (!agentImage && docData?.pdfDocument) {
+        try {
+          const optimalScale = getOptimalScale(docData.originalPageWidth, docData.originalPageHeight);
+          const imageGenerator = createPageImageGenerator(docData.pdfDocument, {
+            scale: Math.min(optimalScale, 1.5),
+            format: 'jpeg',
+            quality: 0.85,
+          });
+          agentImage = await imageGenerator(currentPage || 1);
           setPipelineStatus({
             isRunning: true,
             currentStage: 'vision',
-            progress,
-            message,
+            progress: 35,
+            message: 'Captured page for agent context…',
           });
-          useAIChatStore.getState().upsertRunStep(runId, {
-            id: 'step_vision',
-            label: message,
-            stage: 'vision',
-            status: progress >= 100 ? 'completed' : 'running',
-            progress,
-            startedAt: new Date().toISOString(),
-            completedAt: progress >= 100 ? new Date().toISOString() : undefined,
+        } catch (captureError) {
+          console.warn('[AI Agent] Page capture failed; continuing text-only', captureError);
+        }
+      }
+
+      const { text: contextText } = buildAgentContext({
+        userIntent: content,
+        trade: selectedTrade,
+        currentPage: currentPage || undefined,
+        documentName: activeDocumentRecord?.name,
+        documentId: activeDocId,
+        totalPages: docData?.totalPages,
+        screen: 'editor',
+        recentTurns: previousMessages,
+        markupsSummary,
+        catalogSummary,
+        materialCountsSummary,
+        takeoffSummary: markupsSummary,
+      });
+
+      const applyApprovedMarkups = (payload: unknown) => {
+        const pageWidthPx = docData?.originalPageWidth || pageWidth;
+        const pageHeightPx = docData?.originalPageHeight || pageHeight;
+        const targetPage = currentPage || 1;
+        const markups = normalizeAgentMarkupPayload({
+          payload,
+          page: targetPage,
+          pageWidth: pageWidthPx,
+          pageHeight: pageHeightPx,
+          idPrefix: `agent_${assistantMsgId}`,
+          messageId: assistantMsgId,
+          defaultStyle,
+        });
+        if (markups.length === 0) {
+          return { placed: 0, reason: 'No valid markups in approval payload' };
+        }
+        addAIMarkupBatch(markups, placementMode === 'confirm');
+        if (placementMode === 'confirm') {
+          setPendingPlacements(markups.map(({ markup }) => ({
+            id: markup.id,
+            type: markup.type,
+            page: markup.page,
+            data: markup,
+          })));
+        }
+        return { placed: markups.length, pages: [...new Set(markups.map(m => m.page))] };
+      };
+
+      const toolContext = createAgentToolContext({
+        runId,
+        messageId: assistantMsgId,
+        signal: runSignal,
+        trade: selectedTrade,
+        placeMarkups: applyApprovedMarkups,
+      });
+
+      const agentResult = await runAgentTurn({
+        messageId: assistantMsgId,
+        runId,
+        userMessage: content,
+        toolContext,
+        contextText,
+        imageBase64: agentImage,
+        onStatus: (status, detail) => {
+          if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
+          setPipelineStatus({
+            isRunning: status === 'thinking' || status === 'running_tool',
+            currentStage: status === 'running_tool' ? 'placement' : 'vision',
+            progress: status === 'needs_approval' ? 100 : 55,
+            message: detail || status,
           });
         },
       });
       if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
 
-      useAIChatStore.getState().upsertRunStep(runId, {
-        id: 'step_vision',
-        label: 'Page analysis complete',
-        stage: 'vision',
-        status: 'completed',
-        progress: 100,
-        completedAt: new Date().toISOString(),
-      });
-
-      const answerText = ensureNumberedCalloutMentions(response.text, response.markupPointers);
-      
-      // Update assistant message with response
+      const answerText = ensureNumberedCalloutMentions(agentResult.assistantMessage, []);
       updateMessage(assistantMsgId, {
         content: answerText,
-        isLoading: false,
+        isLoading: agentResult.status === 'needs_approval',
         metadata: {
           trade: selectedTrade,
-          callouts: response.markupPointers.map((pointer, index) => ({
-            ref: pointer.ref ?? index + 1,
-            label: pointer.label,
-            page: currentPage || 1,
-          })),
+          tokenUsage: undefined,
         },
       });
+
       if (activeDocId) {
         addDocumentEvidenceBlock(assistantMsgId, activeDocumentRecord?.name, [currentPage || 1]);
       }
 
-      // Only intentional structured callouts become placement proposals.
-      if (response.markupPointers.length > 0 && activeDocId && docData) {
-        const targetPage = currentPage || 1;
-        const pageWidthPx = docData.originalPageWidth || pageWidth;
-        const pageHeightPx = docData.originalPageHeight || pageHeight;
-        const chatPlacements = chatPointersToGreenPlacements({
-          pointers: response.markupPointers,
-          page: targetPage,
-          pageWidth: pageWidthPx,
-          pageHeight: pageHeightPx,
-          idPrefix: `chat_${assistantMsgId}`,
-        });
+      if (agentResult.status === 'needs_approval' && agentResult.approvalRequest) {
+        const approval = agentResult.approvalRequest;
+        if (approval.toolId === 'place_markups' || approval.toolId === 'propose_callouts') {
+          const pageWidthPx = docData?.originalPageWidth || pageWidth;
+          const pageHeightPx = docData?.originalPageHeight || pageHeight;
+          const normalized = normalizeAgentMarkupPayload({
+            payload: approval.payload,
+            page: currentPage || 1,
+            pageWidth: pageWidthPx,
+            pageHeight: pageHeightPx,
+            idPrefix: `agent_${assistantMsgId}`,
+            messageId: assistantMsgId,
+            defaultStyle,
+          });
+          if (normalized.length > 0) {
+            setPendingMarkups(normalized);
+            setPendingAssistantId(assistantMsgId);
+          }
+        }
+        return;
+      }
 
-        const proposedMarkups = convertPlacementsToMarkups(chatPlacements, defaultStyle, `chat_${assistantMsgId}`, 1, 1)
-          .map(({ page, markup }) => ({
-            page,
-            markup: {
-              ...markup,
-              messageId: assistantMsgId,
-            } as CanvasMarkup,
-          }));
-        queueMarkupApproval({
-          assistantMsgId,
-          runId,
-          markups: proposedMarkups,
-          description: `Place ${proposedMarkups.length} intentional green callout${proposedMarkups.length === 1 ? '' : 's'} on page ${targetPage}.`,
-        });
-        useAIChatStore.getState().addMessageBlock(assistantMsgId, {
-          id: `block_pointer_citations_${assistantMsgId}`,
-          type: 'citations',
-          citations: response.markupPointers.map((pointer, index) => ({
-            id: `pointer_citation_${assistantMsgId}_${index}`,
-            documentId: activeDocId,
-            documentName: activeDocumentRecord?.name,
-            page: targetPage,
-            label: `[${pointer.ref ?? index + 1}] ${pointer.label || 'Callout'}`,
-            confidence: pointer.confidence,
-            bounds: pointer.boundsPct
-              ? {
-                  x: (pointer.boundsPct.x / 100) * pageWidthPx,
-                  y: (pointer.boundsPct.y / 100) * pageHeightPx,
-                  width: (pointer.boundsPct.width / 100) * pageWidthPx,
-                  height: (pointer.boundsPct.height / 100) * pageHeightPx,
-                }
-              : {
-                  x: (pointer.xPct / 100) * pageWidthPx - 12,
-                  y: (pointer.yPct / 100) * pageHeightPx - 12,
-                  width: 24,
-                  height: 24,
-                },
-          })),
+      if (agentResult.status === 'failed') {
+        failed = true;
+        updateMessage(assistantMsgId, {
+          content: '',
+          isLoading: false,
+          error: agentResult.assistantMessage,
         });
       }
     } catch (error) {
@@ -572,11 +618,14 @@ export function AiChatDrawer() {
         runSignal.aborted ? undefined : errorMessage
       );
     } finally {
-      if (!failed && useAIChatStore.getState().runs[runId]?.status === 'running') {
+      const runStatus = useAIChatStore.getState().runs[runId]?.status;
+      if (!failed && runStatus === 'running') {
         useAIChatStore.getState().finishRun(runId, 'completed');
       }
       setPipelineStatus({ isRunning: false, progress: 0, message: '' });
-      releaseAssistantRunController(runId);
+      if (runStatus !== 'waiting-approval') {
+        releaseAssistantRunController(runId);
+      }
     }
   }, [
     addMessage,
@@ -604,6 +653,9 @@ export function AiChatDrawer() {
     activeProductId,
     activeDocumentRecord?.name,
     queueMarkupApproval,
+    addAIMarkupBatch,
+    placementMode,
+    setPendingPlacements,
   ]);
 
   useEffect(() => {
@@ -777,13 +829,76 @@ export function AiChatDrawer() {
 
   useEffect(() => {
     const handleApproval = (event: Event) => {
+      void (async () => {
       const detail = (event as CustomEvent<{ approvalId: string; decision: 'approved' | 'rejected' }>).detail;
       const store = useAIChatStore.getState();
       const approval = store.approvals[detail.approvalId];
       if (!approval || approval.status !== 'pending') return;
 
+      const agentSession = getAgentSession(approval.runId);
+
+      const continueAgent = async (decision: 'approved' | 'rejected', executionResult?: unknown) => {
+        if (!agentSession) return;
+        const toolContext = createAgentToolContext({
+          runId: approval.runId,
+          messageId: approval.messageId,
+          trade: useAIChatStore.getState().selectedTrade,
+          placeMarkups: (payload) => {
+            const canvas = useCanvasStore.getState();
+            const docId = canvas.activeDocId;
+            const pdf = docId ? canvas.pdfDocuments[docId] : null;
+            const markups = normalizeAgentMarkupPayload({
+              payload,
+              page: canvas.getCurrentPage() || 1,
+              pageWidth: pdf?.originalPageWidth || pageWidth,
+              pageHeight: pdf?.originalPageHeight || pageHeight,
+              idPrefix: `agent_${approval.messageId}`,
+              messageId: approval.messageId,
+              defaultStyle,
+            });
+            if (!markups.length) return { placed: 0 };
+            addAIMarkupBatch(markups, placementMode === 'confirm');
+            if (placementMode === 'confirm') {
+              setPendingPlacements(markups.map(({ markup }) => ({
+                id: markup.id,
+                type: markup.type,
+                page: markup.page,
+                data: markup,
+              })));
+            }
+            return { placed: markups.length };
+          },
+        });
+        try {
+          setPipelineStatus({ isRunning: true, message: 'Continuing assistant…', progress: 60 });
+          const result = await resumeAgentAfterApproval({
+            runId: approval.runId,
+            approval,
+            decision,
+            toolContext,
+            executionResult,
+          });
+          store.updateMessage(approval.messageId, {
+            content: result.assistantMessage,
+            isLoading: false,
+            error: result.status === 'failed' ? result.assistantMessage : undefined,
+          });
+        } catch (error) {
+          store.updateMessage(approval.messageId, {
+            isLoading: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          setPipelineStatus({ isRunning: false, progress: 0, message: '' });
+        }
+      };
+
       if (detail.decision === 'rejected') {
         store.resolveApproval(approval.id, 'rejected');
+        if (agentSession) {
+          void continueAgent('rejected');
+          return;
+        }
         store.finishRun(approval.runId, 'completed');
         const existing = store.messages.find(message => message.id === approval.messageId);
         store.updateMessage(approval.messageId, {
@@ -793,21 +908,74 @@ export function AiChatDrawer() {
       }
 
       try {
-        const markups = approval.payload as Array<{ page: number; markup: CanvasMarkup }>;
-        addAIMarkupBatch(markups, placementMode === 'confirm');
-        if (placementMode === 'confirm') {
-          setPendingPlacements(markups.map(({ markup }) => ({
-            id: markup.id,
-            type: markup.type,
-            page: markup.page,
-            data: markup,
-          })));
+        let executionResult: unknown;
+        if (
+          approval.toolId === 'place_markups'
+          || approval.toolId === 'propose_callouts'
+        ) {
+          const canvas = useCanvasStore.getState();
+          const docId = canvas.activeDocId;
+          const pdf = docId ? canvas.pdfDocuments[docId] : null;
+          const markups = normalizeAgentMarkupPayload({
+            payload: approval.payload,
+            page: canvas.getCurrentPage() || 1,
+            pageWidth: pdf?.originalPageWidth || pageWidth,
+            pageHeight: pdf?.originalPageHeight || pageHeight,
+            idPrefix: `agent_${approval.messageId}`,
+            messageId: approval.messageId,
+            defaultStyle,
+          });
+          if (markups.length === 0 && Array.isArray(approval.payload)) {
+            // Pipeline path: payload already CanvasMarkup pairs
+            const legacy = approval.payload as Array<{ page: number; markup: CanvasMarkup }>;
+            addAIMarkupBatch(legacy, placementMode === 'confirm');
+            if (placementMode === 'confirm') {
+              setPendingPlacements(legacy.map(({ markup }) => ({
+                id: markup.id,
+                type: markup.type,
+                page: markup.page,
+                data: markup,
+              })));
+            }
+            executionResult = { placed: legacy.length };
+          } else {
+            addAIMarkupBatch(markups, placementMode === 'confirm');
+            if (placementMode === 'confirm') {
+              setPendingPlacements(markups.map(({ markup }) => ({
+                id: markup.id,
+                type: markup.type,
+                page: markup.page,
+                data: markup,
+              })));
+            }
+            executionResult = { placed: markups.length };
+          }
+        } else {
+          const toolContext = createAgentToolContext({
+            runId: approval.runId,
+            messageId: approval.messageId,
+            trade: store.selectedTrade,
+            placeMarkups: () => ({ placed: 0 }),
+          });
+          executionResult = await executeApprovedAssistantAction(approval, toolContext);
         }
+
         store.resolveApproval(approval.id, 'executed');
+
+        if (agentSession) {
+          void continueAgent('approved', executionResult);
+          return;
+        }
+
         store.finishRun(approval.runId, 'completed');
         const existing = store.messages.find(message => message.id === approval.messageId);
+        const placed = (executionResult as { placed?: number })?.placed;
         store.updateMessage(approval.messageId, {
-          content: `${existing?.content || ''}\n\n✓ Placed ${markups.length} callout${markups.length === 1 ? '' : 's'}. Use Undo to revert this batch.`,
+          content: `${existing?.content || ''}\n\n✓ ${
+            typeof placed === 'number'
+              ? `Placed ${placed} callout${placed === 1 ? '' : 's'}`
+              : 'Approved action executed'
+          }. Use Undo to revert this batch.`,
         });
       } catch (error) {
         store.resolveApproval(
@@ -816,11 +984,11 @@ export function AiChatDrawer() {
           error instanceof Error ? error.message : String(error)
         );
       }
+      })();
     };
     window.addEventListener('bidveraai:approval', handleApproval);
     return () => window.removeEventListener('bidveraai:approval', handleApproval);
-  }, [addAIMarkupBatch, placementMode, setPendingPlacements]);
-
+  }, [addAIMarkupBatch, defaultStyle, pageHeight, pageWidth, placementMode, setPendingPlacements, setPipelineStatus]);
   const handleQuestionToggle = useCallback((questionId: string, option: string, allowMultiple?: boolean) => {
     setQuestionAnswers((prev) => {
       const current = prev[questionId] || [];
@@ -901,21 +1069,21 @@ export function AiChatDrawer() {
                 <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500/20 to-purple-600/20 flex items-center justify-center mb-4">
                   <Sparkles className="w-8 h-8 text-violet-500" />
                 </div>
-                <h3 className="text-lg font-medium mb-2">AI Blueprint Assistant</h3>
+                <h3 className="text-lg font-medium mb-2">BidveraAi Agent</h3>
                 <p className="text-sm text-muted-foreground mb-6 max-w-[300px]">
-                  Analyze blueprints, count materials, get code references, and generate layout suggestions.
+                  Inspect takeoff context, call tools, ask clarifying questions, and propose reviewable changes (callouts require approval).
                 </p>
                 
                 <div className="space-y-2 w-full max-w-[300px]">
                   <p className="text-xs text-muted-foreground mb-2">Try asking:</p>
                   <QuickPrompt
-                    text="Count all outlets on this page"
-                    onClick={() => handleSendMessage('Count all outlets on this page')}
+                    text="Where is the fixture schedule on this page?"
+                    onClick={() => handleSendMessage('Where is the fixture schedule on this page?')}
                     disabled={!isAIAvailable || isLoading}
                   />
                   <QuickPrompt
-                    text="Analyze this blueprint for electrical components"
-                    onClick={() => handleSendMessage('Analyze this blueprint for electrical components')}
+                    text="Summarize material counts for this takeoff"
+                    onClick={() => handleSendMessage('Summarize material counts for this takeoff')}
                     disabled={!isAIAvailable || isLoading}
                   />
                   <QuickPrompt
@@ -1662,4 +1830,83 @@ function convertPlacementsToMarkups(
   });
   
   return markups;
+}
+
+/**
+ * Normalize agent/pipeline approval payloads into page+markup pairs.
+ * Accepts: [{page, markup}], pointer arrays, or { markups|callouts|pointers: [...] }.
+ */
+function normalizeAgentMarkupPayload(options: {
+  payload: unknown;
+  page: number;
+  pageWidth: number;
+  pageHeight: number;
+  idPrefix: string;
+  messageId: string;
+  defaultStyle: MarkupStyle;
+}): Array<{ page: number; markup: CanvasMarkup }> {
+  const raw = options.payload;
+  if (!raw) return [];
+
+  const asArray = Array.isArray(raw)
+    ? raw
+    : Array.isArray((raw as { payload?: unknown }).payload)
+      ? (raw as { payload: unknown[] }).payload
+      : Array.isArray((raw as { markups?: unknown[] }).markups)
+        ? (raw as { markups: unknown[] }).markups
+        : Array.isArray((raw as { callouts?: unknown[] }).callouts)
+          ? (raw as { callouts: unknown[] }).callouts
+          : Array.isArray((raw as { pointers?: unknown[] }).pointers)
+            ? (raw as { pointers: unknown[] }).pointers
+            : null;
+
+  if (!asArray || asArray.length === 0) return [];
+
+  const first = asArray[0] as Record<string, unknown>;
+  if (first && typeof first === 'object' && first.markup && (first.page != null || true)) {
+    const legacy = asArray.filter((item): item is { page: number; markup: CanvasMarkup } => {
+      const row = item as { page?: number; markup?: CanvasMarkup };
+      return !!row?.markup;
+    });
+    if (legacy.length > 0) {
+      return legacy.map(item => ({
+        page: item.page || options.page,
+        markup: {
+          ...item.markup,
+          messageId: options.messageId,
+          page: item.markup.page || item.page || options.page,
+        } as CanvasMarkup,
+      }));
+    }
+  }
+
+  const pointers = asArray.map((item, index) => {
+    const row = item as Record<string, unknown>;
+    const xPct = Number(row.xPct ?? row.x ?? 50);
+    const yPct = Number(row.yPct ?? row.y ?? 50);
+    return {
+      type: (row.type as 'callout') || 'callout',
+      ref: Number(row.ref ?? index + 1),
+      xPct: Number.isFinite(xPct) ? xPct : 50,
+      yPct: Number.isFinite(yPct) ? yPct : 50,
+      boundsPct: row.boundsPct as ChatMarkupPointer['boundsPct'],
+      label: typeof row.label === 'string' ? row.label : typeof row.content === 'string' ? row.content : `Callout ${index + 1}`,
+      note: typeof row.note === 'string' ? row.note : undefined,
+      confidence: typeof row.confidence === 'number' ? row.confidence : undefined,
+    };
+  });
+
+  const placements = chatPointersToGreenPlacements({
+    pointers,
+    page: options.page,
+    pageWidth: options.pageWidth,
+    pageHeight: options.pageHeight,
+    idPrefix: options.idPrefix,
+  });
+
+  return convertPlacementsToMarkups(placements, options.defaultStyle, options.idPrefix, 1, 1)
+    .map(({ page, markup }) => ({
+      page,
+      markup: { ...markup, messageId: options.messageId } as CanvasMarkup,
+    }));
 }

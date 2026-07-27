@@ -19,7 +19,7 @@ export function AssistantComposer(props: {
         onSend={props.onSend}
         isLoading={props.isLoading}
         disabled={props.disabled}
-        placeholder="Ask about this bid, /takeoff, or attach evidence..."
+        placeholder="Ask the agent… (tools, callouts, counts) or /takeoff"
         onStop={props.onStop}
         contextChips={props.contextChips}
       />

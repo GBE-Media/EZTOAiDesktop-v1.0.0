@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   executeApprovedAssistantAction,
   executeAssistantTool,
+  registerAssistantTools,
 } from './registry';
 import type { AssistantToolContext } from './types';
+import { registerAllAgentTools, resetAgentToolRegistrationForTests } from '../agent/tools/registerAll';
+import { z } from 'zod';
 
 function makeContext(): AssistantToolContext {
   return {
@@ -30,7 +33,8 @@ describe('assistant tool registry', () => {
     const result = await executeAssistantTool('analyze_page', { page: 2, scope: 'full' }, context);
     expect(result.status).toBe('completed');
     expect(context.analyzePage).toHaveBeenCalledWith({ page: 2, scope: 'full' });
-    await expect(executeAssistantTool('analyze_page', { page: 0 }, context)).rejects.toThrow();
+    const invalid = await executeAssistantTool('analyze_page', { page: 0 }, context);
+    expect(invalid.status).toBe('failed');
   });
 
   it('requires approval for every document mutation', async () => {
@@ -57,5 +61,33 @@ describe('assistant tool registry', () => {
     }, context);
     await executeApprovedAssistantAction(result.approval!, context);
     expect(context.placeMarkups).toHaveBeenCalledWith([{ id: 'markup-1' }]);
+  });
+
+  it('registers BidveraAi domain tools including stubs', () => {
+    resetAgentToolRegistrationForTests();
+    registerAllAgentTools();
+    return executeAssistantTool('getCurrentEstimateContext', {}, makeContext()).then(result => {
+      expect(result.status).toBe('stub');
+      expect(result.stubReason).toBeTruthy();
+    });
+  });
+
+  it('allows registering custom tools', async () => {
+    registerAssistantTools([{
+      id: 'unit_test_echo',
+      title: 'Echo',
+      description: 'Echo input',
+      risk: 'read',
+      requiresConfirmation: false,
+      undoable: false,
+      schema: z.object({ value: z.string() }),
+      execute: async (_ctx, input) => ({
+        status: 'completed',
+        summary: 'echoed',
+        output: input.value,
+      }),
+    }]);
+    const result = await executeAssistantTool('unit_test_echo', { value: 'hi' }, makeContext());
+    expect(result).toMatchObject({ status: 'completed', output: 'hi' });
   });
 });

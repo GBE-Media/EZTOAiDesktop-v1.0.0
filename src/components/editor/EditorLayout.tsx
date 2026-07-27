@@ -13,7 +13,7 @@ import { MeasurementsPanel } from './panels/MeasurementsPanel';
 import { ProductsPanel } from './panels/ProductsPanel';
 import { ProductDetailsPanel } from './panels/ProductDetailsPanel';
 import { UnsavedChangesDialog } from './UnsavedChangesDialog';
-import { AiChatDrawer } from '@/components/ai/AiChatDrawer';
+import { AgentAssistantDrawer } from '@/components/ai/AiChatDrawer';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useWindowClose } from '@/hooks/useWindowClose';
 import { useProjectOpen } from '@/hooks/useProjectOpen';
@@ -340,7 +340,7 @@ export function EditorLayout() {
             </button>
           </ResizableHandle>
 
-          {/* AI chat panel - docked so the canvas and other panels stay usable while it's open */}
+          {/* BidveraAi agent panel - docked so the canvas stays usable while it's open */}
           <ResizablePanel
             ref={aiPanelRef}
             defaultSize={25}
@@ -352,7 +352,7 @@ export function EditorLayout() {
             onExpand={() => useAIChatStore.getState().openDrawer()}
           >
             <div className="h-full border-l border-panel-border">
-              <AiChatDrawer />
+              <AgentAssistantDrawer />
             </div>
           </ResizablePanel>
         </ResizablePanelGroup>

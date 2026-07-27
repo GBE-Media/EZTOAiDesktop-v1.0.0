@@ -237,10 +237,10 @@ export function Toolbar() {
 
       <ToolbarDivider />
 
-      {/* AI Assistant */}
+      {/* BidveraAi Agent */}
       <ToolButton 
         icon={<Bot className="w-4 h-4" />} 
-        label="AI Assistant" 
+        label="Agent" 
         shortcut="Ctrl+Shift+A"
         active={useAIChatStore.getState().isOpen}
         onClick={() => useAIChatStore.getState().toggleDrawer()}

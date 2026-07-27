@@ -5,6 +5,7 @@ import type {
   AssistantToolDefinition,
   AssistantToolResult,
 } from './types';
+import { toolRequiresApproval } from './types';
 
 const boundsSchema = z.object({
   x: z.number(),
@@ -19,7 +20,31 @@ const mutationPayloadSchema = z.object({
   preview: z.unknown().optional(),
 });
 
-const createApproval = (
+function coerceMutationInput(raw: unknown): unknown {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const obj = raw as Record<string, unknown>;
+    if ('payload' in obj) {
+      return {
+        payload: obj.payload,
+        description: String(obj.description || 'Apply proposed document changes'),
+        preview: obj.preview,
+      };
+    }
+    if (obj.markups || obj.callouts || obj.pointers) {
+      return {
+        payload: obj.markups || obj.callouts || obj.pointers,
+        description: String(obj.description || 'Place proposed callouts on the document'),
+        preview: obj.preview,
+      };
+    }
+  }
+  if (Array.isArray(raw)) {
+    return { payload: raw, description: 'Apply proposed document changes' };
+  }
+  return { payload: raw, description: 'Apply proposed document changes' };
+}
+
+export const createApproval = (
   definition: AssistantToolDefinition,
   context: Pick<AssistantToolContext, 'runId' | 'messageId'>,
   input: { payload: unknown; description: string; preview?: unknown }
@@ -37,7 +62,37 @@ const createApproval = (
   createdAt: new Date().toISOString(),
 });
 
-const tools: AssistantToolDefinition[] = [
+function createMutationTool(
+  id: string,
+  title: string,
+  undoable: boolean,
+  risk: AssistantToolDefinition['risk'] = 'write',
+  verifyWith?: string[]
+): AssistantToolDefinition {
+  const definition: AssistantToolDefinition = {
+    id,
+    title,
+    description: `${title} after user approval.`,
+    risk,
+    requiresConfirmation: true,
+    undoable,
+    verifyWith,
+    schema: mutationPayloadSchema,
+    execute: async (context, rawInput) => {
+      const input = mutationPayloadSchema.parse(coerceMutationInput(rawInput));
+      const approval = createApproval(definition, context, input);
+      context.addApproval(approval);
+      return {
+        status: 'approval-required',
+        summary: `Waiting for approval: ${input.description}`,
+        approval,
+      };
+    },
+  };
+  return definition;
+}
+
+const coreTools: AssistantToolDefinition[] = [
   {
     id: 'get_document_context',
     title: 'Read document context',
@@ -125,37 +180,34 @@ const tools: AssistantToolDefinition[] = [
       return { status: 'completed', summary: `Opened page ${input.page}.` };
     },
   },
-  ...([
-    ['place_markups', 'Place document markups', true],
-    ['update_markups', 'Update document markups', true],
-    ['delete_markups', 'Delete document markups', true],
-    ['link_catalog', 'Link catalog items', true],
-    ['activate_editor_tool', 'Activate editor tool', false],
-  ] as const).map(([id, title, undoable]): AssistantToolDefinition => {
-    const definition: AssistantToolDefinition = {
-      id,
-      title,
-      description: `${title} after user approval.`,
-      risk: 'mutate',
-      requiresConfirmation: true,
-      undoable,
-      schema: mutationPayloadSchema,
-      execute: async (context, rawInput) => {
-        const input = mutationPayloadSchema.parse(rawInput);
-        const approval = createApproval(definition, context, input);
-        context.addApproval(approval);
-        return {
-          status: 'approval-required',
-          summary: `Waiting for approval: ${input.description}`,
-          approval,
-        };
-      },
-    };
-    return definition;
-  }),
+  createMutationTool('place_markups', 'Place document markups', true, 'write', ['inspect_markups']),
+  createMutationTool('propose_callouts', 'Propose green callouts', true, 'write', ['inspect_markups']),
+  createMutationTool('update_markups', 'Update document markups', true, 'write', ['inspect_markups']),
+  createMutationTool('delete_markups', 'Delete document markups', true, 'destructive', ['inspect_markups']),
+  createMutationTool('link_catalog', 'Link catalog items', true, 'write', ['inspect_catalog', 'getMaterialCounts']),
+  createMutationTool('activate_editor_tool', 'Activate editor tool', false, 'write'),
 ];
 
-export const assistantToolRegistry = new Map(tools.map(tool => [tool.id, tool]));
+export const assistantToolRegistry = new Map<string, AssistantToolDefinition>(
+  coreTools.map(tool => [tool.id, tool])
+);
+
+/** Register or replace a tool definition. Prefer calling from agent/tools/registerAll.ts. */
+export function registerAssistantTool(definition: AssistantToolDefinition): void {
+  assistantToolRegistry.set(definition.id, definition);
+}
+
+export function registerAssistantTools(definitions: AssistantToolDefinition[]): void {
+  definitions.forEach(registerAssistantTool);
+}
+
+export function listAssistantTools(): AssistantToolDefinition[] {
+  return Array.from(assistantToolRegistry.values());
+}
+
+export function getAssistantTool(toolId: string): AssistantToolDefinition | undefined {
+  return assistantToolRegistry.get(toolId);
+}
 
 export async function executeAssistantTool(
   toolId: string,
@@ -164,9 +216,27 @@ export async function executeAssistantTool(
 ): Promise<AssistantToolResult> {
   if (context.signal?.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
   const tool = assistantToolRegistry.get(toolId);
-  if (!tool) throw new Error(`Unknown assistant tool: ${toolId}`);
-  const input = tool.schema.parse(rawInput);
-  return tool.execute(context, input);
+  if (!tool) {
+    return {
+      status: 'failed',
+      summary: `Unknown assistant tool: ${toolId}`,
+      output: { error: 'unknown_tool', toolId },
+    };
+  }
+  try {
+    const candidate = tool.requiresConfirmation
+      ? coerceMutationInput(rawInput)
+      : (rawInput ?? {});
+    const input = tool.schema.parse(candidate);
+    return await tool.execute(context, input);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: 'failed',
+      summary: `Tool ${toolId} failed: ${message}`,
+      output: { error: message },
+    };
+  }
 }
 
 export function proposeAssistantMutation(
@@ -175,10 +245,10 @@ export function proposeAssistantMutation(
   identity: Pick<AssistantToolContext, 'runId' | 'messageId'>
 ): ApprovalRequest {
   const tool = assistantToolRegistry.get(toolId);
-  if (!tool || tool.risk !== 'mutate' || !tool.requiresConfirmation) {
+  if (!tool || !toolRequiresApproval(tool)) {
     throw new Error(`Tool ${toolId} is not an approval-gated mutation.`);
   }
-  const input = mutationPayloadSchema.parse(rawInput);
+  const input = mutationPayloadSchema.parse(coerceMutationInput(rawInput));
   return createApproval(tool, identity, input);
 }
 
@@ -188,6 +258,7 @@ export async function executeApprovedAssistantAction(
 ): Promise<unknown> {
   switch (approval.toolId) {
     case 'place_markups':
+    case 'propose_callouts':
       return context.placeMarkups(approval.payload);
     case 'update_markups':
       return context.updateMarkups(approval.payload);
@@ -197,6 +268,16 @@ export async function executeApprovedAssistantAction(
       return context.linkCatalog(approval.payload);
     case 'activate_editor_tool':
       return context.activateEditorTool(String(approval.payload));
+    case 'applyMaterialCountAdjustments':
+      if (!context.applyMaterialCountAdjustments) {
+        throw new Error('applyMaterialCountAdjustments is not wired.');
+      }
+      return context.applyMaterialCountAdjustments(approval.payload);
+    case 'saveEstimateDraft':
+      if (!context.saveProjectDraft) {
+        throw new Error('saveEstimateDraft / saveProjectDraft is not wired.');
+      }
+      return context.saveProjectDraft();
     default:
       throw new Error(`Tool ${approval.toolId} has no approved action executor.`);
   }
