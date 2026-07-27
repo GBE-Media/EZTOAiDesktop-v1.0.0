@@ -47,6 +47,8 @@ export interface BaseMarkup {
   aiPending?: boolean;        // True if awaiting user confirmation
   aiConfidence?: number;      // AI confidence score (0-1)
   aiLinkedItemId?: string;    // Links to AI detected item
+  calloutRef?: number;        // Numbered chat mention [N]
+  messageId?: string;         // Assistant message that proposed this callout
 }
 
 export interface RectangleMarkup extends BaseMarkup {

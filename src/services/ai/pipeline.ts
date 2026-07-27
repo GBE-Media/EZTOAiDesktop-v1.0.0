@@ -1062,11 +1062,16 @@ export async function chat(options: {
   const pointerInstructions = effectiveImage
     ? `
 
-If you want to visually point out a specific location on the page image you're looking at (e.g. something you just mentioned), end your reply with a fenced json code block in this exact shape - coordinates are percentages of the image, top-left origin:
+Only place visual callouts when you intentionally need to point at something specific on the page.
+If you do, mention each callout in your prose with a numbered ref like [1], and end with a fenced json block in this exact shape (percentages, top-left origin):
 \`\`\`json
-{"markups": [{"type": "rectangle", "xPct": 42.5, "yPct": 18.0, "boundsPct": {"x": 39, "y": 14, "width": 7, "height": 8}, "label": "Panel", "note": "Looks like the electrical panel", "confidence": 0.94}]}
+{"callouts": [{"ref": 1, "xPct": 42.5, "yPct": 18.0, "boundsPct": {"x": 39, "y": 14, "width": 7, "height": 8}, "label": "Timeclock", "note": "24hr timeclock on lighting control detail", "confidence": 0.94}]}
 \`\`\`
-Use "rectangle" when visible bounds are known, "count-marker" for a point-only location, or "text" for a short floating note. Only include this block when pointing at something specific, include at most 10 callouts, and never mention the block itself in your written answer.`
+Rules:
+- Omit the callouts block entirely for ordinary Q&A that does not need pointing.
+- Every callout MUST include a positive integer "ref" that also appears as [ref] in the written answer.
+- Prefer boundsPct when the object outline is visible; otherwise use xPct/yPct for the tip of the leader.
+- Include at most 10 callouts and never mention the JSON block itself in your written answer.`
     : '';
 
   const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string; images?: string[] }> = [
@@ -1123,16 +1128,14 @@ Be helpful, accurate, and reference specific codes when applicable.`,
     const extracted = extractChatMarkupPointers(response.content);
     if (!maximumResult) return extracted;
 
-    // Prefer reconciled detection coordinates over freehand model percentages
-    // whenever the response names a detected object.
-    const evidencePointers = buildVerifiedCalloutPointers(
-      maximumResult.analysis,
-      extracted.text
-    );
-
+    // Snap intentional callouts onto verified detections when labels match.
+    // Never invent callouts from mere name mentions in the answer text.
     return {
       text: extracted.text,
-      markupPointers: evidencePointers.length > 0 ? evidencePointers : extracted.markupPointers,
+      markupPointers: snapIntentionalCalloutsToDetections(
+        maximumResult.analysis,
+        extracted.markupPointers
+      ),
     };
   } catch (error) {
     console.error('Chat failed:', error);
@@ -1141,36 +1144,50 @@ Be helpful, accurate, and reference specific codes when applicable.`,
 }
 
 const MAX_CHAT_MARKUP_POINTERS = 10;
-const CHAT_MARKUP_POINTER_TYPES = new Set(['count-marker', 'text', 'rectangle']);
 
-export function buildVerifiedCalloutPointers(
+export function snapIntentionalCalloutsToDetections(
   analysis: BlueprintAnalysisResult,
-  responseText: string
+  pointers: ChatMarkupPointer[]
 ): ChatMarkupPointer[] {
-  const normalizedResponse = responseText.toLowerCase();
-  return analysis.items
-    .filter(item => {
+  if (!pointers.length) return [];
+
+  return pointers.map((pointer) => {
+    const label = pointer.label?.trim().toLowerCase() || '';
+    if (!label) return pointer;
+
+    const match = analysis.items.find((item) => {
       const type = item.type.trim().toLowerCase();
       const name = item.name.trim().toLowerCase();
-      return (type.length > 1 && normalizedResponse.includes(type)) ||
-        (name.length > 1 && normalizedResponse.includes(name));
-    })
-    .slice(0, MAX_CHAT_MARKUP_POINTERS)
-    .map((item): ChatMarkupPointer => ({
-      type: item.boundingBox ? 'rectangle' : 'count-marker',
-      xPct: item.location.x,
-      yPct: item.location.y,
-      boundsPct: item.boundingBox,
-      label: item.name,
-      note: item.evidence || `Verified ${item.type} detection`,
-      confidence: item.confidence,
-    }));
+      return (name.length > 1 && (label.includes(name) || name.includes(label))) ||
+        (type.length > 1 && (label.includes(type) || type.includes(label)));
+    });
+
+    if (!match) return pointer;
+
+    return {
+      ...pointer,
+      type: 'callout',
+      xPct: match.location.x,
+      yPct: match.location.y,
+      boundsPct: match.boundingBox,
+      label: pointer.label || match.name,
+      note: pointer.note || match.evidence || `Verified ${match.type} detection`,
+      confidence: pointer.confidence ?? match.confidence,
+    };
+  });
 }
 
-// Pulls an optional trailing `{"markups": [...]}` block (see the pointer
-// instructions appended to the chat system prompt above) out of a chat
-// response, validating each pointer and stripping the raw JSON out of the
-// text shown to the user.
+/** @deprecated Use snapIntentionalCalloutsToDetections — substring auto-place is disabled. */
+export function buildVerifiedCalloutPointers(
+  analysis: BlueprintAnalysisResult,
+  _responseText: string,
+  intentionalPointers: ChatMarkupPointer[] = []
+): ChatMarkupPointer[] {
+  return snapIntentionalCalloutsToDetections(analysis, intentionalPointers);
+}
+
+// Pulls an optional trailing intentional callouts JSON block out of a chat
+// response, validating each pointer and stripping the raw JSON from user text.
 function extractChatMarkupPointers(content: string): { text: string; markupPointers: ChatMarkupPointer[] } {
   if (!content) return { text: content, markupPointers: [] };
 
@@ -1184,22 +1201,24 @@ function extractChatMarkupPointers(content: string): { text: string; markupPoint
     return { text: content, markupPointers: [] };
   }
 
-  const rawMarkups = (parsed as { markups?: unknown } | null)?.markups;
-  if (!Array.isArray(rawMarkups)) return { text: content, markupPointers: [] };
+  const parsedObject = parsed as { callouts?: unknown; markups?: unknown } | null;
+  const rawMarkups = Array.isArray(parsedObject?.callouts)
+    ? parsedObject.callouts
+    : Array.isArray(parsedObject?.markups)
+      ? parsedObject.markups
+      : null;
+  if (!rawMarkups) return { text: content, markupPointers: [] };
 
   const markupPointers: ChatMarkupPointer[] = [];
   for (const item of rawMarkups) {
     if (markupPointers.length >= MAX_CHAT_MARKUP_POINTERS) break;
     if (!item || typeof item !== 'object') continue;
     const candidate = item as Record<string, unknown>;
-    const type = candidate.type === 'rectangle'
-      ? 'rectangle'
-      : candidate.type === 'text'
-        ? 'text'
-        : 'count-marker';
+    const ref = Number(candidate.ref);
+    if (!Number.isInteger(ref) || ref < 1) continue;
+
     const xPct = Number(candidate.xPct);
     const yPct = Number(candidate.yPct);
-    if (!CHAT_MARKUP_POINTER_TYPES.has(type)) continue;
     if (!Number.isFinite(xPct) || !Number.isFinite(yPct)) continue;
     if (xPct < 0 || xPct > 100 || yPct < 0 || yPct > 100) continue;
 
@@ -1224,7 +1243,8 @@ function extractChatMarkupPointers(content: string): { text: string; markupPoint
       boundsPct.height > 0;
 
     markupPointers.push({
-      type,
+      type: 'callout',
+      ref,
       xPct,
       yPct,
       boundsPct: validBounds ? {

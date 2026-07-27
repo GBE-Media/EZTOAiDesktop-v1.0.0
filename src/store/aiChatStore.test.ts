@@ -46,6 +46,26 @@ describe('aiChatStore assistant domain', () => {
     });
   });
 
+  it('settles leftover running steps when finishRun completes', async () => {
+    await useAIChatStore.getState().setConversationContext('project-a');
+    const messageId = useAIChatStore.getState().addMessage({ role: 'assistant', content: '' });
+    const runId = useAIChatStore.getState().createRun(messageId, 'Analyze page');
+    useAIChatStore.getState().upsertRunStep(runId, {
+      id: 'step_vision',
+      label: 'Analyzing page 1 detail 3/9...',
+      status: 'running',
+      progress: 60,
+    });
+    useAIChatStore.getState().finishRun(runId, 'waiting-approval');
+
+    const run = useAIChatStore.getState().runs[runId];
+    expect(run.status).toBe('waiting-approval');
+    expect(run.steps[0]).toMatchObject({
+      status: 'completed',
+      progress: 100,
+    });
+  });
+
   it('persists and isolates conversations by project context', async () => {
     await useAIChatStore.getState().setConversationContext('project-a');
     useAIChatStore.getState().addMessage({ role: 'user', content: 'Project A question' });

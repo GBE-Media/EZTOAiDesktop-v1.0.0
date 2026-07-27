@@ -93,7 +93,7 @@ describe('reconcileTileDetections', () => {
 });
 
 describe('buildVerifiedCalloutPointers', () => {
-  it('uses reconciled bounding boxes instead of model-guessed coordinates', () => {
+  it('snaps intentional callouts onto reconciled detection bounds', () => {
     const item = createItem('panel-1', 'electrical panel', 52, 38, 0.97);
     item.name = 'Panel LP1';
     item.boundingBox = { x: 48, y: 32, width: 8, height: 12 };
@@ -101,11 +101,19 @@ describe('buildVerifiedCalloutPointers', () => {
 
     const pointers = buildVerifiedCalloutPointers(
       createResult([item]),
-      'The electrical panel LP1 is shown near the center of the sheet.'
+      'See [1] near the center of the sheet.',
+      [{
+        type: 'callout',
+        ref: 1,
+        xPct: 10,
+        yPct: 10,
+        label: 'Panel LP1',
+      }]
     );
 
     expect(pointers).toEqual([{
-      type: 'rectangle',
+      type: 'callout',
+      ref: 1,
       xPct: 52,
       yPct: 38,
       boundsPct: { x: 48, y: 32, width: 8, height: 12 },
@@ -113,5 +121,18 @@ describe('buildVerifiedCalloutPointers', () => {
       note: 'Panel outline labeled LP1',
       confidence: 0.97,
     }]);
+  });
+
+  it('does not invent callouts from mere name mentions', () => {
+    const item = createItem('panel-1', 'electrical panel', 52, 38, 0.97);
+    item.name = 'Panel LP1';
+    item.boundingBox = { x: 48, y: 32, width: 8, height: 12 };
+
+    const pointers = buildVerifiedCalloutPointers(
+      createResult([item]),
+      'The electrical panel LP1 is shown near the center of the sheet.'
+    );
+
+    expect(pointers).toEqual([]);
   });
 });

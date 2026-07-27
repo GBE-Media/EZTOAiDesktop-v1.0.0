@@ -39,7 +39,7 @@ import { chat as aiChat, runPipeline } from '@/services/ai/pipeline';
 import { summarizeCatalogForChat, summarizeMarkupsForChat } from '@/services/ai/contextSummary';
 import { cn } from '@/lib/utils';
 import { capturePageCrop, createPageImageGenerator, getOptimalScale } from '@/services/ai/imageCapture';
-import { chatPointersToGreenPlacements } from '@/services/ai/callouts';
+import { chatPointersToGreenPlacements, ensureNumberedCalloutMentions } from '@/services/ai/callouts';
 import { fetchTrainingContext } from '@/services/ai/trainingService';
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
 import type { BlueprintAnalysisResult, CanvasPlacement, PlacementMarkup } from '@/services/ai/providers/types';
@@ -465,7 +465,7 @@ export function AiChatDrawer() {
             message,
           });
           useAIChatStore.getState().upsertRunStep(runId, {
-            id: `step_vision_${Math.floor(progress / 20)}`,
+            id: 'step_vision',
             label: message,
             stage: 'vision',
             status: progress >= 100 ? 'completed' : 'running',
@@ -476,22 +476,36 @@ export function AiChatDrawer() {
         },
       });
       if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
+
+      useAIChatStore.getState().upsertRunStep(runId, {
+        id: 'step_vision',
+        label: 'Page analysis complete',
+        stage: 'vision',
+        status: 'completed',
+        progress: 100,
+        completedAt: new Date().toISOString(),
+      });
+
+      const answerText = ensureNumberedCalloutMentions(response.text, response.markupPointers);
       
       // Update assistant message with response
       updateMessage(assistantMsgId, {
-        content: response.text,
+        content: answerText,
         isLoading: false,
         metadata: {
           trade: selectedTrade,
+          callouts: response.markupPointers.map((pointer, index) => ({
+            ref: pointer.ref ?? index + 1,
+            label: pointer.label,
+            page: currentPage || 1,
+          })),
         },
       });
       if (activeDocId) {
         addDocumentEvidenceBlock(assistantMsgId, activeDocumentRecord?.name, [currentPage || 1]);
       }
 
-      // The assistant may have pointed at specific locations on the current
-      // page (see the pointer instructions appended in pipeline.ts). Convert
-      // those into real markups and let the user confirm before placing them.
+      // Only intentional structured callouts become placement proposals.
       if (response.markupPointers.length > 0 && activeDocId && docData) {
         const targetPage = currentPage || 1;
         const pageWidthPx = docData.originalPageWidth || pageWidth;
@@ -504,12 +518,19 @@ export function AiChatDrawer() {
           idPrefix: `chat_${assistantMsgId}`,
         });
 
-        const proposedMarkups = convertPlacementsToMarkups(chatPlacements, defaultStyle, `chat_${assistantMsgId}`, 1, 1);
+        const proposedMarkups = convertPlacementsToMarkups(chatPlacements, defaultStyle, `chat_${assistantMsgId}`, 1, 1)
+          .map(({ page, markup }) => ({
+            page,
+            markup: {
+              ...markup,
+              messageId: assistantMsgId,
+            } as CanvasMarkup,
+          }));
         queueMarkupApproval({
           assistantMsgId,
           runId,
           markups: proposedMarkups,
-          description: `Place ${proposedMarkups.length} verified green callout${proposedMarkups.length === 1 ? '' : 's'} on page ${targetPage}.`,
+          description: `Place ${proposedMarkups.length} intentional green callout${proposedMarkups.length === 1 ? '' : 's'} on page ${targetPage}.`,
         });
         useAIChatStore.getState().addMessageBlock(assistantMsgId, {
           id: `block_pointer_citations_${assistantMsgId}`,
@@ -519,7 +540,7 @@ export function AiChatDrawer() {
             documentId: activeDocId,
             documentName: activeDocumentRecord?.name,
             page: targetPage,
-            label: pointer.label || `Callout ${index + 1}`,
+            label: `[${pointer.ref ?? index + 1}] ${pointer.label || 'Callout'}`,
             confidence: pointer.confidence,
             bounds: pointer.boundsPct
               ? {
@@ -528,7 +549,12 @@ export function AiChatDrawer() {
                   width: (pointer.boundsPct.width / 100) * pageWidthPx,
                   height: (pointer.boundsPct.height / 100) * pageHeightPx,
                 }
-              : undefined,
+              : {
+                  x: (pointer.xPct / 100) * pageWidthPx - 12,
+                  y: (pointer.yPct / 100) * pageHeightPx - 12,
+                  width: 24,
+                  height: 24,
+                },
           })),
         });
       }
@@ -1522,6 +1548,7 @@ function convertPlacementsToMarkups(
       aiNote: placement.aiNote,
       aiConfidence: placement.confidence,
       aiLinkedItemId: placement.linkedItemId,
+      calloutRef: placement.calloutRef,
     } as const;
 
     if (placement.type === 'rectangle') {
@@ -1605,6 +1632,32 @@ function convertPlacementsToMarkups(
         },
       });
       return;
+    }
+
+    if (placement.type === 'callout') {
+      const start = placement.points?.[0] || { x: 0, y: 0 };
+      const end = placement.points?.[1] || {
+        x: start.x + 120,
+        y: start.y + 36,
+      };
+      const ref = placement.calloutRef || index + 1;
+      markups.push({
+        page: placement.page,
+        markup: {
+          ...base,
+          type: 'callout',
+          x: Math.min(start.x, end.x) * scaleX,
+          y: Math.min(start.y, end.y) * scaleY,
+          width: Math.max(Math.abs(end.x - start.x) * scaleX, 72),
+          height: Math.max(Math.abs(end.y - start.y) * scaleY, 28),
+          content: placement.content || `[${ref}] ${placement.label || 'Callout'}`,
+          leaderPoints: (placement.leaderPoints || []).map((point) => ({
+            x: point.x * scaleX,
+            y: point.y * scaleY,
+          })),
+          calloutRef: ref,
+        },
+      });
     }
   });
   

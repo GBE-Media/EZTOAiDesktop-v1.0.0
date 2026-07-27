@@ -580,7 +580,13 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         }
         
         // Draw text box background
-        ctx.fillStyle = isEraserHovered ? 'rgba(239, 68, 68, 0.3)' : 'rgba(255, 255, 255, 0.9)';
+        const fill =
+          isEraserHovered
+            ? 'rgba(239, 68, 68, 0.3)'
+            : m.style.fillColor && m.style.fillColor !== 'transparent'
+              ? m.style.fillColor
+              : 'rgba(255, 255, 255, 0.9)';
+        ctx.fillStyle = fill;
         ctx.fillRect(m.x, m.y, m.width, m.height);
         ctx.strokeRect(m.x, m.y, m.width, m.height);
         
@@ -1407,6 +1413,16 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
 
         // Select only the clicked marker (count markers are individually selectable)
         selectMarkup(markup.id, e.shiftKey);
+        if (typeof markup.calloutRef === 'number') {
+          window.dispatchEvent(new CustomEvent('bidveraai:highlight-callout-ref', {
+            detail: {
+              ref: markup.calloutRef,
+              messageId: markup.messageId,
+              markupId: markup.id,
+              page: markup.page,
+            },
+          }));
+        }
         setIsDragging(true);
         setDragStart(point);
         

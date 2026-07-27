@@ -3,7 +3,7 @@
  * Renders individual chat messages with support for AI responses and loading states
  */
 
-import { memo, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { Bot, User, AlertCircle, Zap, Eye, Calculator, MapPin, Copy, Check, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ChatMessage as ChatMessageType } from '@/store/aiChatStore';
@@ -12,6 +12,7 @@ import { AssistantMessageBlocks } from './AssistantMessageBlocks';
 import { PulsingStatus } from './PulsingStatus';
 import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
+import { useCanvasStore } from '@/store/canvasStore';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -34,7 +35,66 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
   const isUser = message.role === 'user';
   const isSystem = message.role === 'system';
   const [copied, setCopied] = useState(false);
+  const [highlightedRef, setHighlightedRef] = useState<number | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messages = useAIChatStore(state => state.messages);
+  const setCurrentPage = useCanvasStore(state => state.setCurrentPage);
+  const selectMarkup = useCanvasStore(state => state.selectMarkup);
+  const getMarkupsByPage = useCanvasStore(state => state.getMarkupsByPage);
+  const setAiSelectionRect = useCanvasStore(state => state.setAiSelectionRect);
+  const activeDocId = useCanvasStore(state => state.activeDocId);
+
+  useEffect(() => {
+    const onHighlight = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        ref?: number;
+        messageId?: string;
+      }>).detail;
+      if (typeof detail?.ref !== 'number') return;
+      if (detail.messageId && detail.messageId !== message.id) return;
+
+      const hasRef =
+        message.metadata?.callouts?.some(callout => callout.ref === detail.ref) ||
+        (message.content || '').includes(`[${detail.ref}]`);
+      if (!hasRef) return;
+
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+      setHighlightedRef(detail.ref);
+      requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-callout-ref="${message.id}-${detail.ref}"]`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
+      highlightTimerRef.current = setTimeout(() => setHighlightedRef(null), 1500);
+    };
+
+    window.addEventListener('bidveraai:highlight-callout-ref', onHighlight);
+    return () => {
+      window.removeEventListener('bidveraai:highlight-callout-ref', onHighlight);
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current);
+    };
+  }, [message.content, message.id, message.metadata?.callouts]);
+
+  const focusCallout = (ref: number) => {
+    const markupsByPage = getMarkupsByPage();
+    for (const [pageKey, pageMarkups] of Object.entries(markupsByPage)) {
+      const match = pageMarkups.find(markup => markup.calloutRef === ref);
+      if (!match) continue;
+      const page = Number(pageKey);
+      setCurrentPage(page);
+      selectMarkup(match.id, false);
+      if (activeDocId && 'x' in match && 'width' in match) {
+        setAiSelectionRect(activeDocId, page, {
+          x: match.x,
+          y: match.y,
+          width: match.width,
+          height: match.height,
+        });
+      }
+      return;
+    }
+  };
+
   const retry = () => {
     const index = messages.findIndex(candidate => candidate.id === message.id);
     const source = [...messages.slice(0, index)].reverse().find(candidate => candidate.role === 'user');
@@ -119,7 +179,11 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
           </div>
         ) : (
           <div className="text-sm whitespace-pre-wrap break-words">
-            {formatContent(message.content)}
+            {formatContent(message.content, {
+              messageId: message.id,
+              highlightedRef,
+              onCalloutClick: isUser ? undefined : focusCallout,
+            })}
           </div>
         )}
         <AssistantMessageBlocks blocks={message.blocks} />
@@ -157,7 +221,48 @@ function formatTime(date: Date): string {
   }).format(date);
 }
 
-function formatContent(content: string | undefined): React.ReactNode {
+function renderInlineSegments(
+  text: string,
+  options?: {
+    messageId?: string;
+    highlightedRef?: number | null;
+    onCalloutClick?: (ref: number) => void;
+  }
+): React.ReactNode {
+  const parts = text.split(/(\[\d+\])/g);
+  return parts.map((part, index) => {
+    const match = part.match(/^\[(\d+)\]$/);
+    if (!match) return <span key={index}>{part}</span>;
+    const ref = Number(match[1]);
+    const isHighlighted = options?.highlightedRef === ref;
+    return (
+      <button
+        key={index}
+        type="button"
+        data-callout-ref={options?.messageId ? `${options.messageId}-${ref}` : undefined}
+        className={cn(
+          'mx-0.5 inline-flex items-center rounded-sm border px-1 py-0 text-[11px] font-semibold transition-colors',
+          isHighlighted
+            ? 'border-emerald-500 bg-emerald-500/25 text-emerald-700 ring-2 ring-emerald-400'
+            : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/20'
+        )}
+        onClick={() => options?.onCalloutClick?.(ref)}
+        title={`Focus callout [${ref}] on canvas`}
+      >
+        [{ref}]
+      </button>
+    );
+  });
+}
+
+function formatContent(
+  content: string | undefined,
+  options?: {
+    messageId?: string;
+    highlightedRef?: number | null;
+    onCalloutClick?: (ref: number) => void;
+  }
+): React.ReactNode {
   // Handle undefined/null/empty content
   if (!content) {
     return null;
@@ -171,9 +276,14 @@ function formatContent(content: string | undefined): React.ReactNode {
   const lines = content.split('\n');
   
   return lines.map((line, i) => {
-    // Format inline code
-    let formattedLine: React.ReactNode = line;
-    
+    const listPrefix = line.startsWith('- ') || line.startsWith('• ') ? 2 : 0;
+    const numberedMatch = line.match(/^(\d+)\.\s/);
+    const contentLine = listPrefix
+      ? line.slice(2)
+      : numberedMatch
+        ? line.slice(numberedMatch[0].length)
+        : line;
+
     // Handle code blocks
     if (line.startsWith('```')) {
       return (
@@ -182,10 +292,12 @@ function formatContent(content: string | undefined): React.ReactNode {
         </code>
       );
     }
-    
+
+    let formattedLine: React.ReactNode = contentLine;
+
     // Handle inline code
-    if (line.includes('`')) {
-      const parts = line.split(/(`[^`]+`)/g);
+    if (contentLine.includes('`')) {
+      const parts = contentLine.split(/(`[^`]+`)/g);
       formattedLine = parts.map((part, j) => {
         if (part.startsWith('`') && part.endsWith('`')) {
           return (
@@ -194,42 +306,38 @@ function formatContent(content: string | undefined): React.ReactNode {
             </code>
           );
         }
-        return part;
+        return <span key={j}>{renderInlineSegments(part, options)}</span>;
       });
-    }
-    
-    // Handle bold
-    if (typeof formattedLine === 'string' && formattedLine.includes('**')) {
-      const parts = formattedLine.split(/(\*\*[^*]+\*\*)/g);
+    } else if (contentLine.includes('**')) {
+      const parts = contentLine.split(/(\*\*[^*]+\*\*)/g);
       formattedLine = parts.map((part, j) => {
         if (part.startsWith('**') && part.endsWith('**')) {
-          return <strong key={j}>{part.slice(2, -2)}</strong>;
+          return <strong key={j}>{renderInlineSegments(part.slice(2, -2), options)}</strong>;
         }
-        return part;
+        return <span key={j}>{renderInlineSegments(part, options)}</span>;
       });
+    } else {
+      formattedLine = renderInlineSegments(contentLine, options);
     }
-    
-    // Handle list items
-    if (line.startsWith('- ') || line.startsWith('• ')) {
+
+    if (listPrefix) {
       return (
         <div key={i} className="flex gap-2">
           <span className="text-muted-foreground">•</span>
-          <span>{typeof formattedLine === 'string' ? formattedLine.slice(2) : formattedLine}</span>
+          <span>{formattedLine}</span>
         </div>
       );
     }
-    
-    // Handle numbered lists
-    const numberedMatch = line.match(/^(\d+)\.\s/);
+
     if (numberedMatch) {
       return (
         <div key={i} className="flex gap-2">
           <span className="text-muted-foreground w-4">{numberedMatch[1]}.</span>
-          <span>{line.slice(numberedMatch[0].length)}</span>
+          <span>{formattedLine}</span>
         </div>
       );
     }
-    
+
     return (
       <div key={i}>
         {formattedLine}

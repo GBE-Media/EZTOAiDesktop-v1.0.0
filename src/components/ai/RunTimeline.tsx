@@ -15,26 +15,22 @@ import { useCanvasStore } from '@/store/canvasStore';
 export function RunTimeline({ runId }: { runId: string }) {
   const run = useAIChatStore(state => state.runs[runId]);
   const setCurrentPage = useCanvasStore(state => state.setCurrentPage);
-  const isActive = run?.status === 'running' || run?.status === 'waiting-approval';
-  // Open while working; collapse when the answer arrives so thought process
-  // stays available but out of the final answer surface.
+  const isActive = run?.status === 'running';
+  // Open while actively running; collapse once the answer is ready
+  // (including waiting-approval) so thought process stays out of the way.
   const [open, setOpen] = useState(!!isActive);
-  const [userToggled, setUserToggled] = useState(false);
 
   useEffect(() => {
-    if (userToggled || !run) return;
-    setOpen(run.status === 'running' || run.status === 'waiting-approval');
-  }, [run?.status, userToggled, run]);
+    if (!run) return;
+    setOpen(run.status === 'running');
+  }, [run?.status]);
 
   if (!run) return null;
 
   return (
     <Collapsible
       open={open}
-      onOpenChange={(next) => {
-        setUserToggled(true);
-        setOpen(next);
-      }}
+      onOpenChange={setOpen}
       className="my-2 rounded-lg border border-border bg-secondary/20"
     >
       <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 text-left">
@@ -42,13 +38,11 @@ export function RunTimeline({ runId }: { runId: string }) {
           <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />
         ) : run.status === 'error' ? (
           <XCircle className="h-3.5 w-3.5 text-destructive" />
-        ) : run.status === 'waiting-approval' ? (
-          <Loader2 className="h-3.5 w-3.5 animate-pulse text-amber-500" />
         ) : (
           <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
         )}
         <span className="flex-1 text-xs font-medium">
-          {isActive ? (run.summary || 'Working…') : 'Activity'}
+          {run.status === 'running' ? (run.summary || 'Working…') : 'Activity'}
         </span>
         <span className="text-[10px] text-muted-foreground">
           {run.steps.filter(step => step.status === 'completed').length}/{run.steps.length}
@@ -57,12 +51,14 @@ export function RunTimeline({ runId }: { runId: string }) {
       </CollapsibleTrigger>
       <CollapsibleContent className="border-t border-border px-3 py-2">
         <div className="space-y-2">
-          {run.steps.map(step => (
+          {run.steps.map(step => {
+            const showRunningUi = run.status === 'running' && step.status === 'running';
+            return (
             <div key={step.id} className="flex gap-2">
               <div className="pt-0.5">
-                {step.status === 'running' ? (
+                {showRunningUi ? (
                   <Loader2 className="h-3 w-3 animate-spin text-violet-500" />
-                ) : step.status === 'completed' ? (
+                ) : step.status === 'completed' || (run.status !== 'running' && (step.status === 'running' || step.status === 'pending')) ? (
                   <CheckCircle2 className="h-3 w-3 text-emerald-500" />
                 ) : step.status === 'error' ? (
                   <XCircle className="h-3 w-3 text-destructive" />
@@ -71,11 +67,11 @@ export function RunTimeline({ runId }: { runId: string }) {
                 )}
               </div>
               <div className="min-w-0 flex-1">
-                <div className={cn('text-xs', step.status === 'running' && 'animate-pulse')}>
+                <div className={cn('text-xs', showRunningUi && 'animate-pulse')}>
                   {step.label}
                 </div>
                 {step.summary && <div className="text-[11px] text-muted-foreground">{step.summary}</div>}
-                {step.status === 'running' && step.progress !== undefined && (
+                {showRunningUi && step.progress !== undefined && (
                   <Progress value={step.progress} className="mt-1 h-1" />
                 )}
                 {step.error && <div className="text-[11px] text-destructive">{step.error}</div>}
@@ -95,7 +91,8 @@ export function RunTimeline({ runId }: { runId: string }) {
                 )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </CollapsibleContent>
     </Collapsible>

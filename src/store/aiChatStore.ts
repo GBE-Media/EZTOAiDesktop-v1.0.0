@@ -35,6 +35,11 @@ export interface ChatMessage {
       completion: number;
       total: number;
     };
+    callouts?: Array<{
+      ref: number;
+      label?: string;
+      page: number;
+    }>;
   };
 }
 
@@ -302,6 +307,24 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   finishRun: (runId, status = 'completed', error) => set(state => {
     const run = state.runs[runId];
     if (!run) return state;
+    const settleAsCompleted = status === 'completed' || status === 'waiting-approval';
+    const settledSteps = run.steps.map(step => {
+      if (step.status !== 'running' && step.status !== 'pending') return step;
+      if (settleAsCompleted) {
+        return {
+          ...step,
+          status: 'completed' as const,
+          progress: 100,
+          completedAt: step.completedAt || new Date().toISOString(),
+        };
+      }
+      return {
+        ...step,
+        status: status === 'error' ? 'error' as const : 'cancelled' as const,
+        completedAt: step.completedAt || new Date().toISOString(),
+        error: status === 'error' ? (step.error || error) : step.error,
+      };
+    });
     return {
       runs: {
         ...state.runs,
@@ -309,6 +332,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
           ...run,
           status,
           error,
+          steps: settledSteps,
           completedAt: new Date().toISOString(),
         },
       },
@@ -318,9 +342,6 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   cancelRun: (runId) => {
     const run = get().runs[runId];
     if (!run) return;
-    run.steps
-      .filter(step => step.status === 'running' || step.status === 'pending')
-      .forEach(step => get().upsertRunStep(runId, { ...step, status: 'cancelled' }));
     get().finishRun(runId, 'cancelled');
   },
 

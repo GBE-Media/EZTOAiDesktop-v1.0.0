@@ -237,15 +237,20 @@ export interface CanvasPlacement {
 
 export interface PlacementMarkup {
   id: string;
-  type: 'count-marker' | 'rectangle' | 'measurement-length' | 'measurement-area' | 'polyline' | 'polygon' | 'text';
+  type: 'count-marker' | 'rectangle' | 'measurement-length' | 'measurement-area' | 'polyline' | 'polygon' | 'text' | 'callout';
   page: number;
   points: { x: number; y: number }[];
   style: {
     strokeColor: string;
     fillColor: string;
     strokeWidth: number;
+    fontSize?: number;
+    fontFamily?: string;
   };
   label?: string;
+  content?: string;
+  leaderPoints?: { x: number; y: number }[];
+  calloutRef?: number;
   aiNote?: string;
   confidence?: number;
   linkedItemId?: string;
@@ -260,12 +265,11 @@ export interface PlacementNote {
   linkedMarkupId?: string;
 }
 
-// A lightweight "point this out on the page" marker the assistant can emit
-// during normal chat (as opposed to the full takeoff pipeline's placements).
-// Coordinates are percentages of the page image so the model doesn't need to
-// know pixel dimensions - the client converts to page-space pixels itself.
+// Intentional "point this out on the page" markers the assistant emits only
+// when it explicitly wants a numbered callout in chat + on the print.
 export interface ChatMarkupPointer {
-  type: 'count-marker' | 'text' | 'rectangle';
+  type: 'callout' | 'count-marker' | 'text' | 'rectangle';
+  ref: number; // matches [N] in the visible answer
   xPct: number; // 0-100, left-to-right
   yPct: number; // 0-100, top-to-bottom
   boundsPct?: {
