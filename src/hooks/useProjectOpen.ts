@@ -106,8 +106,6 @@ export function useProjectOpen() {
       }
 
       // Restore documents (reuse stored IDs so product measurements stay linked)
-      let firstDocId: string | null = null;
-      
       for (let docIndex = 0; docIndex < projectData.documents.length; docIndex++) {
         const projDoc = projectData.documents[docIndex];
         
@@ -133,11 +131,6 @@ export function useProjectOpen() {
 
           // Reuse stored document ID to keep measurements linked to the correct PDF
           const newDocId = docIdMap.get(projDoc.id || `__missing_${docIndex}`) || `doc-${Date.now()}-${docIndex}`;
-          
-          // Track first document ID for activation
-          if (docIndex === 0) {
-            firstDocId = newDocId;
-          }
 
           // Extract project filename to use as document name
           const projectFileName = projectPath ? projectPath.split(/[\\/]/).pop() : projDoc.name;
@@ -202,17 +195,6 @@ export function useProjectOpen() {
           console.error(`[PROJECT-OPEN] Failed to load document ${projDoc.name}:`, error);
           toast.error(`Failed to load ${projDoc.name}`);
         }
-      }
-
-      // Trigger auto-fit after all documents are loaded
-      if (firstDocId) {
-        setTimeout(() => {
-          const state = useCanvasStore.getState();
-          if (state.containerWidth > 0 && state.containerHeight > 0) {
-            console.log('[PROJECT-OPEN] Auto-fitting to canvas');
-            state.fitToCanvas(state.containerWidth, state.containerHeight);
-          }
-        }, 200);
       }
 
       toast.success(`Project "${projectData.name}" loaded`, { id: 'load-project' });

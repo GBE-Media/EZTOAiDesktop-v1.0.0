@@ -49,36 +49,6 @@ export function useFileOpen() {
       
       // Also set active doc ID in canvas store to sync both stores
       useCanvasStore.getState().setActiveDocId(docId);
-      
-      // Auto-fit to canvas with multiple retries and longer delay
-      let retryCount = 0;
-      const maxRetries = 30; // Try for up to ~1.5 seconds
-      
-      const attemptFitToCanvas = () => {
-        const state = useCanvasStore.getState();
-        console.log('[AUTO-FIT] Attempt', retryCount, 'Container:', state.containerWidth, 'x', state.containerHeight);
-        
-        if (state.containerWidth > 0 && state.containerHeight > 0) {
-          console.log('[AUTO-FIT] Fitting to canvas NOW');
-          state.fitToCanvas(state.containerWidth, state.containerHeight);
-          
-          // Force a second fit after a short delay to ensure it takes
-          setTimeout(() => {
-            const state2 = useCanvasStore.getState();
-            console.log('[AUTO-FIT] Second fit attempt');
-            state2.fitToCanvas(state2.containerWidth, state2.containerHeight);
-          }, 150);
-        } else if (retryCount < maxRetries) {
-          retryCount++;
-          // Use setTimeout instead of requestAnimationFrame for more reliable timing
-          setTimeout(attemptFitToCanvas, 50);
-        } else {
-          console.warn('[AUTO-FIT] Failed to fit to canvas after', maxRetries, 'attempts - container may not be visible');
-        }
-      };
-      
-      // Start after a longer initial delay to let the Canvas component mount and set dimensions
-      setTimeout(attemptFitToCanvas, 200);
     } catch (error) {
       console.error('Failed to load PDF:', error);
     }

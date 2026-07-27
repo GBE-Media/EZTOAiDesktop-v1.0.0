@@ -39,6 +39,8 @@ export function Canvas() {
     setCurrentPage,
     setPageDimensions,
     setContainerDimensions,
+    containerWidth,
+    containerHeight,
     fitToCanvas,
     setPanOffset,
     aiSelectionActive,
@@ -100,13 +102,12 @@ export function Canvas() {
   // Auto-fit when PDF first loads
   useEffect(() => {
     if (pdfDocument && containerRef.current && currentDocData && !currentDocData.hasViewState) {
-      const { clientWidth, clientHeight } = containerRef.current;
-      if (clientWidth > 0 && clientHeight > 0) {
+      if (containerWidth > 0 && containerHeight > 0) {
         containerRef.current.scrollTo({ left: 0, top: 0 });
-        fitToCanvas(clientWidth, clientHeight);
+        fitToCanvas(containerWidth, containerHeight);
       }
     }
-  }, [pdfDocument, currentDocData, fitToCanvas]);
+  }, [pdfDocument, currentDocData, fitToCanvas, containerWidth, containerHeight]);
 
   // Render PDF page when document or page changes (NOT on zoom - zoom uses CSS transform)
   useEffect(() => {
