@@ -1,6 +1,7 @@
 import { getAIService } from '../aiService';
 import type { AICompletionResponse } from '../providers/types';
-import type { AgentModelDecision, AgentModelMessage } from './types';
+import type { AgentModelDecision, AgentModelMessage, ModelUsedEntry } from './types';
+import type { AgentModelRole } from './roles';
 import { buildAgentSystemPrompt } from './prompts/system';
 import { emitAgentTrace } from './trace';
 import { parseAgentDecision } from './decisionParser';
@@ -13,6 +14,9 @@ export interface ModelAdapterCompleteOptions {
   contextText: string;
   signal?: AbortSignal;
   imageBase64?: string;
+  /** Defaults to primary. Use fallback on invoke_fallback path. */
+  role?: Extract<AgentModelRole, 'primary' | 'fallback'>;
+  onModelUsed?: (entry: ModelUsedEntry) => void;
 }
 
 export interface ModelAdapter {
@@ -20,16 +24,19 @@ export interface ModelAdapter {
 }
 
 /**
- * Provider-agnostic adapter: asks the model for a JSON decision object.
- * Native function-calling can replace parseDecision later without changing the runner.
+ * Role-aware JSON tool adapter for the primary agent (and fallback).
+ * Fixes the old broken complete('chat') stage call.
  */
-export function createJsonToolModelAdapter(): ModelAdapter {
+export function createJsonToolModelAdapter(
+  defaultRole: Extract<AgentModelRole, 'primary' | 'fallback'> = 'primary'
+): ModelAdapter {
   return {
     async complete(options) {
       if (options.signal?.aborted) {
         throw new DOMException('Assistant run cancelled', 'AbortError');
       }
 
+      const role = options.role || defaultRole;
       const system = `${buildAgentSystemPrompt()}\n\n${options.contextText}`;
       const history = options.messages
         .filter(message => message.role !== 'system')
@@ -47,11 +54,19 @@ export function createJsonToolModelAdapter(): ModelAdapter {
         });
 
       const ai = getAIService();
+      const selection = ai.getAgentRoleConfig(role);
+      options.onModelUsed?.({
+        role,
+        provider: selection.provider,
+        model: selection.model,
+        phase: role === 'fallback' ? 'fallback' : 'primary',
+      });
+
       let response: AICompletionResponse;
 
       if (options.imageBase64) {
         const lastUserIndex = [...history].map((m, i) => (m.role === 'user' ? i : -1)).filter(i => i >= 0).pop();
-        response = await ai.vision({
+        response = await ai.visionForRole(role, {
           messages: [
             { role: 'system', content: system },
             ...history.map((message, index) => ({
@@ -65,7 +80,7 @@ export function createJsonToolModelAdapter(): ModelAdapter {
           responseFormat: 'json',
         });
       } else {
-        response = await ai.complete('chat', {
+        response = await ai.completeForRole(role, {
           messages: [
             { role: 'system', content: system },
             ...history,
@@ -79,6 +94,7 @@ export function createJsonToolModelAdapter(): ModelAdapter {
       const decision = parseAgentDecision(response.content);
       emitAgentTrace(options.runId, decision.type === 'plan' ? 'plan' : 'tool_selected', {
         decisionType: decision.type,
+        role,
         preview: response.content.slice(0, 500),
       });
       return decision;

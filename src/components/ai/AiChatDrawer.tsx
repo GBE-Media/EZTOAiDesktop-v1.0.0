@@ -59,10 +59,13 @@ import {
   buildAgentContext,
   createAgentToolContext,
   getAgentSession,
+  labelForAgentStatus,
   registerAllAgentTools,
   resumeAgentAfterApproval,
+  resumeAgentAfterClarification,
   runAgentTurn,
 } from '@/services/ai/agent';
+import type { ClarificationAnswerDetail } from './QuestionCard';
 import { AssistantHeader } from './AssistantHeader';
 import { AssistantComposer } from './AssistantComposer';
 
@@ -548,13 +551,36 @@ export function AgentAssistantDrawer() {
         toolContext,
         contextText,
         imageBase64: agentImage,
+        trade: selectedTrade,
+        currentPage: currentPage || undefined,
+        documentName: activeDocumentRecord?.name,
+        documentId: activeDocId,
+        totalPages: docData?.totalPages,
+        recentTurns: previousMessages,
+        markupsSummary,
+        catalogSummary,
+        materialCountsSummary,
+        takeoffSummary: markupsSummary,
         onStatus: (status, detail) => {
           if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
+          const busy = status === 'thinking'
+            || status === 'running_tool'
+            || status === 'running_tools'
+            || status === 'routing'
+            || status === 'verifying';
           setPipelineStatus({
-            isRunning: status === 'thinking' || status === 'running_tool',
-            currentStage: status === 'running_tool' ? 'placement' : 'vision',
-            progress: status === 'needs_approval' ? 100 : 55,
-            message: detail || status,
+            isRunning: busy,
+            currentStage: status === 'verifying' || status === 'running_tool' || status === 'running_tools'
+              ? 'placement'
+              : status === 'routing'
+                ? 'estimation'
+                : 'vision',
+            progress: status === 'needs_approval'
+              || status === 'needs_clarification'
+              || status === 'completed'
+              ? 100
+              : 55,
+            message: labelForAgentStatus(status, detail),
           });
         },
       });
@@ -572,6 +598,10 @@ export function AgentAssistantDrawer() {
 
       if (activeDocId) {
         addDocumentEvidenceBlock(assistantMsgId, activeDocumentRecord?.name, [currentPage || 1]);
+      }
+
+      if (agentResult.status === 'needs_clarification') {
+        return;
       }
 
       if (agentResult.status === 'needs_approval' && agentResult.approvalRequest) {
@@ -623,7 +653,7 @@ export function AgentAssistantDrawer() {
         useAIChatStore.getState().finishRun(runId, 'completed');
       }
       setPipelineStatus({ isRunning: false, progress: 0, message: '' });
-      if (runStatus !== 'waiting-approval') {
+      if (runStatus !== 'waiting-approval' && runStatus !== 'waiting-clarification') {
         releaseAssistantRunController(runId);
       }
     }
@@ -683,6 +713,9 @@ export function AgentAssistantDrawer() {
   
   const hasMessages = messages.length > 0;
   const activeRun = Object.values(runs).find(run => run.status === 'running');
+  const waitingForUser = Object.values(runs).some(
+    run => run.status === 'waiting-clarification' || run.status === 'waiting-approval',
+  );
   // AI is always available when authenticated (uses company API keys via proxy)
   const isAIAvailable = isInitialized;
   const activePageNumber = currentPage || 1;
@@ -989,6 +1022,111 @@ export function AgentAssistantDrawer() {
     window.addEventListener('bidveraai:approval', handleApproval);
     return () => window.removeEventListener('bidveraai:approval', handleApproval);
   }, [addAIMarkupBatch, defaultStyle, pageHeight, pageWidth, placementMode, setPendingPlacements, setPipelineStatus]);
+
+  useEffect(() => {
+    const handleClarification = (event: Event) => {
+      void (async () => {
+        const detail = (event as CustomEvent<ClarificationAnswerDetail>).detail;
+        const store = useAIChatStore.getState();
+        const clarification = store.clarifications[detail.clarificationId];
+        if (!clarification || clarification.status !== 'pending') return;
+
+        const answer = {
+          selectedValues: detail.selectedValues || [],
+          freeform: detail.freeform,
+          displayText: detail.displayText,
+        };
+        store.resolveClarification(clarification.id, 'answered', answer);
+        store.addMessage({ role: 'user', content: answer.displayText });
+
+        const agentSession = getAgentSession(clarification.runId);
+        if (!agentSession) {
+          store.finishRun(clarification.runId, 'completed');
+          store.updateMessage(clarification.messageId, { isLoading: false });
+          return;
+        }
+
+        const toolContext = createAgentToolContext({
+          runId: clarification.runId,
+          messageId: clarification.messageId,
+          trade: store.selectedTrade,
+          placeMarkups: (payload) => {
+            const canvas = useCanvasStore.getState();
+            const docId = canvas.activeDocId;
+            const pdf = docId ? canvas.pdfDocuments[docId] : null;
+            const markups = normalizeAgentMarkupPayload({
+              payload,
+              page: canvas.getCurrentPage() || 1,
+              pageWidth: pdf?.originalPageWidth || pageWidth,
+              pageHeight: pdf?.originalPageHeight || pageHeight,
+              idPrefix: `agent_${clarification.messageId}`,
+              messageId: clarification.messageId,
+              defaultStyle,
+            });
+            if (!markups.length) return { placed: 0 };
+            addAIMarkupBatch(markups, placementMode === 'confirm');
+            if (placementMode === 'confirm') {
+              setPendingPlacements(markups.map(({ markup }) => ({
+                id: markup.id,
+                type: markup.type,
+                page: markup.page,
+                data: markup,
+              })));
+            }
+            return { placed: markups.length };
+          },
+        });
+
+        try {
+          setPipelineStatus({
+            isRunning: true,
+            message: labelForAgentStatus('thinking'),
+            progress: 60,
+          });
+          store.updateMessage(clarification.messageId, { isLoading: true });
+          const result = await resumeAgentAfterClarification({
+            runId: clarification.runId,
+            clarification,
+            answer,
+            toolContext,
+            onStatus: (status, detailMsg) => {
+              const busy = status === 'thinking'
+                || status === 'running_tool'
+                || status === 'running_tools'
+                || status === 'routing'
+                || status === 'verifying';
+              setPipelineStatus({
+                isRunning: busy,
+                progress: status === 'needs_approval'
+                  || status === 'needs_clarification'
+                  || status === 'completed'
+                  ? 100
+                  : 60,
+                message: labelForAgentStatus(status, detailMsg),
+              });
+            },
+          });
+          store.updateMessage(clarification.messageId, {
+            content: ensureNumberedCalloutMentions(result.assistantMessage, []),
+            isLoading: result.status === 'needs_approval',
+            error: result.status === 'failed' ? result.assistantMessage : undefined,
+          });
+        } catch (error) {
+          store.updateMessage(clarification.messageId, {
+            isLoading: false,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          store.finishRun(clarification.runId, 'error', error instanceof Error ? error.message : String(error));
+        } finally {
+          setPipelineStatus({ isRunning: false, progress: 0, message: '' });
+        }
+      })();
+    };
+
+    window.addEventListener('bidveraai:clarification', handleClarification);
+    return () => window.removeEventListener('bidveraai:clarification', handleClarification);
+  }, [addAIMarkupBatch, defaultStyle, pageHeight, pageWidth, placementMode, setPendingPlacements, setPipelineStatus]);
+
   const handleQuestionToggle = useCallback((questionId: string, option: string, allowMultiple?: boolean) => {
     setQuestionAnswers((prev) => {
       const current = prev[questionId] || [];
@@ -1113,7 +1251,7 @@ export function AgentAssistantDrawer() {
               void handleSendMessage(message, images);
             }}
             isLoading={isLoading || pipelineStatus.isRunning}
-            disabled={!isAIAvailable}
+            disabled={!isAIAvailable || waitingForUser}
             onStop={activeRun ? () => cancelAssistantRun(activeRun.id) : undefined}
             contextChips={[
               activeDocumentRecord?.name || 'No document',

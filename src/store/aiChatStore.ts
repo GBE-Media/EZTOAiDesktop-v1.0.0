@@ -7,6 +7,7 @@ import { create } from 'zustand';
 import type { TradeType, PipelineStage } from '@/services/ai/providers/types';
 import type {
   ApprovalRequest,
+  ClarificationRequest,
   AssistantConversation,
   AssistantMessageBlock,
   AssistantRun,
@@ -83,6 +84,7 @@ interface AIChatState {
   conversationHydrated: boolean;
   runs: Record<string, AssistantRun>;
   approvals: Record<string, ApprovalRequest>;
+  clarifications: Record<string, ClarificationRequest>;
   
   // Actions
   openDrawer: () => void;
@@ -102,6 +104,12 @@ interface AIChatState {
   cancelRun: (runId: string) => void;
   addApproval: (approval: ApprovalRequest) => void;
   resolveApproval: (approvalId: string, status: ApprovalRequest['status'], error?: string) => void;
+  addClarification: (clarification: ClarificationRequest) => void;
+  resolveClarification: (
+    clarificationId: string,
+    status: ClarificationRequest['status'],
+    answer?: ClarificationRequest['answer'],
+  ) => void;
   
   setSelectedTrade: (trade: TradeType) => void;
   setPlacementMode: (mode: PlacementMode) => void;
@@ -140,6 +148,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   conversationHydrated: false,
   runs: {},
   approvals: {},
+  clarifications: {},
   
   // Drawer actions
   openDrawer: () => set({ isOpen: true }),
@@ -189,7 +198,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   },
   
   clearMessages: () => {
-    set({ messages: [], pendingPlacements: [], runs: {}, approvals: {} });
+    set({ messages: [], pendingPlacements: [], runs: {}, approvals: {}, clarifications: {} });
   },
 
   setConversationContext: async (contextId, title = 'BidveraAi conversation') => {
@@ -208,6 +217,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
         })),
         runs: Object.fromEntries(stored.runs.map(run => [run.id, run])),
         approvals: Object.fromEntries(stored.approvals.map(approval => [approval.id, approval])),
+        clarifications: Object.fromEntries((stored.clarifications || []).map(item => [item.id, item])),
       });
       return;
     }
@@ -229,6 +239,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
       messages: [],
       runs: {},
       approvals: {},
+      clarifications: {},
     });
   },
 
@@ -250,6 +261,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
       messages: [],
       runs: {},
       approvals: {},
+      clarifications: {},
       pendingPlacements: [],
     }));
   },
@@ -265,6 +277,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
       })),
       runs: Object.fromEntries(stored.runs.map(run => [run.id, run])),
       approvals: Object.fromEntries(stored.approvals.map(approval => [approval.id, approval])),
+      clarifications: Object.fromEntries((stored.clarifications || []).map(item => [item.id, item])),
     });
   },
 
@@ -307,7 +320,8 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   finishRun: (runId, status = 'completed', error) => set(state => {
     const run = state.runs[runId];
     if (!run) return state;
-    const settleAsCompleted = status === 'completed' || status === 'waiting-approval';
+    const settleAsCompleted =
+      status === 'completed' || status === 'waiting-approval' || status === 'waiting-clarification';
     const settledSteps = run.steps.map(step => {
       if (step.status !== 'running' && step.status !== 'pending') return step;
       if (settleAsCompleted) {
@@ -359,6 +373,26 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
           ...approval,
           status,
           error,
+          resolvedAt: new Date().toISOString(),
+        },
+      },
+    };
+  }),
+
+  addClarification: (clarification) => set(state => ({
+    clarifications: { ...state.clarifications, [clarification.id]: clarification },
+  })),
+
+  resolveClarification: (clarificationId, status, answer) => set(state => {
+    const clarification = state.clarifications[clarificationId];
+    if (!clarification) return state;
+    return {
+      clarifications: {
+        ...state.clarifications,
+        [clarificationId]: {
+          ...clarification,
+          status,
+          answer: answer ?? clarification.answer,
           resolvedAt: new Date().toISOString(),
         },
       },
@@ -449,6 +483,7 @@ useAIChatStore.subscribe(state => {
       messages: current.messages,
       runs: Object.values(current.runs),
       approvals: Object.values(current.approvals),
+      clarifications: Object.values(current.clarifications),
       updatedAt,
     });
   }, 250);

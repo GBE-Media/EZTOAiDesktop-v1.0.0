@@ -1,8 +1,9 @@
 import type { PipelineStage, TradeType } from '@/services/ai/providers/types';
 
 export type AssistantStepStatus = 'pending' | 'running' | 'completed' | 'error' | 'cancelled';
-export type AssistantRunStatus = AssistantStepStatus | 'waiting-approval';
+export type AssistantRunStatus = AssistantStepStatus | 'waiting-approval' | 'waiting-clarification';
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'executed' | 'failed';
+export type ClarificationStatus = 'pending' | 'answered' | 'cancelled';
 
 export interface EvidenceCitation {
   id: string;
@@ -39,7 +40,7 @@ export interface RunStep {
   id: string;
   label: string;
   summary?: string;
-  stage?: PipelineStage | 'planning' | 'tool' | 'approval' | 'complete';
+  stage?: PipelineStage | 'planning' | 'tool' | 'approval' | 'complete' | 'clarification' | 'verification';
   status: AssistantStepStatus;
   progress?: number;
   startedAt?: string;
@@ -77,6 +78,38 @@ export interface ApprovalRequest {
   error?: string;
 }
 
+export interface ClarificationOption {
+  id: string;
+  label: string;
+  value: string;
+}
+
+export interface ClarificationRequest {
+  id: string;
+  runId: string;
+  messageId: string;
+  stepKey: string;
+  question: string;
+  description?: string;
+  options: ClarificationOption[];
+  allowMultiSelect?: boolean;
+  allowFreeform?: boolean;
+  status: ClarificationStatus;
+  createdAt: string;
+  resolvedAt?: string;
+  answer?: {
+    selectedValues: string[];
+    freeform?: string;
+    displayText: string;
+  };
+}
+
+export interface AssistantResultSummary {
+  summary: string;
+  actionsTaken?: string[];
+  warnings?: string[];
+}
+
 export type AssistantMessageBlock =
   | { id: string; type: 'markdown'; markdown: string }
   | { id: string; type: 'activity'; runId: string }
@@ -84,6 +117,9 @@ export type AssistantMessageBlock =
   | { id: string; type: 'evidence'; title: string; citations: EvidenceCitation[]; summary?: string }
   | { id: string; type: 'artifact'; artifact: AssistantArtifact }
   | { id: string; type: 'approval'; approvalId: string }
+  | { id: string; type: 'question'; clarificationId: string }
+  | { id: string; type: 'progress'; label: string; status: 'running' | 'completed' | 'failed' }
+  | { id: string; type: 'result'; result: AssistantResultSummary }
   | { id: string; type: 'tool-result'; activity: ToolActivity };
 
 export interface AssistantConversation {

@@ -7,11 +7,15 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AIProviderType, PipelineStage, TradeType } from '@/services/ai/providers/types';
 import { getAIService } from '@/services/ai/aiService';
+import {
+  DEFAULT_AGENT_MODELS,
+  type AgentModelRole,
+  type AgentModelSelection,
+  type AgentModelsConfig,
+} from '@/services/ai/agent/roles';
 
-export interface ModelSelection {
-  provider: AIProviderType;
-  model: string;
-}
+export type { AgentModelSelection };
+export type ModelSelection = AgentModelSelection;
 
 export interface AISettings {
   // API Keys (stored separately in secure storage for Electron)
@@ -27,6 +31,9 @@ export interface AISettings {
     estimation: ModelSelection;
     placement: ModelSelection;
   };
+
+  /** Agent orchestration roles (router / primary / verifier / fallback). */
+  agentModels: AgentModelsConfig;
   
   // Default preferences
   defaultTrade: TradeType;
@@ -54,6 +61,7 @@ interface AISettingsState extends AISettings {
   clearApiKey: (provider: AIProviderType) => void;
   
   setPipelineModel: (stage: PipelineStage, selection: ModelSelection) => void;
+  setAgentModel: (role: AgentModelRole, selection: ModelSelection) => void;
   
   setDefaultTrade: (trade: TradeType) => void;
   setDefaultPlacementMode: (mode: 'auto' | 'confirm') => void;
@@ -89,9 +97,14 @@ function applyPipelineModelsToService(pipelineModels: AISettings['pipelineModels
   });
 }
 
+function applyAgentModelsToService(agentModels: AgentModelsConfig) {
+  getAIService().setAgentModels(agentModels);
+}
+
 const DEFAULT_SETTINGS: AISettings = {
   apiKeys: {},
   pipelineModels: DEFAULT_PIPELINE_MODELS,
+  agentModels: { ...DEFAULT_AGENT_MODELS },
   defaultTrade: 'electrical',
   defaultPlacementMode: 'confirm',
   enableSmartSuggestions: true,
@@ -140,6 +153,16 @@ export const useAISettingsStore = create<AISettingsState>()(
         // takes effect on the next request, not just in the persisted UI state.
         applyPipelineModelsToService({ ...get().pipelineModels, [stage]: selection });
       },
+
+      setAgentModel: (role, selection) => {
+        set(state => ({
+          agentModels: {
+            ...state.agentModels,
+            [role]: selection,
+          },
+        }));
+        applyAgentModelsToService({ ...get().agentModels, [role]: selection });
+      },
       
       // Default preferences
       setDefaultTrade: (trade) => set({ defaultTrade: trade }),
@@ -179,6 +202,7 @@ export const useAISettingsStore = create<AISettingsState>()(
           // live AIService singleton, since it otherwise only ever uses its
           // own hardcoded defaults until a settings change fires.
           applyPipelineModelsToService(get().pipelineModels);
+          applyAgentModelsToService(get().agentModels);
 
           set({ isInitialized: true });
         } catch (error) {
@@ -244,6 +268,7 @@ export const useAISettingsStore = create<AISettingsState>()(
       // Don't persist API keys in localStorage - they go to secure storage
       partialize: (state) => ({
         pipelineModels: state.pipelineModels,
+        agentModels: state.agentModels,
         defaultTrade: state.defaultTrade,
         defaultPlacementMode: state.defaultPlacementMode,
         enableSmartSuggestions: state.enableSmartSuggestions,
@@ -264,6 +289,13 @@ export const useAISettingsStore = create<AISettingsState>()(
           estimation: persisted?.pipelineModels?.estimation || DEFAULT_PIPELINE_MODELS.estimation,
           placement: persisted?.pipelineModels?.placement || DEFAULT_PIPELINE_MODELS.placement,
         };
+
+        const agentModels: AgentModelsConfig = {
+          router: persisted?.agentModels?.router || DEFAULT_AGENT_MODELS.router,
+          primary: persisted?.agentModels?.primary || DEFAULT_AGENT_MODELS.primary,
+          verifier: persisted?.agentModels?.verifier || DEFAULT_AGENT_MODELS.verifier,
+          fallback: persisted?.agentModels?.fallback || DEFAULT_AGENT_MODELS.fallback,
+        };
         
         // Remap stale persisted selections onto the models the backend
         // actually serves. Without this, users who already have settings
@@ -279,22 +311,30 @@ export const useAISettingsStore = create<AISettingsState>()(
           'claude-3-opus-20240229': 'claude-opus-4-5',
           'claude-3-haiku-20240307': 'claude-haiku-4-5',
         };
-        (['vision', 'estimation', 'placement'] as const).forEach((stage) => {
-          const selection = pipelineModels[stage];
+        const remapSelection = (selection: ModelSelection): ModelSelection => {
           if (selection.provider === 'openai' && STALE_OPENAI_TO_LOVABLE.has(selection.model)) {
-            // 5.6-series models moved behind the Lovable AI Gateway.
-            pipelineModels[stage] = { provider: 'lovable', model: `openai/${selection.model}` };
-          } else if (selection.provider === 'openai' && RETIRED_OPENAI_MODELS.has(selection.model)) {
-            pipelineModels[stage] = { provider: 'openai', model: 'gpt-5' };
-          } else if (selection.provider === 'anthropic' && STALE_ANTHROPIC_REMAP[selection.model]) {
-            pipelineModels[stage] = { provider: 'anthropic', model: STALE_ANTHROPIC_REMAP[selection.model] };
+            return { provider: 'lovable', model: `openai/${selection.model}` };
           }
+          if (selection.provider === 'openai' && RETIRED_OPENAI_MODELS.has(selection.model)) {
+            return { provider: 'openai', model: 'gpt-5' };
+          }
+          if (selection.provider === 'anthropic' && STALE_ANTHROPIC_REMAP[selection.model]) {
+            return { provider: 'anthropic', model: STALE_ANTHROPIC_REMAP[selection.model] };
+          }
+          return selection;
+        };
+        (['vision', 'estimation', 'placement'] as const).forEach((stage) => {
+          pipelineModels[stage] = remapSelection(pipelineModels[stage]);
+        });
+        (['router', 'primary', 'verifier', 'fallback'] as const).forEach((role) => {
+          agentModels[role] = remapSelection(agentModels[role]);
         });
         
         return {
           ...currentState,
           ...persisted,
           pipelineModels,
+          agentModels,
           showActivityTimeline: persisted?.showActivityTimeline ?? currentState.showActivityTimeline,
           showEvidenceCitations: persisted?.showEvidenceCitations ?? currentState.showEvidenceCitations,
           showModelStageChips: persisted?.showModelStageChips ?? currentState.showModelStageChips,

@@ -1,12 +1,16 @@
-import type { ApprovalRequest, ToolActivity } from '@/types/assistant';
+import type { ApprovalRequest, ClarificationRequest, ToolActivity } from '@/types/assistant';
 import type { AssistantToolResult } from '../tools/types';
+import type { AgentModelRole } from './roles';
 
 /** UI-facing agent turn status (maps onto AssistantRun + message blocks). */
 export type AgentUiStatus =
+  | 'routing'
   | 'thinking'
   | 'needs_clarification'
   | 'needs_approval'
   | 'running_tool'
+  | 'running_tools'
+  | 'verifying'
   | 'completed'
   | 'failed';
 
@@ -17,6 +21,53 @@ export type AgentFinalStatus =
   | 'failed'
   | 'cancelled'
   | 'max_steps';
+
+export type RoutingPath =
+  | 'answer_directly'
+  | 'ask_clarification'
+  | 'invoke_primary'
+  | 'invoke_primary_plus_verifier'
+  | 'invoke_fallback';
+
+export type TaskType =
+  | 'simple_qa'
+  | 'read_context'
+  | 'write_action'
+  | 'compliance'
+  | 'cost_sensitive'
+  | 'layout'
+  | 'ambiguous'
+  | 'other';
+
+export type RiskLevel = 'low' | 'medium' | 'high';
+
+export interface RoutingDecision {
+  path: RoutingPath;
+  taskType: TaskType;
+  complexity: 'low' | 'medium' | 'high';
+  risk: RiskLevel;
+  preferTools: boolean;
+  requireVerifier: boolean;
+  suggestedTools: string[];
+  reason: string;
+  clarificationQuestion?: string;
+}
+
+export interface ModelUsedEntry {
+  role: AgentModelRole;
+  provider: string;
+  model: string;
+  phase: 'routing' | 'primary' | 'verification' | 'fallback';
+}
+
+export interface VerificationSummary {
+  deterministic: Array<{ toolId: string; summary: string; status: string }>;
+  llm?: {
+    verdict: 'approve' | 'revise' | 'escalate' | 'ask_clarification';
+    issues: string[];
+    summary: string;
+  };
+}
 
 export interface AgentActionTaken {
   toolId: string;
@@ -40,13 +91,16 @@ export interface AgentTurnResult {
   assistantMessage: string;
   actionsTaken: AgentActionTaken[];
   approvalRequest?: ApprovalRequest;
+  clarificationRequest?: ClarificationRequest;
   toolHistory: AgentToolHistoryEntry[];
   finalStatus: AgentFinalStatus;
   clarifyingQuestions?: string[];
   runId: string;
   messageId: string;
-  /** Internal plan text the model produced (for tracing / UI). */
   plan?: string;
+  routingDecision?: RoutingDecision;
+  modelsUsed?: ModelUsedEntry[];
+  verificationSummary?: VerificationSummary;
 }
 
 export interface AgentModelMessage {
@@ -72,6 +126,8 @@ export interface AgentTraceEvent {
   runId: string;
   type:
     | 'request'
+    | 'intake'
+    | 'routing'
     | 'plan'
     | 'tool_selected'
     | 'tool_args'
@@ -79,6 +135,8 @@ export interface AgentTraceEvent {
     | 'approval_requested'
     | 'approval_granted'
     | 'approval_denied'
+    | 'deterministic_check'
+    | 'verifier_outcome'
     | 'retry'
     | 'error'
     | 'final';

@@ -23,6 +23,12 @@ import { sendProxyRequest, isProxyAvailable, ProxyRequestError, type ProxyReques
 import { ELECTRICAL_VISION_PROMPT } from './trades/electrical';
 import { PLUMBING_VISION_PROMPT } from './trades/plumbing';
 import { HVAC_VISION_PROMPT } from './trades/hvac';
+import {
+  DEFAULT_AGENT_MODELS,
+  type AgentModelRole,
+  type AgentModelsConfig,
+  type AgentModelSelection,
+} from './agent/roles';
 
 // Ordered fallback chains, tried in sequence when the configured model is
 // rejected as inaccessible (allow-list, tier gating, retired model, etc.).
@@ -68,6 +74,7 @@ function isRetryableProxyError(error: unknown): boolean {
 
 export interface AIServiceConfig {
   pipeline: PipelineConfig;
+  agentModels: AgentModelsConfig;
   useProxy: boolean; // Use Edge Function proxy (default: true)
   apiKeys: {
     openai?: string;
@@ -98,6 +105,7 @@ class AIService {
   constructor() {
     this.config = {
       pipeline: DEFAULT_PIPELINE_CONFIG,
+      agentModels: { ...DEFAULT_AGENT_MODELS },
       useProxy: true, // Default to using Edge Function proxy
       apiKeys: {},
     };
@@ -165,6 +173,106 @@ class AIService {
       ...this.config.pipeline,
       ...config,
     };
+  }
+
+  getAgentModels(): AgentModelsConfig {
+    return { ...this.config.agentModels };
+  }
+
+  setAgentModels(config: Partial<AgentModelsConfig>) {
+    this.config.agentModels = {
+      ...this.config.agentModels,
+      ...config,
+    };
+  }
+
+  getAgentRoleConfig(role: AgentModelRole): AgentModelSelection {
+    return this.config.agentModels[role] || DEFAULT_AGENT_MODELS[role];
+  }
+
+  /**
+   * Complete using an agent role model (router / primary / verifier / fallback).
+   * Falls back to the configured fallback role if the primary role request fails.
+   */
+  async completeForRole(
+    role: AgentModelRole,
+    request: Omit<AICompletionRequest, 'model'>,
+    options?: { useFallbackOnError?: boolean }
+  ): Promise<AICompletionResponse> {
+    const selection = this.getAgentRoleConfig(role);
+    try {
+      return await this.completeWithSelection(selection, request);
+    } catch (error) {
+      if (options?.useFallbackOnError === false || role === 'fallback') throw error;
+      console.warn(`[AIService] Role "${role}" failed; trying fallback model.`, error);
+      return this.completeWithSelection(this.getAgentRoleConfig('fallback'), request);
+    }
+  }
+
+  async visionForRole(
+    role: AgentModelRole,
+    request: Omit<AIVisionRequest, 'model'>,
+    options?: { useFallbackOnError?: boolean }
+  ): Promise<AICompletionResponse> {
+    const selection = this.getAgentRoleConfig(role);
+    try {
+      return await this.visionWithSelection(selection, request);
+    } catch (error) {
+      if (options?.useFallbackOnError === false || role === 'fallback') throw error;
+      console.warn(`[AIService] Vision role "${role}" failed; trying fallback model.`, error);
+      return this.visionWithSelection(this.getAgentRoleConfig('fallback'), request);
+    }
+  }
+
+  private async completeWithSelection(
+    selection: AgentModelSelection,
+    request: Omit<AICompletionRequest, 'model'>
+  ): Promise<AICompletionResponse> {
+    if (this.config.useProxy) {
+      return this.sendProxyRequestWithFallback({
+        provider: selection.provider,
+        model: selection.model,
+        messages: request.messages,
+        temperature: request.temperature,
+        maxTokens: request.maxTokens,
+        responseFormat: request.responseFormat,
+        tools: request.tools,
+        toolChoice: request.toolChoice,
+      });
+    }
+    const providerInstance = getProvider(selection.provider);
+    if (!providerInstance.isConfigured()) {
+      throw new Error(`Provider ${providerInstance.name} is not configured. Please add an API key.`);
+    }
+    return providerInstance.complete({ ...request, model: selection.model });
+  }
+
+  private async visionWithSelection(
+    selection: AgentModelSelection,
+    request: Omit<AIVisionRequest, 'model'>
+  ): Promise<AICompletionResponse> {
+    if (this.config.useProxy) {
+      const messages = request.messages.map(msg => ({
+        role: msg.role,
+        content: msg.content,
+        images: msg.images,
+      }));
+      return this.sendProxyRequestWithFallback({
+        provider: selection.provider,
+        model: selection.model,
+        messages,
+        temperature: request.temperature,
+        maxTokens: request.maxTokens,
+        responseFormat: request.responseFormat,
+        tools: request.tools,
+        toolChoice: request.toolChoice,
+      });
+    }
+    const providerInstance = getProvider(selection.provider);
+    if (!providerInstance.isConfigured()) {
+      throw new Error(`Provider ${providerInstance.name} is not configured. Please add an API key.`);
+    }
+    return providerInstance.vision({ ...request, model: selection.model });
   }
 
   /**

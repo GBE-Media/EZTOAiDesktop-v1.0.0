@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable } from 'dexie';
 import type {
   ApprovalRequest,
+  ClarificationRequest,
   AssistantConversation,
   AssistantRun,
 } from '@/types/assistant';
@@ -13,6 +14,7 @@ export interface AssistantSnapshot {
   messages: ChatMessage[];
   runs: AssistantRun[];
   approvals: ApprovalRequest[];
+  clarifications?: ClarificationRequest[];
   updatedAt: string;
 }
 

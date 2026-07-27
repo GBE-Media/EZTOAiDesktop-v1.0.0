@@ -12,6 +12,7 @@ describe('aiChatStore assistant domain', () => {
       messages: [],
       runs: {},
       approvals: {},
+      clarifications: {},
       conversation: null,
       conversationContextId: null,
       conversationHydrated: false,
@@ -63,6 +64,42 @@ describe('aiChatStore assistant domain', () => {
     expect(run.steps[0]).toMatchObject({
       status: 'completed',
       progress: 100,
+    });
+  });
+
+  it('parks runs in waiting-clarification and resolves answers', async () => {
+    await useAIChatStore.getState().setConversationContext('project-a');
+    const messageId = useAIChatStore.getState().addMessage({ role: 'assistant', content: 'Need a choice' });
+    const runId = useAIChatStore.getState().createRun(messageId, 'Clarify');
+    useAIChatStore.getState().addClarification({
+      id: 'clarify_1',
+      runId,
+      messageId,
+      stepKey: 'scope',
+      question: 'Which pages?',
+      options: [
+        { id: 'current', label: 'Current page', value: 'current_page' },
+      ],
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    });
+    useAIChatStore.getState().addMessageBlock(messageId, {
+      id: 'block_clarify_1',
+      type: 'question',
+      clarificationId: 'clarify_1',
+    });
+    useAIChatStore.getState().finishRun(runId, 'waiting-clarification');
+
+    expect(useAIChatStore.getState().runs[runId].status).toBe('waiting-clarification');
+    expect(useAIChatStore.getState().messages[0].blocks?.some(block => block.type === 'question')).toBe(true);
+
+    useAIChatStore.getState().resolveClarification('clarify_1', 'answered', {
+      selectedValues: ['current_page'],
+      displayText: 'Current page',
+    });
+    expect(useAIChatStore.getState().clarifications.clarify_1).toMatchObject({
+      status: 'answered',
+      answer: { displayText: 'Current page' },
     });
   });
 

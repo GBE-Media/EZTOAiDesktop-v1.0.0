@@ -3,6 +3,9 @@ import type { AssistantMessageBlock } from '@/types/assistant';
 import { ApprovalCard } from './ApprovalCard';
 import { EvidenceCard } from './EvidenceCard';
 import { ToolActivityCard } from './ToolActivityCard';
+import { QuestionCard } from './QuestionCard';
+import { ResultSummaryCard } from './ResultSummaryCard';
+import { ProgressEventRow } from './ProgressEventRow';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 
 export function AssistantMessageBlocks({ blocks }: { blocks?: AssistantMessageBlock[] }) {
@@ -29,6 +32,12 @@ export function AssistantMessageBlocks({ blocks }: { blocks?: AssistantMessageBl
           case 'approval':
             // Approvals always stay visible — required for safety.
             return <ApprovalCard key={block.id} approvalId={block.approvalId} />;
+          case 'question':
+            return <QuestionCard key={block.id} clarificationId={block.clarificationId} />;
+          case 'result':
+            return <ResultSummaryCard key={block.id} result={block.result} />;
+          case 'progress':
+            return <ProgressEventRow key={block.id} label={block.label} status={block.status} />;
           case 'artifact':
             return (
               <div key={block.id} className="rounded-lg border border-border p-2.5">

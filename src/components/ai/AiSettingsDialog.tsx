@@ -41,6 +41,8 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
   const {
     pipelineModels,
     setPipelineModel,
+    agentModels,
+    setAgentModel,
     defaultTrade,
     setDefaultTrade,
     defaultPlacementMode,
@@ -77,8 +79,9 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
         </DialogHeader>
 
         <Tabs defaultValue="models" className="mt-4">
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="models">Models</TabsTrigger>
+          <TabsList className="grid w-full grid-cols-3">
+            <TabsTrigger value="models">Takeoff</TabsTrigger>
+            <TabsTrigger value="agent">Agent</TabsTrigger>
             <TabsTrigger value="preferences">Preferences</TabsTrigger>
           </TabsList>
 
@@ -126,6 +129,47 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
                 onChange={(selection) => setPipelineModel('placement', selection)}
               />
             </div>
+          </TabsContent>
+
+          <TabsContent value="agent" className="space-y-4 mt-4">
+            <div className="flex items-start gap-2 p-3 bg-secondary/40 border border-border rounded-lg">
+              <Info className="w-4 h-4 text-muted-foreground mt-0.5" />
+              <p className="text-xs text-muted-foreground">
+                One router, one primary agent, one optional verifier. Keep this simple and cost-aware.
+              </p>
+            </div>
+            <ModelSelector
+              stage="router"
+              label="Router model"
+              description="Fast classification and path selection"
+              currentModel={agentModels?.router}
+              models={getAllModels()}
+              onChange={(selection) => setAgentModel('router', selection)}
+            />
+            <ModelSelector
+              stage="primary"
+              label="Primary agent model"
+              description="Main reasoning and tool orchestration"
+              currentModel={agentModels?.primary}
+              models={getAllModels()}
+              onChange={(selection) => setAgentModel('primary', selection)}
+            />
+            <ModelSelector
+              stage="verifier"
+              label="Verifier model"
+              description="Selective high-impact review only"
+              currentModel={agentModels?.verifier}
+              models={getAllModels()}
+              onChange={(selection) => setAgentModel('verifier', selection)}
+            />
+            <ModelSelector
+              stage="fallback"
+              label="Fallback model"
+              description="Used when the primary path fails"
+              currentModel={agentModels?.fallback}
+              models={getAllModels()}
+              onChange={(selection) => setAgentModel('fallback', selection)}
+            />
           </TabsContent>
 
           {/* Preferences Tab */}
@@ -204,7 +248,7 @@ function ModelSelector({
   models,
   onChange,
 }: {
-  stage: PipelineStage;
+  stage: string;
   label: string;
   description: string;
   currentModel: { provider: AIProviderType; model: string } | undefined;
