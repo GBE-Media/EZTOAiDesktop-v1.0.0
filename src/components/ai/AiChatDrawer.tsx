@@ -843,17 +843,12 @@ export function AiChatDrawer() {
             onClose={closeDrawer}
           />
           
-          {/* Toolbar */}
-          <details className="border-b border-border bg-secondary/10">
-            <summary className="cursor-pointer px-4 py-2 text-xs font-medium text-muted-foreground hover:text-foreground">
-              Assistant commands
-            </summary>
-            <AiToolbar
-              onOpenSettings={() => setSettingsOpen(true)}
-              onClearChat={clearMessages}
-              onRunTakeoff={openTakeoffDialog}
-            />
-          </details>
+          {/* Primary assistant controls — always visible */}
+          <AiToolbar
+            onOpenSettings={() => setSettingsOpen(true)}
+            onClearChat={clearMessages}
+            onRunTakeoff={openTakeoffDialog}
+          />
           
           {/* Page Selection */}
           {activeDocId && totalPages > 0 && (

@@ -3,17 +3,23 @@ import type { AssistantMessageBlock } from '@/types/assistant';
 import { ApprovalCard } from './ApprovalCard';
 import { EvidenceCard } from './EvidenceCard';
 import { ToolActivityCard } from './ToolActivityCard';
+import { useAISettingsStore } from '@/store/aiSettingsStore';
 
 export function AssistantMessageBlocks({ blocks }: { blocks?: AssistantMessageBlock[] }) {
+  const showActivityTimeline = useAISettingsStore(state => state.showActivityTimeline);
+  const showEvidenceCitations = useAISettingsStore(state => state.showEvidenceCitations);
+
   if (!blocks?.length) return null;
   return (
     <div className="space-y-2">
       {blocks.map(block => {
         switch (block.type) {
           case 'activity':
+            if (!showActivityTimeline) return null;
             return <RunTimeline key={block.id} runId={block.runId} />;
           case 'citations':
           case 'evidence':
+            if (!showEvidenceCitations) return null;
             return <EvidenceCard
               key={block.id}
               title={'title' in block ? block.title : undefined}
@@ -21,6 +27,7 @@ export function AssistantMessageBlocks({ blocks }: { blocks?: AssistantMessageBl
               citations={block.citations}
             />;
           case 'approval':
+            // Approvals always stay visible — required for safety.
             return <ApprovalCard key={block.id} approvalId={block.approvalId} />;
           case 'artifact':
             return (

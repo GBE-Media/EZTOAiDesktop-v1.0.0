@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
@@ -14,22 +14,45 @@ import { useCanvasStore } from '@/store/canvasStore';
 
 export function RunTimeline({ runId }: { runId: string }) {
   const run = useAIChatStore(state => state.runs[runId]);
-  const [open, setOpen] = useState(true);
   const setCurrentPage = useCanvasStore(state => state.setCurrentPage);
+  const isActive = run?.status === 'running' || run?.status === 'waiting-approval';
+  // Open while working; collapse when the answer arrives so thought process
+  // stays available but out of the final answer surface.
+  const [open, setOpen] = useState(!!isActive);
+  const [userToggled, setUserToggled] = useState(false);
+
+  useEffect(() => {
+    if (userToggled || !run) return;
+    setOpen(run.status === 'running' || run.status === 'waiting-approval');
+  }, [run?.status, userToggled, run]);
+
   if (!run) return null;
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="my-2 rounded-lg border border-border bg-secondary/20">
+    <Collapsible
+      open={open}
+      onOpenChange={(next) => {
+        setUserToggled(true);
+        setOpen(next);
+      }}
+      className="my-2 rounded-lg border border-border bg-secondary/20"
+    >
       <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 text-left">
         {run.status === 'running' ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />
         ) : run.status === 'error' ? (
           <XCircle className="h-3.5 w-3.5 text-destructive" />
+        ) : run.status === 'waiting-approval' ? (
+          <Loader2 className="h-3.5 w-3.5 animate-pulse text-amber-500" />
         ) : (
           <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
         )}
-        <span className="flex-1 text-xs font-medium">{run.summary || 'Assistant activity'}</span>
-        <span className="text-[10px] text-muted-foreground">{run.steps.filter(step => step.status === 'completed').length}/{run.steps.length}</span>
+        <span className="flex-1 text-xs font-medium">
+          {isActive ? (run.summary || 'Working…') : 'Activity'}
+        </span>
+        <span className="text-[10px] text-muted-foreground">
+          {run.steps.filter(step => step.status === 'completed').length}/{run.steps.length}
+        </span>
         <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
       </CollapsibleTrigger>
       <CollapsibleContent className="border-t border-border px-3 py-2">
@@ -48,7 +71,9 @@ export function RunTimeline({ runId }: { runId: string }) {
                 )}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-xs">{step.label}</div>
+                <div className={cn('text-xs', step.status === 'running' && 'animate-pulse')}>
+                  {step.label}
+                </div>
                 {step.summary && <div className="text-[11px] text-muted-foreground">{step.summary}</div>}
                 {step.status === 'running' && step.progress !== undefined && (
                   <Progress value={step.progress} className="mt-1 h-1" />

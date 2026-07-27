@@ -4,11 +4,12 @@
  */
 
 import { memo, useState } from 'react';
-import { Bot, User, Loader2, AlertCircle, Zap, Eye, Calculator, MapPin, Copy, Check, RotateCcw } from 'lucide-react';
+import { Bot, User, AlertCircle, Zap, Eye, Calculator, MapPin, Copy, Check, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ChatMessage as ChatMessageType } from '@/store/aiChatStore';
 import type { PipelineStage } from '@/services/ai/providers/types';
 import { AssistantMessageBlocks } from './AssistantMessageBlocks';
+import { PulsingStatus } from './PulsingStatus';
 import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
 
@@ -110,10 +111,7 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
         
         {/* Message content */}
         {message.isLoading ? (
-          <div className="flex items-center gap-2 text-muted-foreground">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span className="text-sm">Thinking...</span>
-          </div>
+          <PulsingStatus />
         ) : message.error ? (
           <div className="flex items-center gap-2 text-destructive">
             <AlertCircle className="w-4 h-4" />

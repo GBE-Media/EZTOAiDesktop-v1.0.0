@@ -37,6 +37,11 @@ export interface AISettings {
   showCodeReferences: boolean;
   showConfidenceScores: boolean;
   autoExtractLocation: boolean;
+
+  // Chat display controls (Lovable-like chrome)
+  showActivityTimeline: boolean;
+  showEvidenceCitations: boolean;
+  showModelStageChips: boolean;
 }
 
 interface AISettingsState extends AISettings {
@@ -57,6 +62,9 @@ interface AISettingsState extends AISettings {
   setShowCodeReferences: (show: boolean) => void;
   setShowConfidenceScores: (show: boolean) => void;
   setAutoExtractLocation: (enabled: boolean) => void;
+  setShowActivityTimeline: (show: boolean) => void;
+  setShowEvidenceCitations: (show: boolean) => void;
+  setShowModelStageChips: (show: boolean) => void;
   
   // Initialization
   initialize: () => Promise<void>;
@@ -90,6 +98,9 @@ const DEFAULT_SETTINGS: AISettings = {
   showCodeReferences: true,
   showConfidenceScores: false,
   autoExtractLocation: true,
+  showActivityTimeline: true,
+  showEvidenceCitations: true,
+  showModelStageChips: true,
 };
 
 export const useAISettingsStore = create<AISettingsState>()(
@@ -139,6 +150,9 @@ export const useAISettingsStore = create<AISettingsState>()(
       setShowCodeReferences: (show) => set({ showCodeReferences: show }),
       setShowConfidenceScores: (show) => set({ showConfidenceScores: show }),
       setAutoExtractLocation: (enabled) => set({ autoExtractLocation: enabled }),
+      setShowActivityTimeline: (show) => set({ showActivityTimeline: show }),
+      setShowEvidenceCitations: (show) => set({ showEvidenceCitations: show }),
+      setShowModelStageChips: (show) => set({ showModelStageChips: show }),
       
       // Initialization - load API keys from Electron secure storage
       initialize: async () => {
@@ -236,6 +250,9 @@ export const useAISettingsStore = create<AISettingsState>()(
         showCodeReferences: state.showCodeReferences,
         showConfidenceScores: state.showConfidenceScores,
         autoExtractLocation: state.autoExtractLocation,
+        showActivityTimeline: state.showActivityTimeline,
+        showEvidenceCitations: state.showEvidenceCitations,
+        showModelStageChips: state.showModelStageChips,
       }),
       // Merge stored state with defaults to handle missing/corrupt data
       merge: (persistedState, currentState) => {
@@ -278,6 +295,9 @@ export const useAISettingsStore = create<AISettingsState>()(
           ...currentState,
           ...persisted,
           pipelineModels,
+          showActivityTimeline: persisted?.showActivityTimeline ?? currentState.showActivityTimeline,
+          showEvidenceCitations: persisted?.showEvidenceCitations ?? currentState.showEvidenceCitations,
+          showModelStageChips: persisted?.showModelStageChips ?? currentState.showModelStageChips,
         };
       },
     }

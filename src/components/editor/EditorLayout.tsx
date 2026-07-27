@@ -27,19 +27,12 @@ import {
 } from '@/components/ui/resizable';
 import type { ImperativePanelHandle } from 'react-resizable-panels';
 
-// Tools that require the properties panel
-const TOOLS_NEEDING_PROPERTIES = [
-  'text', 'highlight', 'cloud', 'rectangle', 'ellipse', 
-  'line', 'arrow', 'polyline', 'polygon', 'callout', 
-  'stamp', 'freehand', 'measure-length', 'measure-area', 'count'
-];
-
 export function EditorLayout() {
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(true);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(true);
   const [mode, setMode] = useState<'documents' | 'products'>('documents');
   
-  const { activeTool, activeDocument } = useEditorStore();
+  const { activeDocument } = useEditorStore();
   const isAiChatOpen = useAIChatStore((state) => state.isOpen);
   
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
@@ -119,17 +112,6 @@ export function EditorLayout() {
       });
     }
   }, [openProject]);
-
-  // Auto-expand right panel when a drawing/editing tool is selected AND a document is open
-  useEffect(() => {
-    if (
-      activeDocument && 
-      TOOLS_NEEDING_PROPERTIES.includes(activeTool) && 
-      rightPanelCollapsed
-    ) {
-      rightPanelRef.current?.expand();
-    }
-  }, [activeTool, rightPanelCollapsed, activeDocument]);
 
   const toggleLeftPanel = () => {
     const panel = leftPanelRef.current;
@@ -290,10 +272,10 @@ export function EditorLayout() {
             </button>
           </ResizableHandle>
 
-          {/* Right panel - Properties & Measurements */}
+          {/* Right panel - Properties & Measurements (starts collapsed; user opens manually) */}
           <ResizablePanel 
             ref={rightPanelRef}
-            defaultSize={20} 
+            defaultSize={0} 
             minSize={15} 
             maxSize={30}
             collapsible
