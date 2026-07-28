@@ -1,6 +1,7 @@
 import type { TradeType } from '../providers/types';
 import { buildAgentContext, type AgentContextInput } from '../contextBuilder';
 import type { RiskLevel, TaskType } from '../types';
+import { isLocateIntent } from '../locateIntent';
 
 export interface IntakeInput extends AgentContextInput {
   userMessage: string;
@@ -45,6 +46,10 @@ export function runIntake(input: IntakeInput): IntakeResult {
   } else if (/\b(layout|run|homerun|conduit|route)\b/.test(lower)) {
     preliminaryTaskType = 'layout';
     preliminaryRisk = 'medium';
+  } else if (isLocateIntent(normalizedMessage)) {
+    // Location / “show me where” needs tools + canvas focus — not answer_directly.
+    preliminaryTaskType = 'read_context';
+    preliminaryRisk = 'low';
   } else if (/\b(count|material|takeoff|markup|page|document|project|summary)\b/.test(lower)) {
     preliminaryTaskType = 'read_context';
     preliminaryRisk = 'low';

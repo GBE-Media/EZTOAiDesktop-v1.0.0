@@ -1,6 +1,6 @@
 /**
  * AI Settings Dialog Component
- * Configure model selection and AI preferences
+ * Managed model assignments + assistant preferences
  * API keys are managed by the company via Edge Function proxy
  */
 
@@ -29,7 +29,7 @@ import {
 } from '@/components/ui/tabs';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 import { getAIService } from '@/services/ai/aiService';
-import type { AIProviderType, PipelineStage } from '@/services/ai/providers/types';
+import type { AIProviderType } from '@/services/ai/providers/types';
 import { cn } from '@/lib/utils';
 
 interface AiSettingsDialogProps {
@@ -40,9 +40,7 @@ interface AiSettingsDialogProps {
 export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) {
   const {
     pipelineModels,
-    setPipelineModel,
     agentModels,
-    setAgentModel,
     defaultTrade,
     setDefaultTrade,
     defaultPlacementMode,
@@ -55,26 +53,13 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
     setAutoExtractLocation,
   } = useAISettingsStore();
 
-  const getModelsForProvider = (provider: AIProviderType) => {
-    const allModels = getAIService().getAllModels();
-    return allModels.filter(m => m.provider === provider);
-  };
-
-  const getVisionModels = () => {
-    return getAIService().getVisionModels();
-  };
-
-  const getAllModels = () => {
-    return getAIService().getAllModels();
-  };
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>AI Settings</DialogTitle>
           <DialogDescription>
-            Configure AI models and preferences
+            Managed AI models and assistant preferences
           </DialogDescription>
         </DialogHeader>
 
@@ -85,48 +70,32 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
             <TabsTrigger value="preferences">Preferences</TabsTrigger>
           </TabsList>
 
-          {/* Models Tab */}
           <TabsContent value="models" className="space-y-4 mt-4">
-            {/* Info banner */}
             <div className="flex items-start gap-2 p-3 bg-violet-500/10 border border-violet-500/20 rounded-lg">
               <Zap className="w-4 h-4 text-violet-500 mt-0.5" />
               <div className="text-sm">
                 <p className="font-medium text-violet-500">AI Powered by BidveraAi</p>
                 <p className="text-muted-foreground text-xs mt-1">
-                  AI features are included with your subscription. No API keys required.
+                  AI features are included with your subscription. Stage models are assigned automatically for Run Takeoff. No API keys required.
                 </p>
               </div>
             </div>
 
             <div className="space-y-4">
-              {/* Vision Model */}
-              <ModelSelector
-                stage="vision"
+              <ManagedModelRow
                 label="Document Vision Model"
                 description="Analyzes blueprints and extracts components"
                 currentModel={pipelineModels?.vision}
-                models={getVisionModels()}
-                onChange={(selection) => setPipelineModel('vision', selection)}
               />
-
-              {/* Estimation Model */}
-              <ModelSelector
-                stage="estimation"
+              <ManagedModelRow
                 label="Estimation Model"
                 description="Calculates quantities and applies codes"
                 currentModel={pipelineModels?.estimation}
-                models={getAllModels()}
-                onChange={(selection) => setPipelineModel('estimation', selection)}
               />
-
-              {/* Placement Model */}
-              <ModelSelector
-                stage="placement"
+              <ManagedModelRow
                 label="Placement Model"
                 description="Generates precise canvas coordinates"
                 currentModel={pipelineModels?.placement}
-                models={getAllModels().filter(m => m.supportsStructuredOutput)}
-                onChange={(selection) => setPipelineModel('placement', selection)}
               />
             </div>
           </TabsContent>
@@ -135,46 +104,32 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
             <div className="flex items-start gap-2 p-3 bg-secondary/40 border border-border rounded-lg">
               <Info className="w-4 h-4 text-muted-foreground mt-0.5" />
               <p className="text-xs text-muted-foreground">
-                One router, one primary agent, one optional verifier. Keep this simple and cost-aware.
+                BidveraAi assigns router, primary, verifier, and fallback models for orchestration. Roles are not user-configurable.
               </p>
             </div>
-            <ModelSelector
-              stage="router"
+            <ManagedModelRow
               label="Router model"
               description="Fast classification and path selection"
               currentModel={agentModels?.router}
-              models={getAllModels()}
-              onChange={(selection) => setAgentModel('router', selection)}
             />
-            <ModelSelector
-              stage="primary"
+            <ManagedModelRow
               label="Primary agent model"
               description="Main reasoning and tool orchestration"
               currentModel={agentModels?.primary}
-              models={getAllModels()}
-              onChange={(selection) => setAgentModel('primary', selection)}
             />
-            <ModelSelector
-              stage="verifier"
+            <ManagedModelRow
               label="Verifier model"
               description="Selective high-impact review only"
               currentModel={agentModels?.verifier}
-              models={getAllModels()}
-              onChange={(selection) => setAgentModel('verifier', selection)}
             />
-            <ModelSelector
-              stage="fallback"
+            <ManagedModelRow
               label="Fallback model"
               description="Used when the primary path fails"
               currentModel={agentModels?.fallback}
-              models={getAllModels()}
-              onChange={(selection) => setAgentModel('fallback', selection)}
             />
           </TabsContent>
 
-          {/* Preferences Tab */}
           <TabsContent value="preferences" className="space-y-4 mt-4">
-            {/* Default Trade */}
             <div className="space-y-2">
               <Label>Default Trade</Label>
               <Select
@@ -192,7 +147,6 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
               </Select>
             </div>
 
-            {/* Default Placement Mode */}
             <div className="space-y-2">
               <Label>Default Placement Mode</Label>
               <Select
@@ -209,7 +163,6 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
               </Select>
             </div>
 
-            {/* Toggles */}
             <div className="space-y-3 pt-2">
               <ToggleOption
                 label="Enable Smart Suggestions"
@@ -239,26 +192,28 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
   );
 }
 
-// Model Selector Component
-function ModelSelector({
-  stage,
+function resolveModelDisplayName(
+  selection: { provider: AIProviderType; model: string },
+): string {
+  const catalog = getAIService().getAllModels();
+  const match = catalog.find(
+    model => model.provider === selection.provider && model.id === selection.model,
+  );
+  return match?.name || selection.model;
+}
+
+function ManagedModelRow({
   label,
   description,
   currentModel,
-  models,
-  onChange,
 }: {
-  stage: string;
   label: string;
   description: string;
   currentModel: { provider: AIProviderType; model: string } | undefined;
-  models: Array<{ id: string; name: string; provider: AIProviderType }>;
-  onChange: (selection: { provider: AIProviderType; model: string }) => void;
 }) {
-  // Default fallback if currentModel is undefined
   const provider = currentModel?.provider || 'lovable';
   const model = currentModel?.model || 'openai/gpt-5.6-sol';
-  const value = `${provider}:${model}`;
+  const displayName = resolveModelDisplayName({ provider, model });
 
   return (
     <div className="space-y-2">
@@ -266,38 +221,25 @@ function ModelSelector({
         <Label>{label}</Label>
         <p className="text-xs text-muted-foreground">{description}</p>
       </div>
-      <Select
-        value={value}
-        onValueChange={(v) => {
-          const [provider, model] = v.split(':') as [AIProviderType, string];
-          onChange({ provider, model });
-        }}
-      >
-        <SelectTrigger>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {models.map((model) => (
-            <SelectItem key={`${model.provider}:${model.id}`} value={`${model.provider}:${model.id}`}>
-              <div className="flex items-center gap-2">
-                <span className={cn(
-                  'w-2 h-2 rounded-full',
-                  model.provider === 'openai' && 'bg-green-500',
-                  model.provider === 'anthropic' && 'bg-orange-500',
-                  model.provider === 'gemini' && 'bg-blue-500',
-                  model.provider === 'lovable' && 'bg-pink-500'
-                )} />
-                {model.name}
-              </div>
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-3 py-2">
+        <span
+          className={cn(
+            'h-2 w-2 shrink-0 rounded-full',
+            provider === 'openai' && 'bg-green-500',
+            provider === 'anthropic' && 'bg-orange-500',
+            provider === 'gemini' && 'bg-blue-500',
+            provider === 'lovable' && 'bg-pink-500',
+          )}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm">{displayName}</div>
+          <div className="text-[11px] text-muted-foreground">Assigned by BidveraAi</div>
+        </div>
+      </div>
     </div>
   );
 }
 
-// Toggle Option Component
 function ToggleOption({
   label,
   description,

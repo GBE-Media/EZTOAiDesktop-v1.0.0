@@ -49,6 +49,8 @@ export interface AISettings {
   showActivityTimeline: boolean;
   showEvidenceCitations: boolean;
   showModelStageChips: boolean;
+  /** Draw OCR/proposal/anchor debug overlay on the PDF canvas. */
+  showPlacementDebug: boolean;
 }
 
 interface AISettingsState extends AISettings {
@@ -73,6 +75,7 @@ interface AISettingsState extends AISettings {
   setShowActivityTimeline: (show: boolean) => void;
   setShowEvidenceCitations: (show: boolean) => void;
   setShowModelStageChips: (show: boolean) => void;
+  setShowPlacementDebug: (show: boolean) => void;
   
   // Initialization
   initialize: () => Promise<void>;
@@ -114,6 +117,7 @@ const DEFAULT_SETTINGS: AISettings = {
   showActivityTimeline: true,
   showEvidenceCitations: true,
   showModelStageChips: true,
+  showPlacementDebug: true,
 };
 
 export const useAISettingsStore = create<AISettingsState>()(
@@ -176,6 +180,7 @@ export const useAISettingsStore = create<AISettingsState>()(
       setShowActivityTimeline: (show) => set({ showActivityTimeline: show }),
       setShowEvidenceCitations: (show) => set({ showEvidenceCitations: show }),
       setShowModelStageChips: (show) => set({ showModelStageChips: show }),
+      setShowPlacementDebug: (show) => set({ showPlacementDebug: show }),
       
       // Initialization - load API keys from Electron secure storage
       initialize: async () => {
@@ -198,11 +203,13 @@ export const useAISettingsStore = create<AISettingsState>()(
             }
           }
           
-          // Apply the persisted (or default) pipeline model selection to the
-          // live AIService singleton, since it otherwise only ever uses its
-          // own hardcoded defaults until a settings change fires.
-          applyPipelineModelsToService(get().pipelineModels);
-          applyAgentModelsToService(get().agentModels);
+          // Models are subscription-managed — always apply product defaults,
+          // ignoring any previously persisted user picks from the old dropdowns.
+          const pipelineModels = { ...DEFAULT_PIPELINE_MODELS };
+          const agentModels = { ...DEFAULT_AGENT_MODELS };
+          set({ pipelineModels, agentModels });
+          applyPipelineModelsToService(pipelineModels);
+          applyAgentModelsToService(agentModels);
 
           set({ isInitialized: true });
         } catch (error) {
@@ -267,8 +274,7 @@ export const useAISettingsStore = create<AISettingsState>()(
       name: 'ai-settings-storage',
       // Don't persist API keys in localStorage - they go to secure storage
       partialize: (state) => ({
-        pipelineModels: state.pipelineModels,
-        agentModels: state.agentModels,
+        // Models are managed by BidveraAi — do not persist user overrides.
         defaultTrade: state.defaultTrade,
         defaultPlacementMode: state.defaultPlacementMode,
         enableSmartSuggestions: state.enableSmartSuggestions,
@@ -278,66 +284,22 @@ export const useAISettingsStore = create<AISettingsState>()(
         showActivityTimeline: state.showActivityTimeline,
         showEvidenceCitations: state.showEvidenceCitations,
         showModelStageChips: state.showModelStageChips,
+        showPlacementDebug: state.showPlacementDebug,
       }),
       // Merge stored state with defaults to handle missing/corrupt data
       merge: (persistedState, currentState) => {
         const persisted = persistedState as Partial<AISettings> | undefined;
-        
-        // Ensure pipelineModels has all required fields
-        const pipelineModels = {
-          vision: persisted?.pipelineModels?.vision || DEFAULT_PIPELINE_MODELS.vision,
-          estimation: persisted?.pipelineModels?.estimation || DEFAULT_PIPELINE_MODELS.estimation,
-          placement: persisted?.pipelineModels?.placement || DEFAULT_PIPELINE_MODELS.placement,
-        };
 
-        const agentModels: AgentModelsConfig = {
-          router: persisted?.agentModels?.router || DEFAULT_AGENT_MODELS.router,
-          primary: persisted?.agentModels?.primary || DEFAULT_AGENT_MODELS.primary,
-          verifier: persisted?.agentModels?.verifier || DEFAULT_AGENT_MODELS.verifier,
-          fallback: persisted?.agentModels?.fallback || DEFAULT_AGENT_MODELS.fallback,
-        };
-        
-        // Remap stale persisted selections onto the models the backend
-        // actually serves. Without this, users who already have settings
-        // saved in localStorage would stay pinned to broken IDs forever,
-        // since persisted values normally take precedence over new defaults.
-        const STALE_OPENAI_TO_LOVABLE = new Set(['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']);
-        const RETIRED_OPENAI_MODELS = new Set(['gpt-4o-mini', 'gpt-4-turbo', 'gpt-4', 'gpt-3.5-turbo']);
-        const STALE_ANTHROPIC_REMAP: Record<string, string> = {
-          'claude-opus-4-8': 'claude-opus-4-5',
-          'claude-sonnet-4-20250514': 'claude-sonnet-4-5',
-          'claude-sonnet-4-5-20250514': 'claude-sonnet-4-5',
-          'claude-3-5-sonnet-20241022': 'claude-sonnet-4-5',
-          'claude-3-opus-20240229': 'claude-opus-4-5',
-          'claude-3-haiku-20240307': 'claude-haiku-4-5',
-        };
-        const remapSelection = (selection: ModelSelection): ModelSelection => {
-          if (selection.provider === 'openai' && STALE_OPENAI_TO_LOVABLE.has(selection.model)) {
-            return { provider: 'lovable', model: `openai/${selection.model}` };
-          }
-          if (selection.provider === 'openai' && RETIRED_OPENAI_MODELS.has(selection.model)) {
-            return { provider: 'openai', model: 'gpt-5' };
-          }
-          if (selection.provider === 'anthropic' && STALE_ANTHROPIC_REMAP[selection.model]) {
-            return { provider: 'anthropic', model: STALE_ANTHROPIC_REMAP[selection.model] };
-          }
-          return selection;
-        };
-        (['vision', 'estimation', 'placement'] as const).forEach((stage) => {
-          pipelineModels[stage] = remapSelection(pipelineModels[stage]);
-        });
-        (['router', 'primary', 'verifier', 'fallback'] as const).forEach((role) => {
-          agentModels[role] = remapSelection(agentModels[role]);
-        });
-        
         return {
           ...currentState,
           ...persisted,
-          pipelineModels,
-          agentModels,
+          // Always use product-managed model defaults (ignore old dropdown picks).
+          pipelineModels: { ...DEFAULT_PIPELINE_MODELS },
+          agentModels: { ...DEFAULT_AGENT_MODELS },
           showActivityTimeline: persisted?.showActivityTimeline ?? currentState.showActivityTimeline,
           showEvidenceCitations: persisted?.showEvidenceCitations ?? currentState.showEvidenceCitations,
           showModelStageChips: persisted?.showModelStageChips ?? currentState.showModelStageChips,
+          showPlacementDebug: persisted?.showPlacementDebug ?? currentState.showPlacementDebug,
         };
       },
     }

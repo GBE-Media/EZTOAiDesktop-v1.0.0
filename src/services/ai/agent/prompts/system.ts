@@ -49,7 +49,8 @@ Runtime constraints:
 - Use at most 3 tool calls per step.
 - Never invent tool results. If a tool returns status "stub", say that capability is not available yet and ask what the user can provide instead.
 - Read tools may auto-run. Write / destructive / external tools require user approval — never claim they succeeded until approved and verified.
-- For location questions ("where is X?"), inspect context / analyze or search, then propose numbered callouts via propose_callouts or place_markups for approval. Mention callouts as [1], [2] in the final message.
+- For location questions ("where is X?", "show me where…", "locate…"): search_document then navigate_page with the match bounds to highlight the region on the canvas (auto, no approval). Briefly tell the user what you highlighted.
+- Use propose_callouts or place_markups only when the user asks to mark, pin, or leave persistent numbered callouts. Mention those as [1], [2] in the final message after approval.
 
 ## Available tools
 ${toolCatalog}`;

@@ -7,6 +7,8 @@ import { suggestLayoutsFromItems } from '../layouts';
 import type { DetectedItem, TradeType } from '../providers/types';
 import type { AssistantToolContext } from '../tools/types';
 import type { CanvasMarkup } from '@/types/markup';
+import { searchTextItemsWithBounds } from './searchTextItems';
+import { BASE_RENDER_SCALE } from '../placement/coords';
 
 export interface CreateAgentToolContextOptions {
   runId: string;
@@ -81,18 +83,26 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
       const { page, docId } = getDocMeta();
       if (!page) return [];
       const textItems = useCanvasStore.getState().getTextContent(page) || [];
-      const lower = query.toLowerCase();
-      const matches = textItems
-        .map(item => item.str)
-        .filter(line => line.toLowerCase().includes(lower))
-        .slice(0, 20);
-      return matches.map((line, index) => ({
-        id: `search_${index}`,
+      // Canvas text cache is typically at BASE_RENDER_SCALE (1.5). AI selection /
+      // navigate_page expect document points (scale 1).
+      const citations = searchTextItemsWithBounds({
+        query,
+        page,
         documentId: docId || undefined,
-        page: page || 1,
-        label: query,
-        snippet: line.slice(0, 200),
-      }));
+        textItems,
+      });
+      return citations.map(citation => {
+        if (!citation.bounds) return citation;
+        return {
+          ...citation,
+          bounds: {
+            x: citation.bounds.x / BASE_RENDER_SCALE,
+            y: citation.bounds.y / BASE_RENDER_SCALE,
+            width: citation.bounds.width / BASE_RENDER_SCALE,
+            height: citation.bounds.height / BASE_RENDER_SCALE,
+          },
+        };
+      });
     }),
 
     inspectCatalog: () => {
@@ -188,7 +198,11 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
         options.navigateToPage(page, bounds);
         return;
       }
-      useCanvasStore.getState().setCurrentPage(page);
+      const canvas = useCanvasStore.getState();
+      canvas.setCurrentPage(page);
+      if (bounds && canvas.activeDocId) {
+        canvas.setAiSelectionRect(canvas.activeDocId, page, bounds);
+      }
     },
 
     activateEditorTool: tool => {
@@ -236,3 +250,5 @@ function markupsToDetectedItems(markups: CanvasMarkup[], trade: TradeType): Dete
       };
     });
 }
+
+export { searchTextItemsWithBounds } from './searchTextItems';

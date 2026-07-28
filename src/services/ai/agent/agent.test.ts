@@ -3,6 +3,9 @@ import { buildAgentContext } from './contextBuilder';
 import { parseAgentDecision } from './decisionParser';
 import { formatToolResultForPrompt, resolveToolSafety, sanitizeToolOutput } from './safety';
 import { registerAllAgentTools, resetAgentToolRegistrationForTests } from './tools/registerAll';
+import { searchTextItemsWithBounds } from './searchTextItems';
+import { isLocateIntent } from './locateIntent';
+import { buildAgentSystemPrompt } from './prompts/system';
 
 describe('agent safety + context + decision parsing', () => {
   it('sanitizes oversized tool output', () => {
@@ -55,5 +58,39 @@ describe('agent safety + context + decision parsing', () => {
       stubReason: 'missing',
       output: { a: 1 },
     })).toContain('"stub"');
+  });
+
+  it('detects locate intents', () => {
+    expect(isLocateIntent('Can you show me where the fixture schedule is?')).toBe(true);
+    expect(isLocateIntent('Where is the panel schedule')).toBe(true);
+    expect(isLocateIntent('Hi there')).toBe(false);
+  });
+
+  it('returns search citations with bounds for canvas focus', () => {
+    const citations = searchTextItemsWithBounds({
+      query: 'fixture schedule',
+      page: 1,
+      documentId: 'doc1',
+      textItems: [
+        { str: 'LIGHTING', x: 100, y: 200, width: 80, height: 12 },
+        { str: 'FIXTURE', x: 185, y: 200, width: 70, height: 12 },
+        { str: 'SCHEDULE', x: 260, y: 200, width: 90, height: 12 },
+        { str: 'Notes', x: 100, y: 400, width: 40, height: 12 },
+      ],
+    });
+    expect(citations.length).toBeGreaterThan(0);
+    expect(citations[0].bounds).toMatchObject({
+      x: expect.any(Number),
+      y: expect.any(Number),
+      width: expect.any(Number),
+      height: expect.any(Number),
+    });
+    expect(citations[0].page).toBe(1);
+  });
+
+  it('prompts locate via navigate_page rather than only callouts', () => {
+    const prompt = buildAgentSystemPrompt({ toolCatalogOverride: '- search_document' });
+    expect(prompt).toContain('navigate_page');
+    expect(prompt).toContain('highlight the region on the canvas');
   });
 });

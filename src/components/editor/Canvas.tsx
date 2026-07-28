@@ -4,8 +4,11 @@ import { useCanvasStore } from '@/store/canvasStore';
 import { useFileOpen } from '@/hooks/useFileOpen';
 import { loadPDF, renderPage } from '@/lib/pdfLoader';
 import { MarkupCanvas } from './MarkupCanvas';
+import { PlacementDebugOverlay } from './PlacementDebugOverlay';
 import { CalibrationDialog } from './CalibrationDialog';
 import { FileText, Upload, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
+import { activatePlacementDebugForPage } from '@/services/ai/placement';
+import { useAISettingsStore } from '@/store/aiSettingsStore';
 
 // Base scale for PDF rendering - this is the scale at which we render the PDF
 // The pdfLoader already handles high-DPI internally, so we use 1.5 for good quality
@@ -120,6 +123,19 @@ export function Canvas() {
         const pageInfo = await renderPage(pdfDocument, currentPage, pdfCanvasRef.current, BASE_RENDER_SCALE);
         setCanvasDimensions({ width: pageInfo.width, height: pageInfo.height });
         setPageDimensions(pageInfo.width, pageInfo.height);
+
+        // Keep placement debug scene in sync with the visible page (overlay is non-interactive).
+        const showDebug = useAISettingsStore.getState().showPlacementDebug;
+        if (showDebug) {
+          const originals = currentDocData;
+          void activatePlacementDebugForPage({
+            pdfDoc: pdfDocument,
+            pageNumber: currentPage,
+            docWidth: originals?.originalPageWidth || pageInfo.originalWidth || pageInfo.width / BASE_RENDER_SCALE,
+            docHeight: originals?.originalPageHeight || pageInfo.originalHeight || pageInfo.height / BASE_RENDER_SCALE,
+            forceEnable: false,
+          });
+        }
       } catch (err) {
         console.error('Page render error:', err);
       } finally {
@@ -128,7 +144,7 @@ export function Canvas() {
     };
     
     render();
-  }, [pdfDocument, currentPage, setPageDimensions]); // Note: zoom removed - uses CSS transform
+  }, [pdfDocument, currentPage, setPageDimensions, currentDocData]); // Note: zoom removed - uses CSS transform
 
   // Handle file drop - accept both PDFs and .bidveraai files
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -712,6 +728,11 @@ export function Canvas() {
                 <MarkupCanvas 
                   width={canvasDimensions.width} 
                   height={canvasDimensions.height} 
+                />
+                <PlacementDebugOverlay
+                  width={canvasDimensions.width}
+                  height={canvasDimensions.height}
+                  pageNumber={currentPage || 1}
                 />
                 {Object.entries(displaySymbolMap).map(([type, points]) => (
                   <div key={`symbol-${type}`}>

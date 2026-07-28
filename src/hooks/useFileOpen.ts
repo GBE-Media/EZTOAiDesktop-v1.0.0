@@ -4,6 +4,7 @@ import { useCanvasStore } from '@/store/canvasStore';
 import { useProductStore } from '@/store/productStore';
 import { loadPDF, getPageDimensions } from '@/lib/pdfLoader';
 import { useProjectOpen } from '@/hooks/useProjectOpen';
+import { activatePlacementDebugForPage } from '@/services/ai/placement';
 import { toast } from 'sonner';
 import '@/types/electron.d.ts';
 
@@ -49,6 +50,15 @@ export function useFileOpen() {
       
       // Also set active doc ID in canvas store to sync both stores
       useCanvasStore.getState().setActiveDocId(docId);
+
+      // Auto-run placement debug overlay on import (non-interactive; markups stay editable).
+      void activatePlacementDebugForPage({
+        pdfDoc,
+        pageNumber: 1,
+        docWidth: pageDimensions.width,
+        docHeight: pageDimensions.height,
+        forceEnable: true,
+      });
     } catch (error) {
       console.error('Failed to load PDF:', error);
     }

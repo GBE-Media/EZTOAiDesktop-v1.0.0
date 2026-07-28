@@ -1,5 +1,6 @@
 import type { IntakeResult } from '../phases/intake';
 import type { RoutingDecision, RoutingPath, RiskLevel, TaskType } from '../types';
+import { isLocateIntent } from '../locateIntent';
 
 /**
  * Deterministic routing policy (always runs).
@@ -18,6 +19,21 @@ export function decideRoutingPolicy(intake: IntakeResult): RoutingDecision & { n
       requireVerifier: false,
       reason: 'Empty user message',
       clarificationQuestion: 'What would you like help with on this estimate or takeoff?',
+      needsLlmRouter: false,
+    });
+  }
+
+  // Locate / show-me must use tools to focus the canvas — never answer_directly.
+  if (isLocateIntent(normalizedMessage)) {
+    return base({
+      path: 'invoke_primary',
+      taskType: taskType === 'simple_qa' ? 'read_context' : taskType,
+      complexity: 'medium',
+      risk: 'low',
+      preferTools: true,
+      requireVerifier: false,
+      reason: 'Location request needs search + canvas focus',
+      suggestedTools: ['search_document', 'navigate_page', 'analyze_page'],
       needsLlmRouter: false,
     });
   }

@@ -18,6 +18,7 @@ import {
 import type { AssistantConversation } from '@/types/assistant';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 import { useAIChatStore } from '@/store/aiChatStore';
+import { usePlacementDebugStore } from '@/services/ai/placement';
 import { cn } from '@/lib/utils';
 import type { PipelineStage } from '@/services/ai/providers/types';
 
@@ -50,9 +51,12 @@ export function AssistantHeader(props: {
   const showModelStageChips = useAISettingsStore(state => state.showModelStageChips);
   const showActivityTimeline = useAISettingsStore(state => state.showActivityTimeline);
   const showEvidenceCitations = useAISettingsStore(state => state.showEvidenceCitations);
+  const showPlacementDebug = useAISettingsStore(state => state.showPlacementDebug);
   const setShowModelStageChips = useAISettingsStore(state => state.setShowModelStageChips);
   const setShowActivityTimeline = useAISettingsStore(state => state.setShowActivityTimeline);
   const setShowEvidenceCitations = useAISettingsStore(state => state.setShowEvidenceCitations);
+  const setShowPlacementDebug = useAISettingsStore(state => state.setShowPlacementDebug);
+  const setPlacementDebugEnabled = usePlacementDebugStore(state => state.setEnabled);
   const pipelineStatus = useAIChatStore(state => state.pipelineStatus);
   const activeStage =
     pipelineStatus.isRunning && pipelineStatus.currentStage &&
@@ -102,6 +106,16 @@ export function AssistantHeader(props: {
                 onCheckedChange={(checked) => setShowModelStageChips(checked === true)}
               >
                 Model stage chips
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={showPlacementDebug}
+                onCheckedChange={(checked) => {
+                  const enabled = checked === true;
+                  setShowPlacementDebug(enabled);
+                  setPlacementDebugEnabled(enabled);
+                }}
+              >
+                Placement debug overlay
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>

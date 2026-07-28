@@ -28,6 +28,14 @@ import { useAIChatStore } from '@/store/aiChatStore';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useProductStore } from '@/store/productStore';
+import {
+  BASE_RENDER_SCALE,
+  createPageGeometry,
+  proposalsFromChatPointers,
+  proposalsFromPlacementMarkups,
+  usePlacementDebugStore,
+  verifyMarkupProposal,
+} from '@/services/ai/placement';
 import { useEditorStore } from '@/store/editorStore';
 import { useProductSync } from '@/hooks/useProductSync';
 import { ChatMessage } from './ChatMessage';
@@ -442,12 +450,34 @@ export function AgentAssistantDrawer() {
           pipelineResult.evidence
         );
         if (pipelineResult.placements?.markups.length) {
+          const pageGeom = createPageGeometry({
+            pageNumber: currentPage || 1,
+            docWidth: docData?.originalPageWidth || pageWidth,
+            docHeight: docData?.originalPageHeight || pageHeight,
+          });
+          const proposals = proposalsFromPlacementMarkups({
+            markups: pipelineResult.placements.markups,
+            page: pageGeom,
+          });
+          const verified = proposals.map(proposal => verifyMarkupProposal(proposal, {
+            page: pageGeom,
+            enableSnap: false,
+          }));
+          usePlacementDebugStore.getState().setDebugScene({
+            page: pageGeom,
+            proposals: verified.map(item => item.proposal),
+          });
           const proposedMarkups = convertPlacementsToMarkups(
             pipelineResult.placements,
             defaultStyle,
             `takeoff_${assistantMsgId}`,
-            1,
-            1
+            BASE_RENDER_SCALE,
+            BASE_RENDER_SCALE,
+            verified.map(item => ({
+              id: item.proposal.id,
+              pending: item.requiresConfirmation,
+              confidence: item.proposal.confidence,
+            })),
           );
           queueMarkupApproval({
             assistantMsgId,
@@ -542,6 +572,13 @@ export function AgentAssistantDrawer() {
         signal: runSignal,
         trade: selectedTrade,
         placeMarkups: applyApprovedMarkups,
+        navigateToPage: (page, bounds) => {
+          const canvas = useCanvasStore.getState();
+          canvas.setCurrentPage(page);
+          if (bounds && canvas.activeDocId) {
+            canvas.setAiSelectionRect(canvas.activeDocId, page, bounds);
+          }
+        },
       });
 
       const agentResult = await runAgentTurn({
@@ -1823,11 +1860,15 @@ function convertPlacementsToMarkups(
   placements: CanvasPlacement,
   defaultStyle: MarkupStyle,
   groupId: string,
-  scaleX: number,
-  scaleY: number
+  scaleX: number = BASE_RENDER_SCALE,
+  scaleY: number = BASE_RENDER_SCALE,
+  verificationById?: Array<{ id: string; pending: boolean; confidence: number }>,
 ): Array<{ page: number; markup: CanvasMarkup }> {
   const now = new Date().toISOString();
   const markups: Array<{ page: number; markup: CanvasMarkup }> = [];
+  const verificationMap = new Map(
+    (verificationById || []).map(item => [item.id, item]),
+  );
   
   const buildStyle = (placementStyle?: PlacementMarkup['style']): MarkupStyle => ({
     strokeColor: placementStyle?.strokeColor || defaultStyle.strokeColor,
@@ -1840,6 +1881,11 @@ function convertPlacementsToMarkups(
   
   placements.markups.forEach((placement, index) => {
     const style = buildStyle(placement.style);
+    const verification = verificationMap.get(placement.id || '')
+      || verificationMap.get(`proposal_pl_${index}`)
+      || verificationMap.get(`proposal_ptr_${placement.calloutRef || index + 1}`);
+    const pending = verification?.pending ?? placement.pending;
+    const confidence = verification?.confidence ?? placement.confidence;
     const base = {
       id: placement.id || `ai_${Date.now()}_${index}`,
       type: placement.type,
@@ -1850,9 +1896,9 @@ function convertPlacementsToMarkups(
       createdAt: now,
       label: placement.label,
       aiGenerated: true,
-      aiPending: placement.pending,
+      aiPending: pending,
       aiNote: placement.aiNote,
-      aiConfidence: placement.confidence,
+      aiConfidence: confidence,
       aiLinkedItemId: placement.linkedItemId,
       calloutRef: placement.calloutRef,
     } as const;
@@ -2042,9 +2088,44 @@ function normalizeAgentMarkupPayload(options: {
     idPrefix: options.idPrefix,
   });
 
-  return convertPlacementsToMarkups(placements, options.defaultStyle, options.idPrefix, 1, 1)
-    .map(({ page, markup }) => ({
-      page,
-      markup: { ...markup, messageId: options.messageId } as CanvasMarkup,
-    }));
+  // pageWidth/Height here are document points (originalPage*). Proposals stay in doc space;
+  // convertPlacementsToMarkups applies BASE_RENDER_SCALE at the canvas boundary.
+  const pageGeom = createPageGeometry({
+    pageNumber: options.page,
+    docWidth: options.pageWidth,
+    docHeight: options.pageHeight,
+  });
+  const proposals = proposalsFromChatPointers({ pointers, page: pageGeom });
+  const verified = proposals.map(proposal => verifyMarkupProposal(proposal, {
+    page: pageGeom,
+    enableSnap: false,
+  }));
+  usePlacementDebugStore.getState().setDebugScene({
+    page: pageGeom,
+    proposals: verified.map(item => item.proposal),
+    ocrRects: (useCanvasStore.getState().getTextContent(options.page) || [])
+      .slice(0, 80)
+      .map(item => ({
+        x: item.x / BASE_RENDER_SCALE,
+        y: item.y / BASE_RENDER_SCALE,
+        width: item.width / BASE_RENDER_SCALE,
+        height: item.height / BASE_RENDER_SCALE,
+      })),
+  });
+
+  return convertPlacementsToMarkups(
+    placements,
+    options.defaultStyle,
+    options.idPrefix,
+    BASE_RENDER_SCALE,
+    BASE_RENDER_SCALE,
+    verified.map(item => ({
+      id: item.proposal.id,
+      pending: item.requiresConfirmation,
+      confidence: item.proposal.confidence,
+    })),
+  ).map(({ page, markup }) => ({
+    page,
+    markup: { ...markup, messageId: options.messageId } as CanvasMarkup,
+  }));
 }

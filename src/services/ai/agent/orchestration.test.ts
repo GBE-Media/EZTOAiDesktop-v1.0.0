@@ -41,6 +41,21 @@ describe('multi-model phases', () => {
     expect(decision.path).toBe('answer_directly');
   });
 
+  it('routes locate / show-me questions into the tool loop', () => {
+    const intake = runIntake({
+      userMessage: 'Can you show me where the fixture schedule is?',
+      userIntent: 'Can you show me where the fixture schedule is?',
+      trade: 'electrical',
+    });
+    expect(intake.preliminaryTaskType).toBe('read_context');
+    const decision = decideRoutingPolicy(intake);
+    expect(decision.path).toBe('invoke_primary');
+    expect(decision.preferTools).toBe(true);
+    expect(decision.suggestedTools).toEqual(
+      expect.arrayContaining(['search_document', 'navigate_page']),
+    );
+  });
+
   it('Phase 2 merges router model overrides', () => {
     const base = decideRoutingPolicy(runIntake({
       userMessage: 'help',

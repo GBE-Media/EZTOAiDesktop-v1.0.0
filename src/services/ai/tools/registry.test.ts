@@ -53,6 +53,14 @@ describe('assistant tool registry', () => {
     expect(context.addApproval).toHaveBeenCalledOnce();
   });
 
+  it('forwards navigate_page bounds to the canvas adapter', async () => {
+    const context = makeContext();
+    const bounds = { x: 10, y: 20, width: 100, height: 40 };
+    const result = await executeAssistantTool('navigate_page', { page: 2, bounds }, context);
+    expect(result.status).toBe('completed');
+    expect(context.navigateToPage).toHaveBeenCalledWith(2, bounds);
+  });
+
   it('executes only an explicitly approved action', async () => {
     const context = makeContext();
     const result = await executeAssistantTool('place_markups', {
