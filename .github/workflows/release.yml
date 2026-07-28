@@ -108,10 +108,17 @@ jobs:
           iconutil -c icns build/icon.iconset -o build/icon.icns
           cp build/icon.icns public/favicon.icns
 
+      # Use bash on all runners so a failed `npm run build` stops the job.
+      # Windows PowerShell continues after non-zero exits by default, which previously
+      # let electron-builder publish an installer with no Vite `dist/` (blank app).
       - name: Build application
+        shell: bash
         run: |
+          set -euo pipefail
           npm run build
           npm run electron:build
+          test -f dist/index.html
+          test -f dist-electron/main.js
 
       - name: Check if release exists
         id: check_release
@@ -130,8 +137,12 @@ jobs:
 
       - name: Publish to GitHub Release
         if: steps.check_release.outputs.should_publish == 'true'
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_HTTP_TIMEOUT: 600000
           ELECTRON_BUILDER_HTTP_MAX_RETRY: 5
-        run: npx electron-builder --publish always
+        run: |
+          set -euo pipefail
+          test -f dist/index.html
+          npx electron-builder --publish always

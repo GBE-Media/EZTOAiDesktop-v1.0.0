@@ -2,7 +2,7 @@ import { BASE_RENDER_SCALE } from '@/lib/coordinateUtils';
 import type { DocPoint, DocRect, PageGeometry, PageRotationDeg } from './types';
 import { DEFAULT_RENDER_SCALE } from './types';
 
-export { BASE_RENDER_SCALE };
+export { BASE_RENDER_SCALE, DEFAULT_RENDER_SCALE };
 
 export function createPageGeometry(options: {
   pageNumber: number;

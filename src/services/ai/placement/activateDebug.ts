@@ -1,9 +1,10 @@
 import { getTextContentWithBounds } from '@/lib/pdfLoader';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import { anchorsFromLayout } from './anchors';
-import { createPageGeometry, DEFAULT_RENDER_SCALE } from './coords';
+import { createPageGeometry } from './coords';
 import { usePlacementDebugStore } from './debugStore';
 import { buildPageLayoutModel } from './pageModel';
+import { DEFAULT_RENDER_SCALE } from './types';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 
 /**
