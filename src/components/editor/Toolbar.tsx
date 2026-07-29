@@ -27,17 +27,29 @@ import {
   SaveAll,
   Printer,
   Hash,
-  Bot
+  Bot,
+  Layers,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useHistoryStore } from '@/store/historyStore';
 import { useAIChatStore } from '@/store/aiChatStore';
+import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { useSave } from '@/hooks/useSave';
 import { printDocument } from '@/lib/pdfPrint';
 import type { ToolType } from '@/types/editor';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { toast } from 'sonner';
+import { activatePlacementDebugForPage } from '@/services/ai/placement';
 
 interface ToolButtonProps {
   tool?: ToolType;
@@ -87,11 +99,40 @@ function ToolbarDivider() {
 
 export function Toolbar() {
   const { snapEnabled, gridEnabled, toggleSnap, toggleGrid, documents, activeDocument, rotation, setRotation } = useEditorStore();
-  const { zoom, setZoom, startCalibration, undo, redo, getPdfDocument, getMarkupsByPage } = useCanvasStore();
+  const {
+    zoom,
+    setZoom,
+    fitToCanvas,
+    fitToWidth,
+    containerWidth,
+    containerHeight,
+    startCalibration,
+    undo,
+    redo,
+    getPdfDocument,
+    getMarkupsByPage,
+    activeDocId,
+    pdfDocuments,
+  } = useCanvasStore();
   const { past, future } = useHistoryStore();
   const { save, saveAs } = useSave();
+  const reviewAnalysisMode = useCanvasLayersStore(state => state.reviewAnalysisMode);
+  const layers = useCanvasLayersStore(state => state.layers);
+  const setLayer = useCanvasLayersStore(state => state.setLayer);
+  const setReviewAnalysisMode = useCanvasLayersStore(state => state.setReviewAnalysisMode);
 
   const currentDoc = documents.find(d => d.id === activeDocument);
+
+  const ensureAnalysisScene = () => {
+    const docData = activeDocId ? pdfDocuments[activeDocId] : null;
+    if (!docData?.pdfDocument) return;
+    void activatePlacementDebugForPage({
+      pdfDoc: docData.pdfDocument,
+      pageNumber: docData.currentPage || 1,
+      docWidth: docData.originalPageWidth,
+      docHeight: docData.originalPageHeight,
+    });
+  };
 
   const handleSave = async () => {
     await save();
@@ -143,7 +184,15 @@ export function Toolbar() {
   };
 
   const handleFitPage = () => {
-    setZoom(100);
+    if (containerWidth > 0 && containerHeight > 0) {
+      fitToCanvas(containerWidth, containerHeight);
+    }
+  };
+
+  const handleFitWidth = () => {
+    if (containerWidth > 0) {
+      fitToWidth(containerWidth);
+    }
   };
 
   const handleRotate = () => {
@@ -251,11 +300,72 @@ export function Toolbar() {
       {/* Zoom controls */}
       <ToolButton icon={<ZoomOut className="w-4 h-4" />} label="Zoom Out" shortcut="Ctrl+-" onClick={handleZoomOut} />
       <div className="px-2 text-xs text-muted-foreground font-mono min-w-[50px] text-center">
-        {zoom}%
+        {Math.round(zoom)}%
       </div>
       <ToolButton icon={<ZoomIn className="w-4 h-4" />} label="Zoom In" shortcut="Ctrl++" onClick={handleZoomIn} />
       <ToolButton icon={<Maximize className="w-4 h-4" />} label="Fit Page" shortcut="Ctrl+0" onClick={handleFitPage} />
+      <ToolButton icon={<ArrowLeftRight className="w-4 h-4" />} label="Fit Width" onClick={handleFitWidth} />
       <ToolButton icon={<RotateCw className="w-4 h-4" />} label="Rotate View" shortcut="Ctrl+Shift+R" onClick={handleRotate} />
+
+      <ToolbarDivider />
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            className={`toolbar-button ${reviewAnalysisMode || layers.ocr || layers.anchors || layers.proposals || layers.symbols ? 'active' : ''}`}
+            title="Canvas layers"
+          >
+            <Layers className="w-4 h-4" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-56">
+          <DropdownMenuLabel>Canvas layers</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuCheckboxItem
+            checked={reviewAnalysisMode}
+            onCheckedChange={(checked) => {
+              setReviewAnalysisMode(checked === true);
+              if (checked) ensureAnalysisScene();
+            }}
+          >
+            Review AI analysis
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuCheckboxItem
+            checked={layers.ocr}
+            onCheckedChange={(checked) => {
+              setLayer('ocr', checked === true);
+              if (checked) ensureAnalysisScene();
+            }}
+          >
+            OCR / text boxes
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuCheckboxItem
+            checked={layers.anchors}
+            onCheckedChange={(checked) => {
+              setLayer('anchors', checked === true);
+              if (checked) ensureAnalysisScene();
+            }}
+          >
+            Placement anchors
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuCheckboxItem
+            checked={layers.proposals}
+            onCheckedChange={(checked) => {
+              setLayer('proposals', checked === true);
+              if (checked) ensureAnalysisScene();
+            }}
+          >
+            AI proposal boxes
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuCheckboxItem
+            checked={layers.symbols}
+            onCheckedChange={(checked) => setLayer('symbols', checked === true)}
+          >
+            Symbol markers
+          </DropdownMenuCheckboxItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }

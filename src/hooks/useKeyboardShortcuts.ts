@@ -37,7 +37,10 @@ export function useKeyboardShortcuts() {
     pdfDocuments,
     activeDocId,
     setZoom, 
-    zoom, 
+    zoom,
+    fitToCanvas,
+    containerWidth,
+    containerHeight,
     startCalibration,
     setCurrentPage,
     clearSelection,
@@ -128,7 +131,9 @@ export function useKeyboardShortcuts() {
           break;
         case '0':
           e.preventDefault();
-          setZoom(100);
+          if (containerWidth > 0 && containerHeight > 0) {
+            fitToCanvas(containerWidth, containerHeight);
+          }
           break;
         case 'g':
           e.preventDefault();
@@ -231,6 +236,9 @@ export function useKeyboardShortcuts() {
     openProjectFile,
     drawing,
     cancelDrawing,
+    fitToCanvas,
+    containerWidth,
+    containerHeight,
   ]);
 
   useEffect(() => {

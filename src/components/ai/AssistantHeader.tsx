@@ -18,7 +18,7 @@ import {
 import type { AssistantConversation } from '@/types/assistant';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 import { useAIChatStore } from '@/store/aiChatStore';
-import { usePlacementDebugStore } from '@/services/ai/placement';
+import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { cn } from '@/lib/utils';
 import type { PipelineStage } from '@/services/ai/providers/types';
 
@@ -51,12 +51,11 @@ export function AssistantHeader(props: {
   const showModelStageChips = useAISettingsStore(state => state.showModelStageChips);
   const showActivityTimeline = useAISettingsStore(state => state.showActivityTimeline);
   const showEvidenceCitations = useAISettingsStore(state => state.showEvidenceCitations);
-  const showPlacementDebug = useAISettingsStore(state => state.showPlacementDebug);
   const setShowModelStageChips = useAISettingsStore(state => state.setShowModelStageChips);
   const setShowActivityTimeline = useAISettingsStore(state => state.setShowActivityTimeline);
   const setShowEvidenceCitations = useAISettingsStore(state => state.setShowEvidenceCitations);
-  const setShowPlacementDebug = useAISettingsStore(state => state.setShowPlacementDebug);
-  const setPlacementDebugEnabled = usePlacementDebugStore(state => state.setEnabled);
+  const reviewAnalysisMode = useCanvasLayersStore(state => state.reviewAnalysisMode);
+  const setReviewAnalysisMode = useCanvasLayersStore(state => state.setReviewAnalysisMode);
   const pipelineStatus = useAIChatStore(state => state.pipelineStatus);
   const activeStage =
     pipelineStatus.isRunning && pipelineStatus.currentStage &&
@@ -108,14 +107,10 @@ export function AssistantHeader(props: {
                 Model stage chips
               </DropdownMenuCheckboxItem>
               <DropdownMenuCheckboxItem
-                checked={showPlacementDebug}
-                onCheckedChange={(checked) => {
-                  const enabled = checked === true;
-                  setShowPlacementDebug(enabled);
-                  setPlacementDebugEnabled(enabled);
-                }}
+                checked={reviewAnalysisMode}
+                onCheckedChange={(checked) => setReviewAnalysisMode(checked === true)}
               >
-                Placement debug overlay
+                Review AI analysis
               </DropdownMenuCheckboxItem>
             </DropdownMenuContent>
           </DropdownMenu>

@@ -3,7 +3,6 @@ import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useProductStore } from '@/store/productStore';
 import { loadPDF, getPageDimensions } from '@/lib/pdfLoader';
-import { activatePlacementDebugForPage } from '@/services/ai/placement';
 import { toast } from 'sonner';
 import type { ProjectFile } from '@/types/project';
 import type { LinkedMeasurement, ProductNode } from '@/types/product';
@@ -167,14 +166,7 @@ export function useProjectOpen() {
             
             // Small delay to ensure state is updated
             await new Promise(resolve => setTimeout(resolve, 100));
-
-            void activatePlacementDebugForPage({
-              pdfDoc,
-              pageNumber: projDoc.currentPage || 1,
-              docWidth: pageDimensions.width,
-              docHeight: pageDimensions.height,
-              forceEnable: true,
-            });
+            // Analysis overlays stay hidden by default; Review mode populates on demand.
           }
 
           // Restore markups to canvas store (make them editable again)

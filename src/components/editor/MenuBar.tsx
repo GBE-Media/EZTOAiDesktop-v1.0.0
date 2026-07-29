@@ -52,6 +52,10 @@ export function MenuBar() {
     activeDocId,
     zoom, 
     setZoom,
+    fitToCanvas,
+    fitToWidth,
+    containerWidth,
+    containerHeight,
     startCalibration,
     getOriginalPdfBytes,
     getMarkupsByPage,
@@ -209,12 +213,16 @@ export function MenuBar() {
   }, [zoom, setZoom]);
 
   const handleFitPage = useCallback(() => {
-    setZoom(100);
-  }, [setZoom]);
+    if (containerWidth > 0 && containerHeight > 0) {
+      fitToCanvas(containerWidth, containerHeight);
+    }
+  }, [containerWidth, containerHeight, fitToCanvas]);
 
   const handleFitWidth = useCallback(() => {
-    setZoom(125);
-  }, [setZoom]);
+    if (containerWidth > 0) {
+      fitToWidth(containerWidth);
+    }
+  }, [containerWidth, fitToWidth]);
 
   const handleRotateCW = useCallback(() => {
     toast.info('Rotate Clockwise');

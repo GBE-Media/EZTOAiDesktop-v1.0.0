@@ -49,7 +49,10 @@ export interface AISettings {
   showActivityTimeline: boolean;
   showEvidenceCitations: boolean;
   showModelStageChips: boolean;
-  /** Draw OCR/proposal/anchor debug overlay on the PDF canvas. */
+  /**
+   * @deprecated Use canvasLayersStore.reviewAnalysisMode.
+   * Kept for persistence migration / AssistantHeader compat; mirrored by setShowPlacementDebug.
+   */
   showPlacementDebug: boolean;
 }
 
@@ -117,7 +120,7 @@ const DEFAULT_SETTINGS: AISettings = {
   showActivityTimeline: true,
   showEvidenceCitations: true,
   showModelStageChips: true,
-  showPlacementDebug: true,
+  showPlacementDebug: false,
 };
 
 export const useAISettingsStore = create<AISettingsState>()(
@@ -180,7 +183,16 @@ export const useAISettingsStore = create<AISettingsState>()(
       setShowActivityTimeline: (show) => set({ showActivityTimeline: show }),
       setShowEvidenceCitations: (show) => set({ showEvidenceCitations: show }),
       setShowModelStageChips: (show) => set({ showModelStageChips: show }),
-      setShowPlacementDebug: (show) => set({ showPlacementDebug: show }),
+      setShowPlacementDebug: (show) => {
+        set({ showPlacementDebug: show });
+        // Lazily sync Review AI analysis mode without a hard import cycle at module top.
+        void import('@/store/canvasLayersStore').then(({ useCanvasLayersStore }) => {
+          const layers = useCanvasLayersStore.getState();
+          if (layers.reviewAnalysisMode !== show) {
+            layers.setReviewAnalysisMode(show);
+          }
+        });
+      },
       
       // Initialization - load API keys from Electron secure storage
       initialize: async () => {
@@ -299,7 +311,8 @@ export const useAISettingsStore = create<AISettingsState>()(
           showActivityTimeline: persisted?.showActivityTimeline ?? currentState.showActivityTimeline,
           showEvidenceCitations: persisted?.showEvidenceCitations ?? currentState.showEvidenceCitations,
           showModelStageChips: persisted?.showModelStageChips ?? currentState.showModelStageChips,
-          showPlacementDebug: persisted?.showPlacementDebug ?? currentState.showPlacementDebug,
+          // Calm default: do not restore older "debug overlay on" prefs.
+          showPlacementDebug: false,
         };
       },
     }

@@ -5,31 +5,38 @@ import { createPageGeometry } from './coords';
 import { usePlacementDebugStore } from './debugStore';
 import { buildPageLayoutModel } from './pageModel';
 import { DEFAULT_RENDER_SCALE } from './types';
-import { useAISettingsStore } from '@/store/aiSettingsStore';
+import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 
 /**
- * Enable placement debug overlay and populate OCR/layout anchors for a page.
- * Overlay remains pointer-events: none so users can still edit markups.
+ * Populate OCR/layout/anchor scene data for a page.
+ * Does not force overlay visibility — layers/review mode control painting.
  */
 export async function activatePlacementDebugForPage(options: {
   pdfDoc: PDFDocumentProxy;
   pageNumber: number;
   docWidth: number;
   docHeight: number;
-  /** When true, force-enable overlay (e.g. on import). */
+  /**
+   * When true, populate scene data even if analysis layers are hidden
+   * (e.g. for future background prep). Never turns overlays on.
+   */
+  populateEvenIfHidden?: boolean;
+  /** @deprecated No longer forces visibility; treated as populateEvenIfHidden. */
   forceEnable?: boolean;
 }): Promise<void> {
-  const debug = usePlacementDebugStore.getState();
-  const settings = useAISettingsStore.getState();
+  const layers = useCanvasLayersStore.getState();
+  const shouldPopulate =
+    options.populateEvenIfHidden ||
+    options.forceEnable ||
+    layers.shouldPopulateAnalysisScene();
 
-  if (options.forceEnable) {
-    settings.setShowPlacementDebug(true);
-    debug.setEnabled(true);
-  } else if (!settings.showPlacementDebug && !debug.enabled) {
+  if (!shouldPopulate) {
     return;
-  } else {
-    debug.setEnabled(true);
   }
+
+  const debug = usePlacementDebugStore.getState();
+  // Keep runtime enabled flag aligned with whether any layer may paint.
+  debug.setEnabled(layers.anyAnalysisLayerVisible());
 
   const page = createPageGeometry({
     pageNumber: options.pageNumber,

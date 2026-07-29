@@ -1,19 +1,22 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
+import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { useFileOpen } from '@/hooks/useFileOpen';
-import { loadPDF, renderPage } from '@/lib/pdfLoader';
+import { renderPage } from '@/lib/pdfLoader';
 import { MarkupCanvas } from './MarkupCanvas';
 import { PlacementDebugOverlay } from './PlacementDebugOverlay';
+import { CanvasStatusChip } from './CanvasStatusChip';
 import { CalibrationDialog } from './CalibrationDialog';
 import { FileText, Upload, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { activatePlacementDebugForPage } from '@/services/ai/placement';
-import { useAISettingsStore } from '@/store/aiSettingsStore';
 
 // Base scale for PDF rendering - this is the scale at which we render the PDF
 // The pdfLoader already handles high-DPI internally, so we use 1.5 for good quality
 // Zoom is applied via CSS transform on top of this
 const BASE_RENDER_SCALE = 1.5;
+const NAV_SETTLE_MS = 120;
+const ZOOM_MULTIPLIER = 1.1;
 
 export function Canvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -30,6 +33,17 @@ export function Canvas() {
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const [panOffsetStart, setPanOffsetStart] = useState({ x: 0, y: 0 });
+  const [spacePanHeld, setSpacePanHeld] = useState(false);
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [liveView, setLiveView] = useState<{ zoom: number; pan: { x: number; y: number } } | null>(null);
+  const navigatingRef = useRef(false);
+  const liveViewRef = useRef<{ zoom: number; pan: { x: number; y: number } } | null>(null);
+  const settleTimerRef = useRef<number | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const pinchRef = useRef<{
+    pointers: Map<number, { x: number; y: number }>;
+    lastDistance: number;
+  }>({ pointers: new Map(), lastDistance: 0 });
   
   const { documents, activeDocument, gridEnabled, activeTool, rotation } = useEditorStore();
   const { 
@@ -45,7 +59,6 @@ export function Canvas() {
     containerWidth,
     containerHeight,
     fitToCanvas,
-    setPanOffset,
     aiSelectionActive,
     aiSelectionRect: storedAiSelectionRect,
     setAiSelectionActive,
@@ -72,6 +85,59 @@ export function Canvas() {
   const currentPage = currentDocData?.currentPage || 1;
   const totalPages = currentDocData?.totalPages || 0;
   const panOffset = currentDocData?.panOffset || { x: 0, y: 0 };
+  const hasViewState = currentDocData?.hasViewState ?? false;
+  const originalPageWidth = currentDocData?.originalPageWidth || 0;
+  const originalPageHeight = currentDocData?.originalPageHeight || 0;
+  const showSymbolsLayer = useCanvasLayersStore(state => state.layers.symbols);
+  const reviewAnalysisMode = useCanvasLayersStore(state => state.reviewAnalysisMode);
+  const layerOcr = useCanvasLayersStore(state => state.layers.ocr);
+  const layerAnchors = useCanvasLayersStore(state => state.layers.anchors);
+  const layerProposals = useCanvasLayersStore(state => state.layers.proposals);
+
+  const displayZoom = liveView?.zoom ?? zoom;
+  const displayPan = liveView?.pan ?? panOffset;
+
+  const beginNavigating = useCallback(() => {
+    if (!navigatingRef.current) {
+      navigatingRef.current = true;
+      setIsNavigating(true);
+      const current = liveViewRef.current ?? { zoom, pan: { ...panOffset } };
+      liveViewRef.current = current;
+    }
+    if (settleTimerRef.current != null) {
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = null;
+    }
+  }, [zoom, panOffset]);
+
+  const pushLiveView = useCallback((next: { zoom: number; pan: { x: number; y: number } }) => {
+    liveViewRef.current = next;
+    if (rafRef.current != null) return;
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null;
+      if (liveViewRef.current) {
+        setLiveView({ zoom: liveViewRef.current.zoom, pan: { ...liveViewRef.current.pan } });
+      }
+    });
+  }, []);
+
+  const scheduleViewCommit = useCallback(() => {
+    if (settleTimerRef.current != null) {
+      window.clearTimeout(settleTimerRef.current);
+    }
+    settleTimerRef.current = window.setTimeout(() => {
+      const pending = liveViewRef.current;
+      navigatingRef.current = false;
+      setIsNavigating(false);
+      if (pending) {
+        useCanvasStore.getState().setZoom(pending.zoom);
+        useCanvasStore.getState().setPanOffset(pending.pan.x, pending.pan.y);
+      }
+      setLiveView(null);
+      liveViewRef.current = null;
+      settleTimerRef.current = null;
+    }, NAV_SETTLE_MS);
+  }, []);
 
   // Track container dimensions for fit-to-canvas
   useEffect(() => {
@@ -102,18 +168,19 @@ export function Canvas() {
     }
   }, [activeDocument, activeDocId, pdfDocuments, setActiveDocId]);
 
-  // Auto-fit when PDF first loads
+  // Auto-fit when PDF first loads (do not depend on whole currentDocData object)
   useEffect(() => {
-    if (pdfDocument && containerRef.current && currentDocData && !currentDocData.hasViewState) {
+    if (pdfDocument && containerRef.current && !hasViewState) {
       if (containerWidth > 0 && containerHeight > 0) {
         containerRef.current.scrollTo({ left: 0, top: 0 });
         fitToCanvas(containerWidth, containerHeight);
       }
     }
-  }, [pdfDocument, currentDocData, fitToCanvas, containerWidth, containerHeight]);
+  }, [pdfDocument, activeDocId, hasViewState, fitToCanvas, containerWidth, containerHeight]);
 
-  // Render PDF page when document or page changes (NOT on zoom - zoom uses CSS transform)
+  // Render PDF page when document or page changes (NOT on zoom/pan/markup updates)
   useEffect(() => {
+    let cancelled = false;
     const render = async () => {
       if (!pdfDocument || !pdfCanvasRef.current) return;
       
@@ -121,30 +188,87 @@ export function Canvas() {
       try {
         // Render at fixed base scale - zoom is handled via CSS transform
         const pageInfo = await renderPage(pdfDocument, currentPage, pdfCanvasRef.current, BASE_RENDER_SCALE);
+        if (cancelled) return;
         setCanvasDimensions({ width: pageInfo.width, height: pageInfo.height });
         setPageDimensions(pageInfo.width, pageInfo.height);
 
-        // Keep placement debug scene in sync with the visible page (overlay is non-interactive).
-        const showDebug = useAISettingsStore.getState().showPlacementDebug;
-        if (showDebug) {
-          const originals = currentDocData;
+        // Populate analysis scene only when review/layers request it (never force-show).
+        if (useCanvasLayersStore.getState().shouldPopulateAnalysisScene()) {
           void activatePlacementDebugForPage({
             pdfDoc: pdfDocument,
             pageNumber: currentPage,
-            docWidth: originals?.originalPageWidth || pageInfo.originalWidth || pageInfo.width / BASE_RENDER_SCALE,
-            docHeight: originals?.originalPageHeight || pageInfo.originalHeight || pageInfo.height / BASE_RENDER_SCALE,
-            forceEnable: false,
+            docWidth: originalPageWidth || pageInfo.originalWidth || pageInfo.width / BASE_RENDER_SCALE,
+            docHeight: originalPageHeight || pageInfo.originalHeight || pageInfo.height / BASE_RENDER_SCALE,
           });
         }
       } catch (err) {
         console.error('Page render error:', err);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     
     render();
-  }, [pdfDocument, currentPage, setPageDimensions, currentDocData]); // Note: zoom removed - uses CSS transform
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfDocument, currentPage, setPageDimensions, originalPageWidth, originalPageHeight]);
+
+  // Populate analysis scene when user enables review/layers after the page is already open
+  useEffect(() => {
+    if (!pdfDocument) return;
+    if (!reviewAnalysisMode && !layerOcr && !layerAnchors && !layerProposals && !showSymbolsLayer) return;
+    void activatePlacementDebugForPage({
+      pdfDoc: pdfDocument,
+      pageNumber: currentPage,
+      docWidth: originalPageWidth || canvasDimensions.width / BASE_RENDER_SCALE,
+      docHeight: originalPageHeight || canvasDimensions.height / BASE_RENDER_SCALE,
+    });
+  }, [
+    pdfDocument,
+    currentPage,
+    originalPageWidth,
+    originalPageHeight,
+    canvasDimensions.width,
+    canvasDimensions.height,
+    reviewAnalysisMode,
+    layerOcr,
+    layerAnchors,
+    layerProposals,
+    showSymbolsLayer,
+  ]);
+
+  // Spacebar temporary pan
+  useEffect(() => {
+    const isEditableTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.repeat || isEditableTarget(e.target)) return;
+      e.preventDefault();
+      setSpacePanHeld(true);
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      setSpacePanHeld(false);
+    };
+    window.addEventListener('keydown', onKeyDown, { passive: false });
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (settleTimerRef.current != null) window.clearTimeout(settleTimerRef.current);
+      if (rafRef.current != null) window.cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
 
   // Handle file drop - accept both PDFs and .bidveraai files
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -186,22 +310,22 @@ export function Canvas() {
     }
   }, [totalPages, setCurrentPage]);
 
-  // Pan handlers - transform-based panning with pointer capture
+  // Pan handlers - live CSS transform during drag; commit to store on settle
   const handlePanPointerDown = useCallback((e: React.PointerEvent) => {
-    // Middle mouse button (button 1) or pan tool with left click
     const isMiddleClick = e.button === 1;
     const isPanToolClick = activeTool === 'pan' && e.button === 0;
+    const isSpacePan = spacePanHeld && e.button === 0;
     
-    if (!isMiddleClick && !isPanToolClick) return;
+    if (!isMiddleClick && !isPanToolClick && !isSpacePan) return;
     
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
+    beginNavigating();
     setIsPanning(true);
     setPanStart({ x: e.clientX, y: e.clientY });
-    // Read current panOffset from document data directly
-    const currentOffset = currentDocData?.panOffset || { x: 0, y: 0 };
+    const currentOffset = liveViewRef.current?.pan ?? panOffset;
     setPanOffsetStart({ x: currentOffset.x, y: currentOffset.y });
-  }, [activeTool, currentDocData]);
+  }, [activeTool, spacePanHeld, panOffset, beginNavigating]);
 
   const handlePanPointerMove = useCallback((e: React.PointerEvent) => {
     if (!isPanning) return;
@@ -209,17 +333,21 @@ export function Canvas() {
     e.preventDefault();
     const dx = e.clientX - panStart.x;
     const dy = e.clientY - panStart.y;
-    
-    setPanOffset(panOffsetStart.x + dx, panOffsetStart.y + dy);
-  }, [isPanning, panStart, panOffsetStart, setPanOffset]);
+    const nextZoom = liveViewRef.current?.zoom ?? zoom;
+    pushLiveView({
+      zoom: nextZoom,
+      pan: { x: panOffsetStart.x + dx, y: panOffsetStart.y + dy },
+    });
+  }, [isPanning, panStart, panOffsetStart, zoom, pushLiveView]);
 
   const handlePanPointerUp = useCallback((e: React.PointerEvent) => {
     if (isPanning) {
       e.preventDefault();
       e.currentTarget.releasePointerCapture(e.pointerId);
       setIsPanning(false);
+      scheduleViewCommit();
     }
-  }, [isPanning]);
+  }, [isPanning, scheduleViewCommit]);
 
   // Prevent context menu on middle click
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
@@ -240,7 +368,7 @@ export function Canvas() {
     const cos = Math.cos(angleRad);
     const sin = Math.sin(angleRad);
 
-    const currentScale = zoom / 100;
+    const currentScale = displayZoom / 100;
     const dx = clientX - centerX;
     const dy = clientY - centerY;
 
@@ -251,7 +379,7 @@ export function Canvas() {
       x: localX + canvasDimensions.width / 2,
       y: localY + canvasDimensions.height / 2,
     };
-  }, [canvasDimensions.height, canvasDimensions.width, rotation, zoom]);
+  }, [canvasDimensions.height, canvasDimensions.width, rotation, displayZoom]);
 
   const updateSelectionRect = useCallback((start: { x: number; y: number }, end: { x: number; y: number }) => {
     const x = Math.min(start.x, end.x);
@@ -328,68 +456,53 @@ export function Canvas() {
     return true;
   }, [aiSelectionActive, isSelecting, selectionStart, screenToCanvasPoint, updateSelectionRect, activeDocId, currentPage, clearAiSelection, setAiSelectionRect, setAiSelectionActive]);
 
-  // Handle wheel for scroll zoom at cursor position - Bluebeam/Google Maps style
-  // The point under the mouse cursor stays fixed while zooming
-  const handleWheel = useCallback((e: React.WheelEvent) => {
-    e.preventDefault();
-
+  const zoomAtClientPoint = useCallback((clientX: number, clientY: number, zoomFactor: number) => {
     const transformEl = pdfTransformRef.current;
     if (!transformEl) return;
 
-    // Get current state directly for responsiveness
-    const state = useCanvasStore.getState();
-    const currentZoom = state.zoom;
-    const currentPanOffset = state.getPanOffset();
+    beginNavigating();
+    const current = liveViewRef.current ?? { zoom: displayZoom, pan: { ...displayPan } };
+    const currentZoom = current.zoom;
+    const currentPanOffset = current.pan;
 
-    // Mouse position in screen coordinates
-    const mouseX = e.clientX;
-    const mouseY = e.clientY;
-
-    // Use the actual on-screen bounds of the transformed PDF element.
-    // This avoids assumptions about container centering and scroll offsets.
     const elementRect = transformEl.getBoundingClientRect();
     const currentCenterX = elementRect.left + elementRect.width / 2;
     const currentCenterY = elementRect.top + elementRect.height / 2;
 
-    // Convert rotation to radians (positive is clockwise in CSS)
     const angleRad = (rotation * Math.PI) / 180;
     const cos = Math.cos(angleRad);
     const sin = Math.sin(angleRad);
 
-    // Google Maps / Bluebeam style zoom steps
-    const zoomMultiplier = 1.15;
-    const direction = e.deltaY > 0 ? -1 : 1;
-    const zoomFactor = direction > 0 ? zoomMultiplier : 1 / zoomMultiplier;
     const newZoom = Math.max(10, Math.min(500, currentZoom * zoomFactor));
     if (Math.abs(newZoom - currentZoom) < 0.01) return;
 
     const currentScale = currentZoom / 100;
     const newScale = newZoom / 100;
-
-    // Compute document point under cursor in document-local coords (origin at doc center)
-    const dx = mouseX - currentCenterX;
-    const dy = mouseY - currentCenterY;
-
-    // Undo rotation to get into doc-local axes
+    const dx = clientX - currentCenterX;
+    const dy = clientY - currentCenterY;
     const localX = (dx * cos + dy * sin) / currentScale;
     const localY = (-dx * sin + dy * cos) / currentScale;
-
-    // Compute where the center must move so that the same doc point stays under cursor
     const rotatedX = localX * cos - localY * sin;
     const rotatedY = localX * sin + localY * cos;
-    const newCenterX = mouseX - rotatedX * newScale;
-    const newCenterY = mouseY - rotatedY * newScale;
-
-    // Translation moves the center in screen coordinates
-    // Base center is currentCenter minus current pan
+    const newCenterX = clientX - rotatedX * newScale;
+    const newCenterY = clientY - rotatedY * newScale;
     const baseCenterX = currentCenterX - currentPanOffset.x;
     const baseCenterY = currentCenterY - currentPanOffset.y;
-    const newPanX = newCenterX - baseCenterX;
-    const newPanY = newCenterY - baseCenterY;
 
-    state.setZoom(newZoom);
-    state.setPanOffset(newPanX, newPanY);
-  }, [rotation]);
+    pushLiveView({
+      zoom: newZoom,
+      pan: { x: newCenterX - baseCenterX, y: newCenterY - baseCenterY },
+    });
+    scheduleViewCommit();
+  }, [beginNavigating, displayZoom, displayPan, rotation, pushLiveView, scheduleViewCommit]);
+
+  // Pointer-centered wheel zoom (estimating-tool default)
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    const direction = e.deltaY > 0 ? -1 : 1;
+    const zoomFactor = direction > 0 ? ZOOM_MULTIPLIER : 1 / ZOOM_MULTIPLIER;
+    zoomAtClientPoint(e.clientX, e.clientY, zoomFactor);
+  }, [zoomAtClientPoint]);
 
   const displaySelectionRect = useMemo(() => {
     if (selectionRect) return selectionRect;
@@ -511,22 +624,55 @@ export function Canvas() {
   }, [canvasDimensions.width, canvasDimensions.height]);
 
   const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
+    pinchRef.current.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinchRef.current.pointers.size === 2) {
+      const pts = [...pinchRef.current.pointers.values()];
+      const dx = pts[0].x - pts[1].x;
+      const dy = pts[0].y - pts[1].y;
+      pinchRef.current.lastDistance = Math.hypot(dx, dy);
+      beginNavigating();
+      return;
+    }
     if (handleCalibrationPointerDown(e)) return;
     if (handleSelectionPointerDown(e)) return;
     handlePanPointerDown(e);
-  }, [handleCalibrationPointerDown, handleSelectionPointerDown, handlePanPointerDown]);
+  }, [handleCalibrationPointerDown, handleSelectionPointerDown, handlePanPointerDown, beginNavigating]);
 
   const handleCanvasPointerMove = useCallback((e: React.PointerEvent) => {
+    if (pinchRef.current.pointers.has(e.pointerId)) {
+      pinchRef.current.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+    if (pinchRef.current.pointers.size === 2) {
+      e.preventDefault();
+      const pts = [...pinchRef.current.pointers.values()];
+      const dx = pts[0].x - pts[1].x;
+      const dy = pts[0].y - pts[1].y;
+      const distance = Math.hypot(dx, dy);
+      if (pinchRef.current.lastDistance > 0 && distance > 0) {
+        const factor = distance / pinchRef.current.lastDistance;
+        const midX = (pts[0].x + pts[1].x) / 2;
+        const midY = (pts[0].y + pts[1].y) / 2;
+        zoomAtClientPoint(midX, midY, factor);
+      }
+      pinchRef.current.lastDistance = distance;
+      return;
+    }
     if (handleSelectionPointerMove(e)) return;
     handlePanPointerMove(e);
-  }, [handleSelectionPointerMove, handlePanPointerMove]);
+  }, [handleSelectionPointerMove, handlePanPointerMove, zoomAtClientPoint]);
 
   const handleCanvasPointerUp = useCallback((e: React.PointerEvent) => {
+    pinchRef.current.pointers.delete(e.pointerId);
+    if (pinchRef.current.pointers.size < 2) {
+      pinchRef.current.lastDistance = 0;
+    }
     if (handleSelectionPointerUp(e)) return;
     handlePanPointerUp(e);
   }, [handleSelectionPointerUp, handlePanPointerUp]);
 
+  // Defer AI viewport reporting until navigation settles (avoid store writes every pan/zoom tick)
   useEffect(() => {
+    if (isNavigating) return;
     if (!activeDocId || !pdfTransformRef.current || !containerRef.current) return;
 
     const containerRect = containerRef.current.getBoundingClientRect();
@@ -554,7 +700,7 @@ export function Canvas() {
     };
 
     setAiViewportRect(activeDocId, currentPage, pdfRect);
-  }, [activeDocId, canvasDimensions.height, canvasDimensions.width, currentPage, screenToCanvasPoint, setAiViewportRect, zoom, panOffset, rotation]);
+  }, [activeDocId, canvasDimensions.height, canvasDimensions.width, currentPage, screenToCanvasPoint, setAiViewportRect, zoom, panOffset, rotation, isNavigating]);
 
   useEffect(() => {
     if (!aiSymbolDetectionRequested) return;
@@ -673,8 +819,14 @@ export function Canvas() {
       {/* Main canvas area */}
       <div 
         ref={containerRef}
-        className={`flex-1 overflow-auto relative ${isPanning ? 'cursor-grabbing' : activeTool === 'pan' ? 'cursor-grab' : ''}`}
-        style={{ touchAction: activeTool === 'pan' ? 'none' : 'auto' }}
+        className={`flex-1 overflow-auto relative ${
+          isPanning
+            ? 'cursor-grabbing'
+            : activeTool === 'pan' || spacePanHeld
+              ? 'cursor-grab'
+              : ''
+        }`}
+        style={{ touchAction: activeTool === 'pan' || spacePanHeld || isNavigating ? 'none' : 'auto' }}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -685,6 +837,7 @@ export function Canvas() {
         onContextMenu={handleContextMenu}
         onWheel={handleWheel}
       >
+        <CanvasStatusChip />
         
         {/* PDF Page - CSS transform for zoom, pan, and rotation */}
         <div 
@@ -702,12 +855,10 @@ export function Canvas() {
             className="relative shadow-2xl"
             ref={pdfTransformRef}
             style={{
-              // Transform order: translate first (for panning), then scale (for zoom), then rotate
-              // The PDF renderer already handles internal scaling and outputs CSS-sized elements
-              // So we just apply zoom/100 directly: zoom=100 means scale(1), zoom=200 means scale(2)
-              transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom / 100}) rotate(${rotation}deg)`,
+              // Live view during pan/zoom avoids Zustand writes every frame.
+              transform: `translate(${displayPan.x}px, ${displayPan.y}px) scale(${displayZoom / 100}) rotate(${rotation}deg)`,
               transformOrigin: 'center center',
-              willChange: 'transform', // Hint for GPU acceleration
+              willChange: isNavigating ? 'transform' : 'auto',
             }}
           >
             {/* Loading indicator */}
@@ -733,8 +884,10 @@ export function Canvas() {
                   width={canvasDimensions.width}
                   height={canvasDimensions.height}
                   pageNumber={currentPage || 1}
+                  suspendHeavyLayers={isNavigating}
                 />
-                {Object.entries(displaySymbolMap).map(([type, points]) => (
+                {!isNavigating && (showSymbolsLayer || aiCalibrationActive) &&
+                  Object.entries(displaySymbolMap).map(([type, points]) => (
                   <div key={`symbol-${type}`}>
                     {points.map((point, index) => (
                       <div
@@ -749,7 +902,8 @@ export function Canvas() {
                     ))}
                   </div>
                 ))}
-                {Object.entries(displayCalibrationSamples).map(([type, points]) => (
+                {(showSymbolsLayer || aiCalibrationActive) &&
+                  Object.entries(displayCalibrationSamples).map(([type, points]) => (
                   <div key={`calibration-${type}`}>
                     {points.map((point, index) => (
                       <div

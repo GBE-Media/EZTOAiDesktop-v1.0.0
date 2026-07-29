@@ -132,6 +132,7 @@ interface CanvasActions {
   removeDocument: (docId: string) => void;
   clearAllDocuments: () => void;
   fitToCanvas: (containerWidth: number, containerHeight: number) => void;
+  fitToWidth: (containerWidth: number) => void;
   setContainerDimensions: (width: number, height: number) => void;
   setPanOffset: (x: number, y: number) => void;
   resetPanOffset: () => void;
@@ -528,11 +529,33 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     // Convert to percentage and clamp between 25-400%
     const newZoom = Math.max(25, Math.min(400, Math.round(fitScale * 100)));
     
-    console.log('[FIT-TO-CANVAS] Container:', containerWidth, 'x', containerHeight);
-    console.log('[FIT-TO-CANVAS] Available:', availableWidth, 'x', availableHeight);
-    console.log('[FIT-TO-CANVAS] Page:', originalPageWidth, 'x', originalPageHeight);
-    console.log('[FIT-TO-CANVAS] Zoom:', newZoom + '%');
-    
+    set((currentState) => ({
+      zoom: newZoom,
+      pdfDocuments: {
+        ...currentState.pdfDocuments,
+        [currentState.activeDocId as string]: {
+          ...currentState.pdfDocuments[currentState.activeDocId as string],
+          zoom: newZoom,
+          panOffset: { x: 0, y: 0 },
+          hasViewState: true,
+        },
+      },
+    }));
+  },
+
+  fitToWidth: (containerWidth) => {
+    const state = get();
+    const docData = getCurrentDocData(state);
+    if (!docData) return;
+
+    const { originalPageWidth } = docData;
+    if (!originalPageWidth) return;
+
+    const padding = 128;
+    const availableWidth = containerWidth - padding;
+    const fitScale = availableWidth / (originalPageWidth * 1.5);
+    const newZoom = Math.max(25, Math.min(400, Math.round(fitScale * 100)));
+
     set((currentState) => ({
       zoom: newZoom,
       pdfDocuments: {
