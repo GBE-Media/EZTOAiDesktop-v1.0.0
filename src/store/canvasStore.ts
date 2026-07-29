@@ -504,9 +504,15 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     };
   }),
   
-  setPageDimensions: (width, height) => set({ pageWidth: width, pageHeight: height }),
+  setPageDimensions: (width, height) => set((state) => {
+    if (state.pageWidth === width && state.pageHeight === height) return state;
+    return { pageWidth: width, pageHeight: height };
+  }),
   
-  setContainerDimensions: (width, height) => set({ containerWidth: width, containerHeight: height }),
+  setContainerDimensions: (width, height) => set((state) => {
+    if (state.containerWidth === width && state.containerHeight === height) return state;
+    return { containerWidth: width, containerHeight: height };
+  }),
   
   fitToCanvas: (containerWidth, containerHeight) => {
     const state = get();
@@ -1076,8 +1082,20 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
 
   clearAiSelection: () => set({ aiSelectionRect: null, aiSelectionActive: false }),
 
-  setAiViewportRect: (docId, page, rect) => set({
-    aiViewportRect: { docId, page, rect },
+  setAiViewportRect: (docId, page, rect) => set((state) => {
+    const prev = state.aiViewportRect;
+    if (
+      prev &&
+      prev.docId === docId &&
+      prev.page === page &&
+      prev.rect.x === rect.x &&
+      prev.rect.y === rect.y &&
+      prev.rect.width === rect.width &&
+      prev.rect.height === rect.height
+    ) {
+      return state;
+    }
+    return { aiViewportRect: { docId, page, rect } };
   }),
 
   clearAiViewport: () => set({ aiViewportRect: null }),

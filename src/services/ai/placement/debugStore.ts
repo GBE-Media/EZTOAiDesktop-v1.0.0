@@ -23,7 +23,7 @@ export const usePlacementDebugStore = create<PlacementDebugState>((set) => ({
   ocrRects: [],
   anchors: [],
   proposals: [],
-  setEnabled: (enabled) => set({ enabled }),
+  setEnabled: (enabled) => set((state) => (state.enabled === enabled ? state : { enabled })),
   setDebugScene: (scene) => set((state) => ({
     page: scene.page,
     ocrRects: scene.ocrRects ?? state.ocrRects,

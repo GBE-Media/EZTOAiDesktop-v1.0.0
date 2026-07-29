@@ -28,6 +28,8 @@ import type {
 } from '@/types/markup';
 import { TextEditOverlay } from './TextEditOverlay';
 
+const EMPTY_MARKUPS: CanvasMarkup[] = [];
+
 interface MarkupCanvasProps {
   width: number;
   height: number;
@@ -189,8 +191,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   // Get current document data
   const currentDocData = activeDocId ? pdfDocuments[activeDocId] : null;
   const currentPage = currentDocData?.currentPage || 1;
-  const markupsByPage = currentDocData?.markupsByPage || {};
-  const markups = markupsByPage[currentPage] || [];
+  const markupsByPage = currentDocData?.markupsByPage;
+  const markups = (markupsByPage && markupsByPage[currentPage]) || EMPTY_MARKUPS;
   const isPanMode = activeTool === 'pan';
 
   // Helper that wraps getSnapPoint to extract point and update active snap indicator

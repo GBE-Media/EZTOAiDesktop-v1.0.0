@@ -21,22 +21,23 @@ function calmStatusLabel(message: string, stage?: string | null): string {
  */
 export function CanvasStatusChip() {
   const pipelineStatus = useAIChatStore(state => state.pipelineStatus);
-  const ocr = useCanvasStore(state => {
+  const ocrStatus = useCanvasStore(state => {
     const id = state.activeDocId;
-    if (!id) return { status: 'none' as const, progress: 0 };
-    const doc = state.pdfDocuments[id];
-    return {
-      status: doc?.ocrStatus || 'none',
-      progress: doc?.ocrProgress || 0,
-    };
+    if (!id) return 'none' as const;
+    return state.pdfDocuments[id]?.ocrStatus || 'none';
+  });
+  const ocrProgress = useCanvasStore(state => {
+    const id = state.activeDocId;
+    if (!id) return 0;
+    return state.pdfDocuments[id]?.ocrProgress || 0;
   });
 
   const aiBusy = pipelineStatus.isRunning;
-  const ocrBusy = ocr.status === 'running';
+  const ocrBusy = ocrStatus === 'running';
   if (!aiBusy && !ocrBusy) return null;
 
   const label = ocrBusy
-    ? `Recognizing text (${Math.round(ocr.progress)}%)`
+    ? `Recognizing text (${Math.round(ocrProgress)}%)`
     : calmStatusLabel(pipelineStatus.message || '', pipelineStatus.currentStage);
 
   return (

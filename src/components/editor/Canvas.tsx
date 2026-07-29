@@ -17,6 +17,7 @@ import { activatePlacementDebugForPage } from '@/services/ai/placement';
 const BASE_RENDER_SCALE = 1.5;
 const NAV_SETTLE_MS = 120;
 const ZOOM_MULTIPLIER = 1.1;
+const ZERO_PAN = { x: 0, y: 0 } as const;
 
 export function Canvas() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -84,10 +85,16 @@ export function Canvas() {
   const pdfDocument = currentDocData?.pdfDocument || null;
   const currentPage = currentDocData?.currentPage || 1;
   const totalPages = currentDocData?.totalPages || 0;
-  const panOffset = currentDocData?.panOffset || { x: 0, y: 0 };
+  const panOffset = currentDocData?.panOffset ?? ZERO_PAN;
+  const panX = panOffset.x;
+  const panY = panOffset.y;
   const hasViewState = currentDocData?.hasViewState ?? false;
   const originalPageWidth = currentDocData?.originalPageWidth || 0;
   const originalPageHeight = currentDocData?.originalPageHeight || 0;
+  const hasActivePdf = Boolean(
+    (activeDocId && pdfDocuments[activeDocId]?.pdfDocument) ||
+    (activeDocument && pdfDocuments[activeDocument]?.pdfDocument)
+  );
   const showSymbolsLayer = useCanvasLayersStore(state => state.layers.symbols);
   const reviewAnalysisMode = useCanvasLayersStore(state => state.reviewAnalysisMode);
   const layerOcr = useCanvasLayersStore(state => state.layers.ocr);
@@ -101,14 +108,14 @@ export function Canvas() {
     if (!navigatingRef.current) {
       navigatingRef.current = true;
       setIsNavigating(true);
-      const current = liveViewRef.current ?? { zoom, pan: { ...panOffset } };
+      const current = liveViewRef.current ?? { zoom, pan: { x: panX, y: panY } };
       liveViewRef.current = current;
     }
     if (settleTimerRef.current != null) {
       window.clearTimeout(settleTimerRef.current);
       settleTimerRef.current = null;
     }
-  }, [zoom, panOffset]);
+  }, [zoom, panX, panY]);
 
   const pushLiveView = useCallback((next: { zoom: number; pan: { x: number; y: number } }) => {
     liveViewRef.current = next;
@@ -139,34 +146,28 @@ export function Canvas() {
     }, NAV_SETTLE_MS);
   }, []);
 
-  // Track container dimensions for fit-to-canvas
+  // Track container dimensions for fit-to-canvas (re-bind when document shell mounts)
   useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
     const updateContainerDimensions = () => {
-      if (containerRef.current) {
-        const { clientWidth, clientHeight } = containerRef.current;
-        setContainerDimensions(clientWidth, clientHeight);
-      }
+      const { clientWidth, clientHeight } = el;
+      setContainerDimensions(clientWidth, clientHeight);
     };
 
     updateContainerDimensions();
-    
     const resizeObserver = new ResizeObserver(updateContainerDimensions);
-    if (containerRef.current) {
-      resizeObserver.observe(containerRef.current);
-    }
-    
+    resizeObserver.observe(el);
     return () => resizeObserver.disconnect();
-  }, [setContainerDimensions]);
+  }, [setContainerDimensions, hasActivePdf]);
 
   // Sync canvas store's activeDocId with editorStore's activeDocument
   useEffect(() => {
-    if (activeDocument && activeDocument !== activeDocId) {
-      // Check if we have PDF data for this document
-      if (pdfDocuments[activeDocument]) {
-        setActiveDocId(activeDocument);
-      }
-    }
-  }, [activeDocument, activeDocId, pdfDocuments, setActiveDocId]);
+    if (!activeDocument || activeDocument === activeDocId) return;
+    if (!useCanvasStore.getState().pdfDocuments[activeDocument]) return;
+    setActiveDocId(activeDocument);
+  }, [activeDocument, activeDocId, hasActivePdf, setActiveDocId]);
 
   // Auto-fit when PDF first loads (do not depend on whole currentDocData object)
   useEffect(() => {
@@ -189,7 +190,11 @@ export function Canvas() {
         // Render at fixed base scale - zoom is handled via CSS transform
         const pageInfo = await renderPage(pdfDocument, currentPage, pdfCanvasRef.current, BASE_RENDER_SCALE);
         if (cancelled) return;
-        setCanvasDimensions({ width: pageInfo.width, height: pageInfo.height });
+        setCanvasDimensions(prev => (
+          prev.width === pageInfo.width && prev.height === pageInfo.height
+            ? prev
+            : { width: pageInfo.width, height: pageInfo.height }
+        ));
         setPageDimensions(pageInfo.width, pageInfo.height);
 
         // Populate analysis scene only when review/layers request it (never force-show).
@@ -323,9 +328,9 @@ export function Canvas() {
     beginNavigating();
     setIsPanning(true);
     setPanStart({ x: e.clientX, y: e.clientY });
-    const currentOffset = liveViewRef.current?.pan ?? panOffset;
+    const currentOffset = liveViewRef.current?.pan ?? { x: panX, y: panY };
     setPanOffsetStart({ x: currentOffset.x, y: currentOffset.y });
-  }, [activeTool, spacePanHeld, panOffset, beginNavigating]);
+  }, [activeTool, spacePanHeld, panX, panY, beginNavigating]);
 
   const handlePanPointerMove = useCallback((e: React.PointerEvent) => {
     if (!isPanning) return;
@@ -670,7 +675,8 @@ export function Canvas() {
     handlePanPointerUp(e);
   }, [handleSelectionPointerUp, handlePanPointerUp]);
 
-  // Defer AI viewport reporting until navigation settles (avoid store writes every pan/zoom tick)
+  // Defer AI viewport reporting until navigation settles.
+  // Depend on primitive pan/zoom values (not object identity) to avoid update loops on import.
   useEffect(() => {
     if (isNavigating) return;
     if (!activeDocId || !pdfTransformRef.current || !containerRef.current) return;
@@ -700,7 +706,19 @@ export function Canvas() {
     };
 
     setAiViewportRect(activeDocId, currentPage, pdfRect);
-  }, [activeDocId, canvasDimensions.height, canvasDimensions.width, currentPage, screenToCanvasPoint, setAiViewportRect, zoom, panOffset, rotation, isNavigating]);
+  }, [
+    activeDocId,
+    canvasDimensions.height,
+    canvasDimensions.width,
+    currentPage,
+    setAiViewportRect,
+    zoom,
+    panX,
+    panY,
+    rotation,
+    isNavigating,
+    screenToCanvasPoint,
+  ]);
 
   useEffect(() => {
     if (!aiSymbolDetectionRequested) return;
