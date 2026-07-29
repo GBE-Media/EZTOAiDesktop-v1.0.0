@@ -502,6 +502,7 @@ export function AgentAssistantDrawer() {
           runId,
           messageId: assistantMsgId,
           userMessage: content,
+          documentId: activeDocId || undefined,
           pipeline: {
             trade: selectedTrade,
             pages: pagesToAnalyze,
@@ -515,8 +516,8 @@ export function AgentAssistantDrawer() {
             visibleOnly: options?.visibleOnly ?? false,
             analysisRegion,
             refinePlacements: true,
-            getCachedText,
-            setCachedText,
+            getCachedText: getTextContent,
+            setCachedText: setTextContent,
             onProgress: (progress) => {
               if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
               setPipelineStatus({
@@ -762,6 +763,8 @@ export function AgentAssistantDrawer() {
     addAIMarkupBatch,
     placementMode,
     setPendingPlacements,
+    applyCompletedPipelineResult,
+    createEditorToolContext,
   ]);
 
   useEffect(() => {
@@ -957,7 +960,8 @@ export function AgentAssistantDrawer() {
           });
           const result = orchestrated.agentResult;
           if (!result) return;
-          if (result.status === 'failed' && result.assistantMessage.includes('session expired')) {
+          const assistantMessage = result.assistantMessage || 'The assistant could not continue this task.';
+          if (orchestrated.errorCode === 'SESSION_EXPIRED') {
             store.finishRun(approval.runId, 'completed');
             const existing = store.messages.find(message => message.id === approval.messageId);
             const placed = (executionResult as { placed?: number } | undefined)?.placed;
@@ -975,15 +979,20 @@ export function AgentAssistantDrawer() {
             return;
           }
           store.updateMessage(approval.messageId, {
-            content: result.assistantMessage,
+            content: assistantMessage,
             isLoading: false,
-            error: result.status === 'failed' ? result.assistantMessage : undefined,
+            error: result.status === 'failed' ? assistantMessage : undefined,
           });
+          if (result.status === 'failed') {
+            store.finishRun(approval.runId, 'error', assistantMessage);
+          }
         } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
           store.updateMessage(approval.messageId, {
             isLoading: false,
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessage,
           });
+          store.finishRun(approval.runId, 'error', errorMessage);
         } finally {
           setPipelineStatus({ isRunning: false, progress: 0, message: '' });
         }
@@ -1094,6 +1103,7 @@ export function AgentAssistantDrawer() {
             answer,
             toolContext,
             pipelineRuntime: {
+              activeDocumentId: docId || undefined,
               pdfDoc: docData?.pdfDocument,
               getCachedText: canvas.getTextContent,
               setCachedText: canvas.setTextContent,
@@ -1154,11 +1164,15 @@ export function AgentAssistantDrawer() {
             });
             return;
           }
+          const assistantMessage = result.assistantMessage || 'The assistant could not continue this task.';
           store.updateMessage(clarification.messageId, {
-            content: ensureNumberedCalloutMentions(result.assistantMessage, []),
+            content: ensureNumberedCalloutMentions(assistantMessage, []),
             isLoading: result.status === 'needs_approval',
-            error: result.status === 'failed' ? result.assistantMessage : undefined,
+            error: result.status === 'failed' ? assistantMessage : undefined,
           });
+          if (result.status === 'failed') {
+            store.finishRun(clarification.runId, 'error', assistantMessage);
+          }
         } catch (error) {
           store.updateMessage(clarification.messageId, {
             isLoading: false,

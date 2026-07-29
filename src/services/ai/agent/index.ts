@@ -43,6 +43,7 @@ export {
 export type { AgentModelRole, AgentModelsConfig, AgentModelSelection } from './roles';
 export type {
   AgentActionTaken,
+  AgentErrorCode,
   AgentSessionState,
   AgentFinalStatus,
   AgentModelDecision,

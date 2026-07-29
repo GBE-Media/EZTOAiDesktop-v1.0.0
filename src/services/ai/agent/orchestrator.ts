@@ -11,6 +11,7 @@ import type { AgentTurnResult, AgentSessionState, PipelineClarificationStep } fr
 import type { RunAgentTurnOptions } from './runner';
 import {
   clearAgentSession,
+  deleteDurableAgentSession,
   loadAgentSession,
   parkAgentSession,
   resumeAgentAfterApproval,
@@ -25,6 +26,7 @@ export interface OrchestratedTaskResult {
   runId: string;
   messageId: string;
   status: AgentTurnResult['status'];
+  errorCode?: AgentTurnResult['errorCode'];
   agentResult?: AgentTurnResult;
   pipelineResult?: PipelineResult;
   clarificationRequest?: ClarificationRequest;
@@ -34,6 +36,7 @@ export interface StartPipelineTaskOptions {
   runId: string;
   messageId: string;
   userMessage: string;
+  documentId?: string;
   pipeline: PipelineOptions;
 }
 
@@ -44,7 +47,7 @@ export interface ResumeTaskAfterClarificationOptions {
   pipelineRuntime?: Pick<
     PipelineOptions,
     'pdfDoc' | 'getCachedText' | 'setCachedText' | 'onProgress'
-  >;
+  > & { activeDocumentId?: string };
   onStatus?: RunAgentTurnOptions['onStatus'];
   model?: ResumeClarificationOptions['model'];
 }
@@ -57,6 +60,7 @@ export async function startAgentTask(options: RunAgentTurnOptions): Promise<Orch
     messageId: result.messageId,
     status: result.status,
     agentResult: result,
+    errorCode: result.errorCode,
     clarificationRequest: result.clarificationRequest,
   };
 }
@@ -101,6 +105,7 @@ export async function startPipelineTask(
           highAccuracyMode: options.pipeline.highAccuracyMode ?? false,
           visibleOnly: options.pipeline.visibleOnly ?? false,
           refinePlacements: options.pipeline.refinePlacements ?? true,
+          documentId: options.documentId,
         },
       },
     };
@@ -127,14 +132,57 @@ export async function startPipelineTask(
 export async function resumeTaskAfterClarification(
   options: ResumeTaskAfterClarificationOptions,
 ): Promise<OrchestratedTaskResult> {
-  const store = useAIChatStore.getState();
-  store.resolveClarification(options.clarification.id, 'answered', options.answer);
-  store.addMessage({ role: 'user', content: options.answer.displayText });
-
   const session = await loadAgentSession(options.clarification.runId);
   if (!session) {
     return expiredResult(options.clarification.runId, options.clarification.messageId);
   }
+
+  if (session.continuation?.kind === 'pipeline') {
+    const continuation = session.continuation;
+    if (
+      continuation.config.documentId
+      && continuation.config.documentId !== options.pipelineRuntime?.activeDocumentId
+    ) {
+      return failedTaskResult(
+        session.runId,
+        session.messageId,
+        'The source document for this takeoff is no longer active. Reopen it and start the takeoff again.',
+        'DOCUMENT_MISMATCH',
+      );
+    }
+    const answeredIndex = continuation.nextQuestionIndex;
+    const expectedQuestion = continuation.questions[answeredIndex];
+    if (!expectedQuestion) {
+      return expiredResult(session.runId, session.messageId);
+    }
+    const expectedStepKey = continuation.pendingClarificationStepKey
+      || pipelineStepKey(answeredIndex, expectedQuestion.id);
+    const clarificationMatches =
+      options.clarification.stepKey === expectedStepKey
+      && (
+        !continuation.pendingClarificationId
+        || options.clarification.id === continuation.pendingClarificationId
+      );
+    if (!clarificationMatches) {
+      useAIChatStore.getState().resolveClarification(options.clarification.id, 'cancelled');
+      const currentClarification = emitPipelineQuestion(
+        session,
+        expectedQuestion,
+        answeredIndex,
+      );
+      await parkAgentSession(session, 'waiting-clarification');
+      return {
+        runId: session.runId,
+        messageId: session.messageId,
+        status: 'needs_clarification',
+        clarificationRequest: currentClarification,
+      };
+    }
+  }
+
+  const store = useAIChatStore.getState();
+  store.resolveClarification(options.clarification.id, 'answered', options.answer);
+  store.addMessage({ role: 'user', content: options.answer.displayText });
 
   if (session.continuation?.kind !== 'pipeline') {
     const result = await resumeAgentAfterClarification({
@@ -150,15 +198,13 @@ export async function resumeTaskAfterClarification(
       messageId: result.messageId,
       status: result.status,
       agentResult: result,
+      errorCode: result.errorCode,
       clarificationRequest: result.clarificationRequest,
     };
   }
 
   const continuation = session.continuation;
   const answeredIndex = continuation.nextQuestionIndex;
-  if (answeredIndex < 0 || answeredIndex >= continuation.questions.length) {
-    return expiredResult(session.runId, session.messageId);
-  }
   continuation.questions[answeredIndex].answer = options.answer;
   continuation.nextQuestionIndex = answeredIndex + 1;
   session.messages.push({
@@ -186,6 +232,7 @@ export async function resumeTaskAfterClarification(
     progress: 20,
     startedAt: new Date().toISOString(),
   });
+  await deleteDurableAgentSession(session.runId);
   const clarificationContext = continuation.questions
     .map(question => `${question.prompt}\nAnswer: ${question.answer?.displayText || 'Not answered'}`)
     .join('\n\n');
@@ -225,6 +272,7 @@ export async function resumeTaskAfterApproval(
     messageId: result.messageId,
     status: result.status,
     agentResult: result,
+    errorCode: result.errorCode,
     clarificationRequest: result.clarificationRequest,
   };
 }
@@ -241,15 +289,24 @@ function emitPipelineQuestion(
   question: PipelineClarificationStep,
   index: number,
 ): ClarificationRequest {
-  return emitClarificationQuestion({
+  const clarification = emitClarificationQuestion({
     runId: session.runId,
     messageId: session.messageId,
     question: question.prompt,
     options: question.options,
-    stepKey: `pipeline_${index}_${question.id}`,
+    stepKey: pipelineStepKey(index, question.id),
     allowMultiSelect: question.allowMultiple,
     allowFreeform: true,
   });
+  if (session.continuation?.kind === 'pipeline') {
+    session.continuation.pendingClarificationId = clarification.id;
+    session.continuation.pendingClarificationStepKey = clarification.stepKey;
+  }
+  return clarification;
+}
+
+function pipelineStepKey(index: number, questionId: string): string {
+  return `pipeline_${index}_${questionId}`;
 }
 
 function normalizePipelineQuestions(result: PipelineResult): PipelineClarificationStep[] {
@@ -286,17 +343,32 @@ function normalizePipelineQuestions(result: PipelineResult): PipelineClarificati
 }
 
 function expiredResult(runId: string, messageId: string): OrchestratedTaskResult {
-  const assistantMessage = 'Agent session expired. Please send your request again.';
+  return failedTaskResult(
+    runId,
+    messageId,
+    'Agent session expired. Please send your request again.',
+    'SESSION_EXPIRED',
+  );
+}
+
+function failedTaskResult(
+  runId: string,
+  messageId: string,
+  assistantMessage: string,
+  errorCode: NonNullable<AgentTurnResult['errorCode']>,
+): OrchestratedTaskResult {
   return {
     runId,
     messageId,
     status: 'failed',
+    errorCode,
     agentResult: {
       status: 'failed',
       assistantMessage,
       actionsTaken: [],
       toolHistory: [],
       finalStatus: 'failed',
+      errorCode,
       runId,
       messageId,
     },

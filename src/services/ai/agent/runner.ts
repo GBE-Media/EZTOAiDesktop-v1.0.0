@@ -10,6 +10,7 @@ import type { ModelAdapter } from './modelAdapter';
 export {
   clearAgentSession,
   clearAgentSessionMemoryForTests,
+  deleteDurableAgentSession,
   getAgentSession,
   loadAgentSession,
   parkAgentSession,

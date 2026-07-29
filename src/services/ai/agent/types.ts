@@ -23,6 +23,8 @@ export type AgentFinalStatus =
   | 'cancelled'
   | 'max_steps';
 
+export type AgentErrorCode = 'SESSION_EXPIRED' | 'DOCUMENT_MISMATCH';
+
 export type RoutingPath =
   | 'answer_directly'
   | 'ask_clarification'
@@ -106,6 +108,8 @@ export interface PipelineContinuationState {
   evidence: string[];
   questions: PipelineClarificationStep[];
   nextQuestionIndex: number;
+  pendingClarificationId?: string;
+  pendingClarificationStepKey?: string;
   config: {
     trade: TradeType;
     pages: number[];
@@ -114,6 +118,7 @@ export interface PipelineContinuationState {
     highAccuracyMode: boolean;
     visibleOnly: boolean;
     refinePlacements: boolean;
+    documentId?: string;
   };
 }
 
@@ -144,6 +149,7 @@ export interface AgentTurnResult {
   clarificationRequest?: ClarificationRequest;
   toolHistory: AgentToolHistoryEntry[];
   finalStatus: AgentFinalStatus;
+  errorCode?: AgentErrorCode;
   clarifyingQuestions?: string[];
   runId: string;
   messageId: string;

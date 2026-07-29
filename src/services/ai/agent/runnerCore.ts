@@ -2,7 +2,7 @@
  * Primary agent tool-loop core (Phase 3).
  * Kept separate from multi-model orchestration so each phase stays testable.
  */
-import { useAIChatStore } from '@/store/aiChatStore';
+import { flushAssistantSnapshot, useAIChatStore } from '@/store/aiChatStore';
 import type { ApprovalRequest, ClarificationRequest } from '@/types/assistant';
 import type { AssistantToolContext, AssistantToolResult } from '../tools/types';
 import { executeAssistantTool, getAssistantTool } from '../tools/registry';
@@ -42,26 +42,41 @@ export function getAgentSession(runId: string): AgentSessionState | undefined {
 
 export function clearAgentSession(runId: string): void {
   sessions.delete(runId);
-  void deletePersistedAgentSession(runId);
+  void deleteDurableAgentSession(runId);
 }
 
 export function setAgentSession(session: AgentSessionState): void {
   sessions.set(session.runId, session);
 }
 
+export async function deleteDurableAgentSession(runId: string): Promise<void> {
+  try {
+    await deletePersistedAgentSession(runId);
+  } catch (error) {
+    console.warn('[Agent] Failed to delete durable session:', error);
+  }
+}
+
 /** Load a parked session from the L1 cache or durable Dexie storage. */
 export async function loadAgentSession(runId: string): Promise<AgentSessionState | undefined> {
   const cached = sessions.get(runId);
-  if (cached) return cached;
 
-  await deleteExpiredAgentSessions(new Date().toISOString());
-  const record = await readPersistedAgentSession(runId);
-  if (!record || record.expiresAt <= new Date().toISOString()) {
-    if (record) await deletePersistedAgentSession(runId);
-    return undefined;
+  try {
+    const now = new Date().toISOString();
+    await deleteExpiredAgentSessions(now);
+    const record = await readPersistedAgentSession(runId);
+    if (!record) return cached;
+    if (record.expiresAt <= now) {
+      await deletePersistedAgentSession(runId);
+      sessions.delete(runId);
+      return undefined;
+    }
+    sessions.set(runId, record.session);
+    return record.session;
+  } catch (error) {
+    console.warn('[Agent] Failed to load durable session; using memory cache:', error);
+    return sessions.get(runId);
   }
-  sessions.set(runId, record.session);
-  return record.session;
 }
 
 /** Persist only resumable parked states; live runtime dependencies never enter this DTO. */
@@ -72,6 +87,7 @@ export async function parkAgentSession(
   sessions.set(session.runId, session);
   const now = Date.now();
   const persisted = toPersistedSession(session);
+  let durableSessionWritten = false;
   try {
     await writePersistedAgentSession({
       runId: session.runId,
@@ -81,9 +97,18 @@ export async function parkAgentSession(
       updatedAt: new Date(now).toISOString(),
       expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
     });
+    durableSessionWritten = true;
+    await flushAssistantSnapshot();
   } catch (error) {
     // Keep the L1 session usable even if IndexedDB quota/storage is unavailable.
     console.warn('[Agent] Failed to persist resumable session:', error);
+    if (durableSessionWritten) {
+      try {
+        await deletePersistedAgentSession(session.runId);
+      } catch (cleanupError) {
+        console.warn('[Agent] Failed to clean up partially persisted session:', cleanupError);
+      }
+    }
   }
 }
 
@@ -184,6 +209,7 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
       actionsTaken: [],
       toolHistory: [],
       finalStatus: 'failed',
+      errorCode: 'SESSION_EXPIRED',
       runId: options.runId,
       messageId: options.approval.messageId,
     };
@@ -260,6 +286,7 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
   session.pendingApprovalId = undefined;
   session.continuation = undefined;
   sessions.set(options.runId, session);
+  await deleteDurableAgentSession(options.runId);
 
   try {
     const result = await runPrimaryAgentLoop({
@@ -295,6 +322,7 @@ export async function resumeAgentAfterClarification(
       actionsTaken: [],
       toolHistory: [],
       finalStatus: 'failed',
+      errorCode: 'SESSION_EXPIRED',
       runId: options.runId,
       messageId: options.clarification.messageId,
     };
@@ -339,6 +367,7 @@ export async function resumeAgentAfterClarification(
   });
   session.continuation = undefined;
   sessions.set(options.runId, session);
+  await deleteDurableAgentSession(options.runId);
 
   try {
     const result = await runPrimaryAgentLoop({

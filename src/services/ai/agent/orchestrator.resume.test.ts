@@ -1,6 +1,6 @@
 import './testGlobals';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { assistantDb } from '@/db/assistantDb';
+import { assistantDb, readPersistedAgentSession } from '@/db/assistantDb';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { createAgentToolContext } from './createToolContext';
 import {
@@ -141,6 +141,7 @@ describe('agent task orchestrator resume continuity', () => {
       },
     });
     expect(pipelineMock.mock.calls[1][0].imageGenerator).toBeUndefined();
+    expect(await readPersistedAgentSession('run-pipeline')).toBeUndefined();
   });
 
   it('advances multiple pipeline questions sequentially on one run', async () => {
@@ -183,14 +184,64 @@ describe('agent task orchestrator resume continuity', () => {
     expect(first.clarificationRequest?.question).toBe('Place callouts?');
     expect(pipelineMock).toHaveBeenCalledTimes(1);
 
+    const staleClarification = {
+      ...started.clarificationRequest!,
+      id: 'stale-first-question',
+      status: 'pending' as const,
+    };
+    useAIChatStore.getState().addClarification(staleClarification);
+    const resynced = await resumeTaskAfterClarification({
+      clarification: staleClarification,
+      answer: { selectedValues: ['All'], displayText: 'All' },
+      toolContext: toolContext('run-multi', 'message-multi'),
+    });
+    expect(resynced.status).toBe('needs_clarification');
+    expect(resynced.clarificationRequest?.question).toBe('Place callouts?');
+    expect(pipelineMock).toHaveBeenCalledTimes(1);
+
     const second = await resumeTaskAfterClarification({
-      clarification: first.clarificationRequest!,
+      clarification: resynced.clarificationRequest!,
       answer: { selectedValues: ['Yes'], displayText: 'Yes' },
       toolContext: toolContext('run-multi', 'message-multi'),
     });
     expect(second.status).toBe('completed');
     expect(second.runId).toBe('run-multi');
     expect(pipelineMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a pipeline resume when a different document is active', async () => {
+    createRun('run-document', 'message-document');
+    pipelineMock.mockResolvedValueOnce({
+      success: true,
+      analysis,
+      questions: ['Which scope?'],
+      duration: 10,
+    });
+    const started = await startPipelineTask({
+      runId: 'run-document',
+      messageId: 'message-document',
+      userMessage: 'Count fixtures',
+      documentId: 'document-a',
+      pipeline: {
+        trade: 'electrical',
+        pages: [1],
+        imageGenerator: vi.fn(),
+        pageWidth: 612,
+        pageHeight: 792,
+      },
+    });
+
+    const resumed = await resumeTaskAfterClarification({
+      clarification: started.clarificationRequest!,
+      answer: { selectedValues: ['all'], displayText: 'All' },
+      toolContext: toolContext('run-document', 'message-document'),
+      pipelineRuntime: { activeDocumentId: 'document-b' },
+    });
+
+    expect(resumed.status).toBe('failed');
+    expect(resumed.errorCode).toBe('DOCUMENT_MISMATCH');
+    expect(useAIChatStore.getState().clarifications[started.clarificationRequest!.id].status).toBe('pending');
+    expect(pipelineMock).toHaveBeenCalledTimes(1);
   });
 
   it('hydrates and appends an agent clarification answer after reload', async () => {
@@ -237,6 +288,7 @@ describe('agent task orchestrator resume continuity', () => {
     expect(complete.mock.calls[0][0].messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: 'user', content: expect.stringContaining('All pages') }),
     ]));
+    expect(await readPersistedAgentSession(session.runId)).toBeUndefined();
   });
 
   it('hydrates an approval continuation after reload', async () => {
@@ -282,6 +334,7 @@ describe('agent task orchestrator resume continuity', () => {
     expect(complete.mock.calls[0][0].messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: 'tool', content: expect.stringContaining('rejected') }),
     ]));
+    expect(await readPersistedAgentSession(approval.runId)).toBeUndefined();
   });
 
   it('returns the explicit expiration failure instead of creating a replacement run', async () => {
@@ -304,7 +357,10 @@ describe('agent task orchestrator resume continuity', () => {
     });
 
     expect(result.status).toBe('failed');
+    expect(result.errorCode).toBe('SESSION_EXPIRED');
     expect(result.agentResult?.assistantMessage).toContain('session expired');
     expect(Object.keys(useAIChatStore.getState().runs)).toEqual(['missing-run']);
+    expect(useAIChatStore.getState().clarifications[clarification.id].status).toBe('pending');
+    expect(useAIChatStore.getState().messages).toHaveLength(1);
   });
 });

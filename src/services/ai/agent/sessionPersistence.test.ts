@@ -4,16 +4,19 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   assistantDb,
   deleteExpiredAgentSessions,
+  readAssistantSnapshot,
   readPersistedAgentSession,
   writePersistedAgentSession,
 } from '@/db/assistantDb';
 import {
   clearAgentSession,
   clearAgentSessionMemoryForTests,
+  getAgentSession,
   loadAgentSession,
   parkAgentSession,
 } from './runner';
 import type { AgentSessionState } from './types';
+import { useAIChatStore } from '@/store/aiChatStore';
 
 const makeSession = (runId = 'run-1'): AgentSessionState => ({
   runId,
@@ -23,10 +26,13 @@ const makeSession = (runId = 'run-1'): AgentSessionState => ({
     { role: 'assistant', content: '{"type":"clarify","message":"Which pages?"}' },
   ],
   toolHistory: [{
-    callId: 'tool-1',
+    id: 'tool-history-1',
     toolId: 'inspect_markups',
+    title: 'Inspect markups',
     args: { page: 1 },
-    result: { status: 'success', summary: 'Inspected', output: { count: 2 } },
+    result: { status: 'completed', summary: 'Inspected', output: { count: 2 } },
+    startedAt: '2026-07-28T00:00:00.000Z',
+    completedAt: '2026-07-28T00:00:01.000Z',
   }],
   actionsTaken: [],
   contextText: 'document context',
@@ -42,6 +48,15 @@ describe('durable agent sessions', () => {
     await assistantDb.open();
     await assistantDb.snapshots.clear();
     await assistantDb.agentSessions.clear();
+    useAIChatStore.setState({
+      conversation: null,
+      conversationContextId: null,
+      conversationHydrated: false,
+      messages: [],
+      runs: {},
+      approvals: {},
+      clarifications: {},
+    });
   });
 
   it('preserves v1 snapshots when Dexie upgrades to v2', async () => {
@@ -90,6 +105,63 @@ describe('durable agent sessions', () => {
     expect(restored?.toolHistory[0].result.output).toEqual({ count: 2 });
   });
 
+  it('flushes the visible clarification snapshot before parking returns', async () => {
+    const now = new Date().toISOString();
+    const session = makeSession('run-visible');
+    useAIChatStore.setState({
+      conversation: {
+        id: 'conversation-visible',
+        contextId: 'project-visible',
+        title: 'Visible task',
+        trade: 'electrical',
+        createdAt: now,
+        updatedAt: now,
+      },
+      conversationContextId: 'project-visible',
+      conversationHydrated: true,
+      messages: [{
+        id: session.messageId,
+        role: 'assistant',
+        content: 'Which pages?',
+        timestamp: new Date(),
+        blocks: [{ id: 'question-block', type: 'question', clarificationId: 'clarification-visible' }],
+      }],
+      runs: {
+        [session.runId]: {
+          id: session.runId,
+          messageId: session.messageId,
+          conversationId: 'conversation-visible',
+          status: 'waiting-clarification',
+          steps: [],
+          startedAt: now,
+        },
+      },
+      clarifications: {
+        'clarification-visible': {
+          id: 'clarification-visible',
+          runId: session.runId,
+          messageId: session.messageId,
+          stepKey: 'scope',
+          question: 'Which pages?',
+          options: [],
+          status: 'pending',
+          createdAt: now,
+        },
+      },
+    });
+
+    await parkAgentSession(session, 'waiting-clarification');
+    const snapshot = await readAssistantSnapshot('project-visible');
+    expect(snapshot?.runs[0]).toMatchObject({
+      id: session.runId,
+      status: 'waiting-clarification',
+    });
+    expect(snapshot?.clarifications?.[0]).toMatchObject({
+      id: 'clarification-visible',
+      status: 'pending',
+    });
+  });
+
   it('hydrates on cache miss and terminal clear removes durable state', async () => {
     const session = makeSession('run-reload');
     await parkAgentSession(session, 'waiting-approval');
@@ -99,6 +171,26 @@ describe('durable agent sessions', () => {
     clearAgentSession(session.runId);
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(await readPersistedAgentSession(session.runId)).toBeUndefined();
+  });
+
+  it('prefers a newer durable session over a stale memory cache', async () => {
+    const session = makeSession('run-latest');
+    await parkAgentSession(session, 'waiting-clarification');
+    getAgentSession(session.runId)!.contextText = 'stale memory context';
+    const record = await readPersistedAgentSession(session.runId);
+    await writePersistedAgentSession({
+      ...record!,
+      session: { ...record!.session, contextText: 'latest durable context' },
+      updatedAt: new Date(Date.now() + 1000).toISOString(),
+    });
+
+    expect((await loadAgentSession(session.runId))?.contextText).toBe('latest durable context');
+  });
+
+  it('degrades to an empty memory cache when IndexedDB reads fail', async () => {
+    assistantDb.close({ disableAutoOpen: true });
+    await expect(loadAgentSession('unavailable')).resolves.toBeUndefined();
+    await assistantDb.open();
   });
 
   it('TTL cleanup removes expired sessions without deleting active ones', async () => {

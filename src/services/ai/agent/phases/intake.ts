@@ -1,4 +1,4 @@
-import type { TradeType } from '../providers/types';
+import type { TradeType } from '../../providers/types';
 import { buildAgentContext, type AgentContextInput } from '../contextBuilder';
 import type { RiskLevel, TaskType } from '../types';
 import { isLocateIntent } from '../locateIntent';

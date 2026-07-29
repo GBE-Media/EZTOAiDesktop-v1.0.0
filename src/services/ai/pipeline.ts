@@ -878,10 +878,12 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     reportProgress('estimation', 0, 'Generating material estimate...');
     
     const estimationResponse = await aiService.estimateMaterials(
-      JSON.stringify({
-        analysis: analysisResults,
-        clarificationContext: resumeFrom?.clarificationContext,
-      }),
+      JSON.stringify(resumeFrom
+        ? {
+            analysis: analysisResults,
+            clarificationContext: resumeFrom.clarificationContext,
+          }
+        : analysisResults),
       trade,
       location
     );

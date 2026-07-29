@@ -7,18 +7,21 @@ const markup = (id: string, page: number): CanvasMarkup => ({
   id,
   type: 'rectangle',
   page,
-  points: [{ x: 10, y: 10 }, { x: 30, y: 30 }],
+  x: 10,
+  y: 10,
+  width: 20,
+  height: 20,
   style: {
     strokeColor: '#10b981',
     fillColor: 'transparent',
     strokeWidth: 2,
     opacity: 1,
-    lineStyle: 'solid',
     fontSize: 12,
     fontFamily: 'Arial',
   },
-  createdAt: new Date(),
-  updatedAt: new Date(),
+  locked: false,
+  author: 'test',
+  createdAt: new Date().toISOString(),
 });
 
 describe('assistant batch history', () => {
