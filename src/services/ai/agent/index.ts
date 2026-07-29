@@ -4,12 +4,26 @@ export { createJsonToolModelAdapter, parseAgentDecision } from './modelAdapter';
 export { buildAgentSystemPrompt } from './prompts/system';
 export {
   clearAgentSession,
+  loadAgentSession,
+  parkAgentSession,
   getAgentSession,
   resumeAgentAfterApproval,
   resumeAgentAfterClarification,
   runAgentTurn,
   runPrimaryAgentLoop,
 } from './runner';
+export {
+  startAgentTask,
+  startPipelineTask,
+  cancelTask,
+  resumeTaskAfterApproval,
+  resumeTaskAfterClarification,
+} from './orchestrator';
+export type {
+  OrchestratedTaskResult,
+  ResumeTaskAfterClarificationOptions,
+  StartPipelineTaskOptions,
+} from './orchestrator';
 export { runMultiModelTurn } from './orchestration/multiModelRunner';
 export { formatToolResultForPrompt, resolveToolSafety, sanitizeToolOutput } from './safety';
 export { clearAgentTrace, emitAgentTrace, getAgentTrace } from './trace';
@@ -29,6 +43,7 @@ export {
 export type { AgentModelRole, AgentModelsConfig, AgentModelSelection } from './roles';
 export type {
   AgentActionTaken,
+  AgentSessionState,
   AgentFinalStatus,
   AgentModelDecision,
   AgentTurnResult,

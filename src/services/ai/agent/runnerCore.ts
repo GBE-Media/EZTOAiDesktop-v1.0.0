@@ -21,20 +21,18 @@ import {
   emitClarificationQuestion,
   labelForAgentStatus,
 } from './clarification';
+import {
+  deleteExpiredAgentSessions,
+  deletePersistedAgentSession,
+  readPersistedAgentSession,
+  writePersistedAgentSession,
+  type PersistedAgentSessionStatus,
+} from '@/db/assistantDb';
+import type { AgentSessionState } from './types';
 
 const MAX_STEPS = 8;
-
-export interface AgentSessionState {
-  runId: string;
-  messageId: string;
-  messages: AgentModelMessage[];
-  toolHistory: AgentToolHistoryEntry[];
-  actionsTaken: AgentActionTaken[];
-  contextText: string;
-  imageBase64?: string;
-  plan?: string;
-  pendingApprovalId?: string;
-}
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_PERSISTED_IMAGE_CHARS = 1_000_000;
 
 const sessions = new Map<string, AgentSessionState>();
 
@@ -44,10 +42,100 @@ export function getAgentSession(runId: string): AgentSessionState | undefined {
 
 export function clearAgentSession(runId: string): void {
   sessions.delete(runId);
+  void deletePersistedAgentSession(runId);
 }
 
 export function setAgentSession(session: AgentSessionState): void {
   sessions.set(session.runId, session);
+}
+
+/** Load a parked session from the L1 cache or durable Dexie storage. */
+export async function loadAgentSession(runId: string): Promise<AgentSessionState | undefined> {
+  const cached = sessions.get(runId);
+  if (cached) return cached;
+
+  await deleteExpiredAgentSessions(new Date().toISOString());
+  const record = await readPersistedAgentSession(runId);
+  if (!record || record.expiresAt <= new Date().toISOString()) {
+    if (record) await deletePersistedAgentSession(runId);
+    return undefined;
+  }
+  sessions.set(runId, record.session);
+  return record.session;
+}
+
+/** Persist only resumable parked states; live runtime dependencies never enter this DTO. */
+export async function parkAgentSession(
+  session: AgentSessionState,
+  status: PersistedAgentSessionStatus,
+): Promise<void> {
+  sessions.set(session.runId, session);
+  const now = Date.now();
+  const persisted = toPersistedSession(session);
+  try {
+    await writePersistedAgentSession({
+      runId: session.runId,
+      messageId: session.messageId,
+      status,
+      session: persisted,
+      updatedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
+    });
+  } catch (error) {
+    // Keep the L1 session usable even if IndexedDB quota/storage is unavailable.
+    console.warn('[Agent] Failed to persist resumable session:', error);
+  }
+}
+
+/** Test helper: simulate a reload without deleting durable state. */
+export function clearAgentSessionMemoryForTests(): void {
+  sessions.clear();
+}
+
+function toPersistedSession(session: AgentSessionState): AgentSessionState {
+  return {
+    ...session,
+    imageBase64: session.imageBase64 && session.imageBase64.length <= MAX_PERSISTED_IMAGE_CHARS
+      ? session.imageBase64
+      : undefined,
+    messages: session.messages.map(message => ({ ...message })),
+    actionsTaken: session.actionsTaken.map(action => ({ ...action })),
+    toolHistory: session.toolHistory.map(entry => ({
+      ...entry,
+      args: clonePersistable(entry.args),
+      result: {
+        ...entry.result,
+        output: clonePersistable(entry.result.output),
+        approval: entry.result.approval
+          ? {
+              ...entry.result.approval,
+              payload: clonePersistable(entry.result.approval.payload),
+              preview: clonePersistable(entry.result.approval.preview),
+            }
+          : undefined,
+      },
+    })),
+    continuation: session.continuation
+      ? clonePersistable(session.continuation) as AgentSessionState['continuation']
+      : undefined,
+  };
+}
+
+function clonePersistable(value: unknown, depth = 0): unknown {
+  if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (depth >= 8) return '[truncated]';
+  if (Array.isArray(value)) return value.slice(0, 500).map(item => clonePersistable(item, depth + 1));
+  if (typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>).slice(0, 500)) {
+      if (/base64|imageData|dataUrl/i.test(key)) continue;
+      output[key] = clonePersistable(child, depth + 1);
+    }
+    return output;
+  }
+  return String(value);
 }
 
 export interface RunPrimaryLoopOptions {
@@ -88,7 +176,7 @@ export interface ResumeClarificationOptions {
 /** Continue an agent run after the user approves or rejects a write tool. */
 export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Promise<AgentTurnResult> {
   ensureDomainToolsRegistered();
-  const session = sessions.get(options.runId);
+  const session = await loadAgentSession(options.runId);
   if (!session) {
     return {
       status: 'failed',
@@ -100,7 +188,6 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
       messageId: options.approval.messageId,
     };
   }
-
   const signal = registerAssistantRunController(options.runId);
   const toolContext: AssistantToolContext = {
     ...options.toolContext,
@@ -171,6 +258,7 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
   }
 
   session.pendingApprovalId = undefined;
+  session.continuation = undefined;
   sessions.set(options.runId, session);
 
   try {
@@ -199,7 +287,7 @@ export async function resumeAgentAfterClarification(
   options: ResumeClarificationOptions,
 ): Promise<AgentTurnResult> {
   ensureDomainToolsRegistered();
-  const session = sessions.get(options.runId);
+  const session = await loadAgentSession(options.runId);
   if (!session) {
     return {
       status: 'failed',
@@ -211,7 +299,6 @@ export async function resumeAgentAfterClarification(
       messageId: options.clarification.messageId,
     };
   }
-
   const signal = registerAssistantRunController(options.runId);
   const toolContext: AssistantToolContext = {
     ...options.toolContext,
@@ -250,6 +337,7 @@ export async function resumeAgentAfterClarification(
     role: 'user',
     content: answerLines.join('\n'),
   });
+  session.continuation = undefined;
   sessions.set(options.runId, session);
 
   try {
@@ -336,7 +424,8 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
 
     if (decision.type === 'clarify') {
       session.messages.push({ role: 'assistant', content: JSON.stringify(decision) });
-      sessions.set(session.runId, session);
+      session.continuation = { kind: 'agent', waitingFor: 'clarification' };
+      await parkAgentSession(session, 'waiting-clarification');
       onStatus?.('needs_clarification');
       const clarification = emitClarificationQuestion({
         runId: session.runId,
@@ -459,6 +548,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
           approvalId: result.approval.id,
         });
         session.pendingApprovalId = result.approval.id;
+        session.continuation = { kind: 'agent', waitingFor: 'approval' };
         session.messages.push({
           role: 'tool',
           name: call.name,
@@ -467,6 +557,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         });
         onStatus?.('needs_approval');
         store().finishRun(session.runId, 'waiting-approval');
+        await parkAgentSession(session, 'waiting-approval');
         return finishWith(session, {
           status: 'needs_approval',
           finalStatus: 'needs_approval',
