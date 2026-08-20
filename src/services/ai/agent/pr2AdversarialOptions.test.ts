@@ -135,6 +135,42 @@ describe('pr2 adversarial model clarification options', () => {
     ])).toBeNull();
   });
 
+  it('rejects fields whose raw length exceeds the limit even when trim would fit', () => {
+    const paddedId = `${' '.repeat(MODEL_OPTION_ID_MAX)}a`; // raw length = max + 1
+    expect(paddedId.length).toBe(MODEL_OPTION_ID_MAX + 1);
+    expect(paddedId.trim().length).toBeLessThanOrEqual(MODEL_OPTION_ID_MAX);
+    expect(validateModelClarificationOptions([
+      { id: paddedId, label: 'A', value: 'a' },
+      { id: 'b', label: 'B', value: 'b' },
+    ])).toBeNull();
+
+    const paddedLabel = ` ${'L'.repeat(MODEL_OPTION_LABEL_MAX)} `; // raw length = max + 2
+    expect(paddedLabel.length).toBe(MODEL_OPTION_LABEL_MAX + 2);
+    expect(paddedLabel.trim().length).toBeLessThanOrEqual(MODEL_OPTION_LABEL_MAX);
+    expect(validateModelClarificationOptions([
+      { id: 'a', label: paddedLabel, value: 'a' },
+      { id: 'b', label: 'B', value: 'b' },
+    ])).toBeNull();
+
+    const paddedValue = `${' '.repeat(MODEL_OPTION_VALUE_MAX)}v`; // raw length = max + 1
+    expect(paddedValue.length).toBe(MODEL_OPTION_VALUE_MAX + 1);
+    expect(paddedValue.trim().length).toBeLessThanOrEqual(MODEL_OPTION_VALUE_MAX);
+    expect(validateModelClarificationOptions([
+      { id: 'a', label: 'A', value: paddedValue },
+      { id: 'b', label: 'B', value: 'b' },
+    ])).toBeNull();
+  });
+
+  it('still trims incidental whitespace when raw length is within limits', () => {
+    expect(validateModelClarificationOptions([
+      { id: '  a  ', label: '  Option A  ', value: '  a  ' },
+      { id: 'b', label: 'Option B', value: 'b' },
+    ])).toEqual([
+      { id: 'a', label: 'Option A', value: 'a' },
+      { id: 'b', label: 'Option B', value: 'b' },
+    ]);
+  });
+
   it('still accepts a fully valid 2–6 option set', () => {
     expect(validateModelClarificationOptions([...validPair])).toEqual([
       { id: 'a', label: 'Option A', value: 'a' },

@@ -99,13 +99,15 @@ export function validateModelClarificationOptions(
       return null;
     }
 
+    // Enforce limits on the raw supplied strings before trim so padding cannot bypass them.
+    if (id.length > MODEL_OPTION_ID_MAX) return null;
+    if (label.length > MODEL_OPTION_LABEL_MAX) return null;
+    if (value.length > MODEL_OPTION_VALUE_MAX) return null;
+
     const trimmedId = id.trim();
     const trimmedLabel = label.trim();
     const trimmedValue = value.trim();
     if (!trimmedId || !trimmedLabel || !trimmedValue) return null;
-    if (trimmedId.length > MODEL_OPTION_ID_MAX) return null;
-    if (trimmedLabel.length > MODEL_OPTION_LABEL_MAX) return null;
-    if (trimmedValue.length > MODEL_OPTION_VALUE_MAX) return null;
     if (seenIds.has(trimmedId) || seenValues.has(trimmedValue)) return null;
 
     seenIds.add(trimmedId);
