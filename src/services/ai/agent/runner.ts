@@ -18,6 +18,7 @@ export {
   resumeAgentAfterClarification,
   runPrimaryAgentLoop,
   setAgentSession,
+  wouldTruncatePersistable,
   type ResumeAgentOptions,
   type ResumeClarificationOptions,
 } from './runnerCore';

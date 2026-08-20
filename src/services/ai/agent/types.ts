@@ -23,7 +23,7 @@ export type AgentFinalStatus =
   | 'cancelled'
   | 'max_steps';
 
-export type AgentErrorCode = 'SESSION_EXPIRED' | 'DOCUMENT_MISMATCH';
+export type AgentErrorCode = 'SESSION_EXPIRED' | 'DOCUMENT_MISMATCH' | 'ANALYSIS_TRUNCATED';
 
 export type RoutingPath =
   | 'answer_directly'
@@ -105,6 +105,11 @@ export interface PipelineContinuationState {
   kind: 'pipeline';
   originalPrompt: string;
   analysis: BlueprintAnalysisResult[];
+  /**
+   * Set when takeoff analysis could not be stored intact for resume.
+   * Resume must refuse estimation rather than silently using partial data.
+   */
+  analysisTruncated?: boolean;
   evidence: string[];
   questions: PipelineClarificationStep[];
   nextQuestionIndex: number;

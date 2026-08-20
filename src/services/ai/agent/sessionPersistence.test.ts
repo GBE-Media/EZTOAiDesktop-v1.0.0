@@ -14,6 +14,7 @@ import {
   getAgentSession,
   loadAgentSession,
   parkAgentSession,
+  wouldTruncatePersistable,
 } from './runner';
 import type { AgentSessionState } from './types';
 import { useAIChatStore } from '@/store/aiChatStore';
@@ -103,6 +104,64 @@ describe('durable agent sessions', () => {
     });
     expect(restored?.messages).toHaveLength(2);
     expect(restored?.toolHistory[0].result.output).toEqual({ count: 2 });
+  });
+
+  it('persists oversized continuation.analysis intact instead of silently truncating', async () => {
+    // Generic clonePersistable caps arrays at 500 entries — 600 items would truncate.
+    const oversizedAnalysis = Array.from({ length: 600 }, (_, index) => ({
+      page: 1,
+      items: [{
+        id: `item-${index}`,
+        type: 'fixture',
+        trade: 'electrical' as const,
+        name: `Fixture ${index}`,
+        quantity: 1,
+        location: { x: index, y: index },
+        confidence: 0.9,
+      }],
+      dimensions: [],
+      text: [],
+      symbols: [],
+      evidence: [`evidence-${index}`],
+    }));
+    expect(wouldTruncatePersistable(oversizedAnalysis)).toBe(true);
+
+    const session: AgentSessionState = {
+      ...makeSession('run-oversized-analysis'),
+      continuation: {
+        kind: 'pipeline',
+        originalPrompt: 'Count fixtures',
+        analysis: oversizedAnalysis,
+        evidence: ['Sheet E-101'],
+        questions: [{
+          id: 'scope',
+          prompt: 'Which scope?',
+          options: [{ id: 'all', label: 'All', value: 'all' }],
+        }],
+        nextQuestionIndex: 0,
+        config: {
+          trade: 'electrical',
+          pages: [1],
+          pageWidth: 612,
+          pageHeight: 792,
+          highAccuracyMode: true,
+          visibleOnly: false,
+          refinePlacements: true,
+        },
+      },
+    };
+
+    await parkAgentSession(session, 'waiting-clarification');
+    clearAgentSessionMemoryForTests();
+    const restored = await loadAgentSession(session.runId);
+    expect(restored?.continuation?.kind).toBe('pipeline');
+    if (restored?.continuation?.kind !== 'pipeline') return;
+    expect(restored.continuation.analysisTruncated).toBe(false);
+    expect(restored.continuation.analysis).toHaveLength(600);
+    expect(restored.continuation.analysis[599]).toMatchObject({
+      items: [{ id: 'item-599', name: 'Fixture 599' }],
+      evidence: ['evidence-599'],
+    });
   });
 
   it('flushes the visible clarification snapshot before parking returns', async () => {

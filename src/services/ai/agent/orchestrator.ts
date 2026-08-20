@@ -150,6 +150,14 @@ export async function resumeTaskAfterClarification(
         'DOCUMENT_MISMATCH',
       );
     }
+    if (continuation.analysisTruncated) {
+      return failedTaskResult(
+        session.runId,
+        session.messageId,
+        'This session\'s analysis data was too large to fully restore; please re-run the takeoff.',
+        'ANALYSIS_TRUNCATED',
+      );
+    }
     const answeredIndex = continuation.nextQuestionIndex;
     const expectedQuestion = continuation.questions[answeredIndex];
     if (!expectedQuestion) {

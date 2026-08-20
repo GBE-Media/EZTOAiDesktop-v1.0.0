@@ -140,10 +140,89 @@ function toPersistedSession(session: AgentSessionState): AgentSessionState {
           : undefined,
       },
     })),
-    continuation: session.continuation
-      ? clonePersistable(session.continuation) as AgentSessionState['continuation']
-      : undefined,
+    continuation: persistContinuation(session.continuation),
   };
+}
+
+/**
+ * Takeoff analysis feeds the estimator on resume — never run it through the
+ * general size/depth truncator used for tool payloads.
+ */
+function persistContinuation(
+  continuation: AgentSessionState['continuation'],
+): AgentSessionState['continuation'] {
+  if (!continuation) return undefined;
+  if (continuation.kind !== 'pipeline') {
+    return clonePersistable(continuation) as AgentSessionState['continuation'];
+  }
+
+  const { analysis, analysisTruncated: alreadyTruncated, ...rest } = continuation;
+  const sanitizedRest = clonePersistable(rest) as Omit<
+    typeof continuation,
+    'analysis' | 'analysisTruncated'
+  >;
+
+  // Honor an existing truncation marker — never silently clear it on re-park.
+  if (alreadyTruncated) {
+    return {
+      ...sanitizedRest,
+      kind: 'pipeline',
+      analysis: [],
+      analysisTruncated: true,
+    };
+  }
+
+  // Prefer full analysis even when generic clonePersistable would truncate it.
+  if (wouldTruncatePersistable(analysis)) {
+    console.warn(
+      '[Agent] Takeoff analysis exceeds generic persistence guards; storing full analysis intact.',
+    );
+  }
+
+  try {
+    return {
+      ...sanitizedRest,
+      kind: 'pipeline',
+      analysis: cloneAnalysisIntact(analysis),
+      analysisTruncated: false,
+    };
+  } catch (error) {
+    console.warn('[Agent] Failed to persist full takeoff analysis:', error);
+    return {
+      ...sanitizedRest,
+      kind: 'pipeline',
+      analysis: [],
+      analysisTruncated: true,
+    };
+  }
+}
+
+function cloneAnalysisIntact<T>(value: T): T {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/** True when clonePersistable would drop or replace data (size/depth/image-key guards). */
+export function wouldTruncatePersistable(value: unknown, depth = 0): boolean {
+  if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return false;
+  }
+  if (depth >= 8) return true;
+  if (Array.isArray(value)) {
+    if (value.length > 500) return true;
+    return value.some(item => wouldTruncatePersistable(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 500) return true;
+    for (const [key, child] of entries) {
+      if (/base64|imageData|dataUrl/i.test(key)) return true;
+      if (wouldTruncatePersistable(child, depth + 1)) return true;
+    }
+  }
+  return false;
 }
 
 function clonePersistable(value: unknown, depth = 0): unknown {

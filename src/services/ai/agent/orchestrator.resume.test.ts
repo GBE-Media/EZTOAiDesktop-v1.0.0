@@ -244,6 +244,67 @@ describe('agent task orchestrator resume continuity', () => {
     expect(pipelineMock).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses to resume estimation when persisted analysis was truncated', async () => {
+    createRun('run-truncated', 'message-truncated');
+    const clarification = {
+      id: 'clarification-truncated',
+      runId: 'run-truncated',
+      messageId: 'message-truncated',
+      stepKey: 'pipeline_0_scope',
+      question: 'Which scope?',
+      options: [],
+      status: 'pending' as const,
+      createdAt: new Date().toISOString(),
+    };
+    useAIChatStore.getState().addClarification(clarification);
+    await parkAgentSession({
+      runId: 'run-truncated',
+      messageId: 'message-truncated',
+      messages: [{ role: 'user', content: 'Count fixtures' }],
+      toolHistory: [],
+      actionsTaken: [],
+      contextText: 'context',
+      continuation: {
+        kind: 'pipeline',
+        originalPrompt: 'Count fixtures',
+        analysis: [],
+        analysisTruncated: true,
+        evidence: [],
+        questions: [{
+          id: 'scope',
+          prompt: 'Which scope?',
+          options: [{ id: 'all', label: 'All', value: 'all' }],
+        }],
+        nextQuestionIndex: 0,
+        pendingClarificationId: clarification.id,
+        pendingClarificationStepKey: clarification.stepKey,
+        config: {
+          trade: 'electrical',
+          pages: [1],
+          pageWidth: 612,
+          pageHeight: 792,
+          highAccuracyMode: false,
+          visibleOnly: false,
+          refinePlacements: true,
+          documentId: 'document-a',
+        },
+      },
+    }, 'waiting-clarification');
+
+    const resumed = await resumeTaskAfterClarification({
+      clarification,
+      answer: { selectedValues: ['all'], displayText: 'All' },
+      toolContext: toolContext('run-truncated', 'message-truncated'),
+      pipelineRuntime: { activeDocumentId: 'document-a' },
+    });
+
+    expect(resumed.status).toBe('failed');
+    expect(resumed.errorCode).toBe('ANALYSIS_TRUNCATED');
+    expect(resumed.agentResult?.assistantMessage).toContain('re-run the takeoff');
+    expect(useAIChatStore.getState().clarifications[clarification.id].status).toBe('pending');
+    expect(pipelineMock).not.toHaveBeenCalled();
+  });
+
   it('hydrates and appends an agent clarification answer after reload', async () => {
     createRun('run-agent', 'message-agent');
     const session: AgentSessionState = {
