@@ -181,7 +181,13 @@ export type AgentModelDecision =
   | { type: 'plan'; plan: string }
   | { type: 'tool_calls'; toolCalls: AgentToolCallRequest[]; assistantText?: string }
   | { type: 'final'; message: string; clarifyingQuestions?: string[] }
-  | { type: 'clarify'; message: string; questions: string[] };
+  | {
+      type: 'clarify';
+      message: string;
+      questions: string[];
+      /** Clickable choices for the primary question (message / questions[0]). */
+      options?: Array<{ id: string; label: string; value: string }>;
+    };
 
 export interface AgentTraceEvent {
   runId: string;

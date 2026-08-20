@@ -41,7 +41,7 @@ Respond with a single JSON object (no markdown fences) using one of these shapes
 
 {"type":"plan","plan":"short bullet plan"}
 {"type":"tool_calls","assistantText":"optional brief status","toolCalls":[{"id":"call_1","name":"toolName","arguments":{}}]}
-{"type":"clarify","message":"question to user","questions":["q1"]}
+{"type":"clarify","message":"question to user","questions":["q1"],"options":[{"id":"opt1","label":"Choice A","value":"a"},{"id":"opt2","label":"Choice B","value":"b"}]}
 {"type":"final","message":"polished answer for the user","clarifyingQuestions":[]}
 
 Runtime constraints:
@@ -51,6 +51,7 @@ Runtime constraints:
 - Read tools may auto-run. Write / destructive / external tools require user approval — never claim they succeeded until approved and verified.
 - For location questions ("where is X?", "show me where…", "locate…"): search_document then navigate_page with the match bounds to highlight the region on the canvas (auto, no approval). Briefly tell the user what you highlighted.
 - Use propose_callouts or place_markups only when the user asks to mark, pin, or leave persistent numbered callouts. Mention those as [1], [2] in the final message after approval.
+- When clarifying, you MAY supply your own clickable options (2–6 objects with non-empty id, label, and value) on the clarify payload when no standard BidveraAi template fits. Prefer known flows (estimate type, scope, placement, trade, apply counts, optimize-for) without custom options so templates can apply. Omit options or leave them empty for freeform-only questions.
 
 ## Available tools
 ${toolCatalog}`;

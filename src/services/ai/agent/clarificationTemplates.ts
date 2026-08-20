@@ -72,15 +72,72 @@ export function inferClarificationStepKey(question: string, explicit?: string): 
   return explicit || 'general';
 }
 
+export const MODEL_OPTION_ID_MAX = 64;
+export const MODEL_OPTION_LABEL_MAX = 120;
+export const MODEL_OPTION_VALUE_MAX = 200;
+
+/**
+ * Strict gate for model-supplied clarification chips.
+ * Returns null when the set is missing or malformed so callers fall back to templates/freeform.
+ * Does not coerce, derive, filter, or partially accept invalid entries.
+ */
+export function validateModelClarificationOptions(
+  options: unknown,
+): ClarificationOption[] | null {
+  if (!Array.isArray(options)) return null;
+  if (options.length < 2 || options.length > 6) return null;
+
+  const normalized: ClarificationOption[] = [];
+  const seenIds = new Set<string>();
+  const seenValues = new Set<string>();
+
+  for (const raw of options) {
+    if (!isPlainObject(raw)) return null;
+
+    const { id, label, value } = raw as Record<string, unknown>;
+    if (typeof id !== 'string' || typeof label !== 'string' || typeof value !== 'string') {
+      return null;
+    }
+
+    // Enforce limits on the raw supplied strings before trim so padding cannot bypass them.
+    if (id.length > MODEL_OPTION_ID_MAX) return null;
+    if (label.length > MODEL_OPTION_LABEL_MAX) return null;
+    if (value.length > MODEL_OPTION_VALUE_MAX) return null;
+
+    const trimmedId = id.trim();
+    const trimmedLabel = label.trim();
+    const trimmedValue = value.trim();
+    if (!trimmedId || !trimmedLabel || !trimmedValue) return null;
+    if (seenIds.has(trimmedId) || seenValues.has(trimmedValue)) return null;
+
+    seenIds.add(trimmedId);
+    seenValues.add(trimmedValue);
+    normalized.push({
+      id: trimmedId,
+      label: trimmedLabel,
+      value: trimmedValue,
+    });
+  }
+
+  return normalized;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
 /**
  * Resolve clickable options for a clarification. Returns [] for freeform-only cards.
+ * Precedence: validated model options → keyword templates → empty (freeform).
  */
 export function resolveClarificationOptions(
   question: string,
-  options?: ClarificationOption[],
+  options?: ClarificationOption[] | unknown,
   stepKey?: string,
 ): ClarificationOption[] {
-  if (options && options.length > 0) return options.slice(0, 6);
+  const modelOptions = validateModelClarificationOptions(options);
+  if (modelOptions) return modelOptions;
+
   const key = inferClarificationStepKey(question, stepKey);
   return (BIDVERA_QUESTION_TEMPLATES[key] || []).slice(0, 6);
 }
