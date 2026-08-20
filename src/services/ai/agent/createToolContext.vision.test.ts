@@ -227,6 +227,29 @@ describe('createAgentToolContext vision defaults (Phase 3)', () => {
     expect(analyzePageMaximumAccuracyMock).not.toHaveBeenCalled();
   });
 
+  it('rejects off-page and sub-1pt overlap regions after true page intersection', async () => {
+    seedOpenPdf(); // page 612 x 792
+    const canvas = useCanvasStore.getState();
+    const context = editorStyleContext('run-offpage', 'msg-offpage');
+
+    // Entirely left of the page — must not be shifted on-page with original width.
+    canvas.setAiViewportRect('doc-vision', 1, { x: -50, y: 20, width: 20, height: 100 });
+    expect(await context.analyzePage({ page: 1, scope: 'viewport' })).toMatchObject({
+      status: 'unavailable',
+      message: expect.stringContaining('no usable area'),
+    });
+    expect(analyzePageMaximumAccuracyMock).not.toHaveBeenCalled();
+
+    analyzePageMaximumAccuracyMock.mockClear();
+    // Sub-1pt overlap after intersection (x=-0.5..0.5 → clamped width 0.5)
+    canvas.setAiSelectionRect('doc-vision', 1, { x: -0.5, y: 100, width: 1, height: 50 });
+    expect(await context.analyzePage({ page: 1, scope: 'selection' })).toMatchObject({
+      status: 'unavailable',
+      message: expect.stringContaining('no usable area'),
+    });
+    expect(analyzePageMaximumAccuracyMock).not.toHaveBeenCalled();
+  });
+
   it('analyze_page returns unavailable with no PDF or out-of-range page', async () => {
     const context = editorStyleContext('run-miss', 'msg-miss');
     expect(await context.analyzePage({ page: 1, scope: 'full' })).toEqual({
