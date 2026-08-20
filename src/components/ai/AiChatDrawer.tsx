@@ -34,11 +34,12 @@ import {
   convertPlacementsToMarkups,
   createPageGeometry,
   proposalsFromChatPointers,
-  proposalsFromPlacementMarkups,
   resolvePageAnchors,
   usePlacementDebugStore,
   verifyMarkupProposal,
+  verifyPlacementMarkupsByPage,
 } from '@/services/ai/placement';
+import { getPageDimensions } from '@/lib/pdfLoader';
 import { useEditorStore } from '@/store/editorStore';
 import { useProductSync } from '@/hooks/useProductSync';
 import { ChatMessage } from './ChatMessage';
@@ -301,7 +302,6 @@ export function AgentAssistantDrawer() {
     const canvas = useCanvasStore.getState();
     const docId = canvas.activeDocId;
     const docData = docId ? canvas.pdfDocuments[docId] : null;
-    const currentPageNumber = canvas.getCurrentPage() || 1;
     const analysisTypeCounts = extractTypeCounts(options.result.analysis || []);
     const estimateCountMap = extractCountsFromEstimate(options.result.estimate?.items || []);
     const countMap = Object.keys(analysisTypeCounts).length > 0 ? analysisTypeCounts : estimateCountMap;
@@ -355,48 +355,86 @@ export function AgentAssistantDrawer() {
     );
 
     if (options.result.placements?.markups.length) {
-      const pageGeom = createPageGeometry({
-        pageNumber: currentPageNumber,
-        docWidth: docData?.originalPageWidth || pageWidth,
-        docHeight: docData?.originalPageHeight || pageHeight,
-      });
-      const proposals = proposalsFromPlacementMarkups({
-        markups: options.result.placements.markups,
-        page: pageGeom,
-      });
-      const anchors = resolvePageAnchors({
-        page: pageGeom,
-        pageNumber: pageGeom.pageNumber,
-      });
-      const verified = proposals.map(proposal => verifyMarkupProposal(proposal, {
-        page: pageGeom,
-        anchors,
-        enableSnap: true,
-      }));
-      usePlacementDebugStore.getState().setDebugScene({
-        page: pageGeom,
-        proposals: verified.map(item => item.proposal),
-        anchors,
-      });
-      const proposedMarkups = convertPlacementsToMarkups(
-        options.result.placements,
-        defaultStyle,
-        `takeoff_${options.assistantMsgId}`,
-        BASE_RENDER_SCALE,
-        BASE_RENDER_SCALE,
-        verified.map(item => ({
-          id: item.proposal.id,
-          pending: item.requiresConfirmation,
-          confidence: item.proposal.confidence,
-          boundingBox: item.proposal.boundingBox,
-        })),
-      );
-      queueMarkupApproval({
-        assistantMsgId: options.assistantMsgId,
-        runId: options.runId,
-        markups: proposedMarkups,
-        description: `Place ${proposedMarkups.length} verified green callout${proposedMarkups.length === 1 ? '' : 's'} from this takeoff.`,
-      });
+      const placementMarkups = options.result.placements.markups;
+      void (async () => {
+        const pageNumbers = Array.from(new Set(
+          placementMarkups.map(markup => markup.page || 1),
+        ));
+        const geometryByPage = new Map<number, ReturnType<typeof createPageGeometry>>();
+        const fallbackWidth = docData?.originalPageWidth || pageWidth;
+        const fallbackHeight = docData?.originalPageHeight || pageHeight;
+
+        await Promise.all(pageNumbers.map(async (pageNumber) => {
+          let docWidth = fallbackWidth;
+          let docHeight = fallbackHeight;
+          // Prefer real per-page PDF metadata when available (page need not be on-screen).
+          if (docData?.pdfDocument) {
+            try {
+              const dims = await getPageDimensions(docData.pdfDocument, pageNumber);
+              docWidth = dims.width;
+              docHeight = dims.height;
+            } catch (error) {
+              console.warn(`[AI] Failed to read page ${pageNumber} dimensions; using document fallback`, error);
+            }
+          }
+          geometryByPage.set(pageNumber, createPageGeometry({
+            pageNumber,
+            docWidth,
+            docHeight,
+          }));
+        }));
+
+        const verified = verifyPlacementMarkupsByPage({
+          markups: placementMarkups,
+          enableSnap: true,
+          resolvePageContext: (pageNumber) => {
+            const page = geometryByPage.get(pageNumber) || createPageGeometry({
+              pageNumber,
+              docWidth: fallbackWidth,
+              docHeight: fallbackHeight,
+            });
+            return {
+              page,
+              anchors: resolvePageAnchors({ page, pageNumber }),
+            };
+          },
+        });
+
+        const debugPageNumber = canvas.getCurrentPage() || pageNumbers[0] || 1;
+        const debugPage = geometryByPage.get(debugPageNumber)
+          || createPageGeometry({
+            pageNumber: debugPageNumber,
+            docWidth: fallbackWidth,
+            docHeight: fallbackHeight,
+          });
+        usePlacementDebugStore.getState().setDebugScene({
+          page: debugPage,
+          proposals: verified
+            .map(item => item.proposal)
+            .filter(proposal => proposal.pageNumber === debugPage.pageNumber),
+          anchors: resolvePageAnchors({ page: debugPage, pageNumber: debugPage.pageNumber }),
+        });
+
+        const proposedMarkups = convertPlacementsToMarkups(
+          options.result.placements!,
+          defaultStyle,
+          `takeoff_${options.assistantMsgId}`,
+          BASE_RENDER_SCALE,
+          BASE_RENDER_SCALE,
+          verified.map(item => ({
+            id: item.proposal.id,
+            pending: item.requiresConfirmation,
+            confidence: item.proposal.confidence,
+            boundingBox: item.proposal.boundingBox,
+          })),
+        );
+        queueMarkupApproval({
+          assistantMsgId: options.assistantMsgId,
+          runId: options.runId,
+          markups: proposedMarkups,
+          description: `Place ${proposedMarkups.length} verified green callout${proposedMarkups.length === 1 ? '' : 's'} from this takeoff.`,
+        });
+      })();
     } else {
       store.finishRun(options.runId, 'completed');
     }
@@ -1883,6 +1921,8 @@ function normalizeAgentMarkupPayload(options: {
 
   // pageWidth/Height here are document points (originalPage*). Proposals stay in doc space;
   // convertPlacementsToMarkups applies BASE_RENDER_SCALE at the canvas boundary.
+  // Path B is single-page by construction: chatPointersToGreenPlacements stamps
+  // options.page onto every markup, so one pageGeom/anchors pair is correct here.
   const pageGeom = createPageGeometry({
     pageNumber: options.page,
     docWidth: options.pageWidth,

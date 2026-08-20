@@ -31,6 +31,7 @@ export {
   type PageMarkupPair,
 } from './confidenceGate';
 export { verifyMarkupProposal, type VerifyContext } from './verify';
+export { verifyPlacementMarkupsByPage } from './verifyPlacementsByPage';
 export { proposalsFromChatPointers, proposalsFromPlacementMarkups } from './proposals';
 export {
   convertPlacementsToMarkups,

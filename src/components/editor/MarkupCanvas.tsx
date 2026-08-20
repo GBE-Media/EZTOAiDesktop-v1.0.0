@@ -27,6 +27,7 @@ import type {
   StampPreset,
 } from '@/types/markup';
 import { TextEditOverlay } from './TextEditOverlay';
+import { resolveMarkupDrawAppearance } from './markupDrawAppearance';
 
 const EMPTY_MARKUPS: CanvasMarkup[] = [];
 
@@ -438,6 +439,22 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       ctx.shadowColor = 'rgba(59, 130, 246, 0.3)';
       ctx.shadowBlur = 5 / scale;
     }
+
+    // Needs-confirmation AI markups: emerald dashed outline (ApprovalCard emerald language).
+    const pendingAppearance = resolveMarkupDrawAppearance({
+      markup,
+      isEraserHovered,
+      scale,
+    });
+    if (pendingAppearance.lineDash.length > 0) {
+      ctx.setLineDash(pendingAppearance.lineDash);
+    }
+    if (pendingAppearance.strokeStyle && !isEraserHovered) {
+      ctx.strokeStyle = pendingAppearance.strokeStyle;
+    }
+    if (pendingAppearance.fillAlphaScale < 1) {
+      ctx.globalAlpha = Math.min(ctx.globalAlpha, pendingAppearance.fillAlphaScale);
+    }
     
     switch (markup.type) {
       case 'rectangle': {
@@ -692,7 +709,19 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         // Add a subtle border for visibility
         ctx.strokeStyle = 'white';
         ctx.lineWidth = 2;
+        ctx.setLineDash([]);
         ctx.stroke();
+
+        // Pending confirmation: emerald dashed halo (matches ApprovalCard accents).
+        if (pendingAppearance.pendingBadge && !isEraserHovered) {
+          ctx.setLineDash(pendingAppearance.lineDash);
+          ctx.strokeStyle = pendingAppearance.strokeStyle || '#10b981';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(m.x, m.y, radius + 4, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
         break;
       }
       
