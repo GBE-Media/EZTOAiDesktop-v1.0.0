@@ -52,14 +52,14 @@ describe('clarification templates', () => {
       { id: 'only', label: 'Only one', value: 'only' },
     ])).toBeNull();
 
-    const capped = validateModelClarificationOptions(
+    // Length > 6 must invalidate the whole set (no silent slice/cap).
+    expect(validateModelClarificationOptions(
       Array.from({ length: 8 }, (_, index) => ({
         id: `o${index}`,
         label: `Option ${index}`,
         value: `v${index}`,
       })),
-    );
-    expect(capped).toHaveLength(6);
+    )).toBeNull();
 
     // Empty labels → fall through to estimate_type template.
     expect(resolveClarificationOptions(

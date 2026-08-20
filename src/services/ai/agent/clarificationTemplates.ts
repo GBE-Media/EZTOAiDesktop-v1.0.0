@@ -72,29 +72,56 @@ export function inferClarificationStepKey(question: string, explicit?: string): 
   return explicit || 'general';
 }
 
+export const MODEL_OPTION_ID_MAX = 64;
+export const MODEL_OPTION_LABEL_MAX = 120;
+export const MODEL_OPTION_VALUE_MAX = 200;
+
 /**
- * Normalize and validate model-supplied clarification chips.
- * Returns null when the set is missing or malformed so callers can fall back to templates.
+ * Strict gate for model-supplied clarification chips.
+ * Returns null when the set is missing or malformed so callers fall back to templates/freeform.
+ * Does not coerce, derive, filter, or partially accept invalid entries.
  */
 export function validateModelClarificationOptions(
   options: unknown,
 ): ClarificationOption[] | null {
-  if (!Array.isArray(options) || options.length === 0) return null;
+  if (!Array.isArray(options)) return null;
+  if (options.length < 2 || options.length > 6) return null;
 
   const normalized: ClarificationOption[] = [];
-  for (const raw of options.slice(0, 6)) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-    const item = raw as Record<string, unknown>;
-    const label = String(item.label ?? '').trim();
-    const value = String(item.value ?? item.id ?? label).trim();
-    const id = String(item.id ?? value).trim();
-    if (!label || !value || !id) continue;
-    normalized.push({ id, label, value });
+  const seenIds = new Set<string>();
+  const seenValues = new Set<string>();
+
+  for (const raw of options) {
+    if (!isPlainObject(raw)) return null;
+
+    const { id, label, value } = raw as Record<string, unknown>;
+    if (typeof id !== 'string' || typeof label !== 'string' || typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmedId = id.trim();
+    const trimmedLabel = label.trim();
+    const trimmedValue = value.trim();
+    if (!trimmedId || !trimmedLabel || !trimmedValue) return null;
+    if (trimmedId.length > MODEL_OPTION_ID_MAX) return null;
+    if (trimmedLabel.length > MODEL_OPTION_LABEL_MAX) return null;
+    if (trimmedValue.length > MODEL_OPTION_VALUE_MAX) return null;
+    if (seenIds.has(trimmedId) || seenValues.has(trimmedValue)) return null;
+
+    seenIds.add(trimmedId);
+    seenValues.add(trimmedValue);
+    normalized.push({
+      id: trimmedId,
+      label: trimmedLabel,
+      value: trimmedValue,
+    });
   }
 
-  // Model-supplied sets must include 2–6 usable options.
-  if (normalized.length < 2) return null;
   return normalized;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**

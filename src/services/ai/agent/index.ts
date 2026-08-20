@@ -40,6 +40,9 @@ export {
   inferClarificationStepKey,
   resolveClarificationOptions,
   validateModelClarificationOptions,
+  MODEL_OPTION_ID_MAX,
+  MODEL_OPTION_LABEL_MAX,
+  MODEL_OPTION_VALUE_MAX,
 } from './clarificationTemplates';
 export type { AgentModelRole, AgentModelsConfig, AgentModelSelection } from './roles';
 export type {
