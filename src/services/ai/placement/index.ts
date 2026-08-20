@@ -40,6 +40,19 @@ export {
   type PlacementVerificationMeta,
 } from './convertPlacements';
 export {
+  loadPageGeometries,
+  GEOMETRY_FAILURE_NOTE,
+  geometryFailureConfidence,
+  type PageGeometryLoadResult,
+  type PdfDocumentLike,
+} from './loadPageGeometries';
+export { canvasMarkupToPlacementMarkup } from './canvasMarkupToPlacement';
+export {
+  normalizeAgentMarkupPayload,
+  verifyPlacementMarkupsWithGeometryGate,
+  type NormalizeAgentMarkupOptions,
+} from './normalizeAgentMarkupPayload';
+export {
   usePlacementDebugStore,
   type PlacementDebugState,
 } from './debugStore';

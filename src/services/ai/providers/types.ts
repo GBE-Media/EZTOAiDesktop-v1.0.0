@@ -272,6 +272,8 @@ export interface ChatMarkupPointer {
   ref: number; // matches [N] in the visible answer
   xPct: number; // 0-100, left-to-right
   yPct: number; // 0-100, top-to-bottom
+  /** Optional target page; when omitted, callers may supply a shared default page. */
+  page?: number;
   boundsPct?: {
     x: number;
     y: number;

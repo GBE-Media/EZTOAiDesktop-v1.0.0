@@ -27,6 +27,8 @@ const estimateBubbleSize = (content: string) => {
 /**
  * Convert intentional chat callout pointers into classic callout markups
  * with a labeled bubble and a leader line to the target point/bounds.
+ * Each pointer may carry its own `page`; when present it is preserved.
+ * Optional `pageSizes` supplies per-page dimensions; otherwise pageWidth/Height.
  */
 export function chatPointersToGreenPlacements(options: {
   pointers: ChatMarkupPointer[];
@@ -34,27 +36,39 @@ export function chatPointersToGreenPlacements(options: {
   pageWidth: number;
   pageHeight: number;
   idPrefix: string;
+  pageSizes?: Map<number, { width: number; height: number }> | Record<number, { width: number; height: number }>;
 }): CanvasPlacement {
-  const { pointers, page, pageWidth, pageHeight, idPrefix } = options;
+  const { pointers, page, pageWidth, pageHeight, idPrefix, pageSizes } = options;
+
+  const sizeFor = (pageNumber: number) => {
+    if (pageSizes instanceof Map) {
+      return pageSizes.get(pageNumber);
+    }
+    return pageSizes?.[pageNumber];
+  };
 
   return {
     markups: pointers.map((pointer, index): PlacementMarkup => {
       const ref = pointer.ref || index + 1;
+      const pageNumber = pointer.page && pointer.page > 0 ? pointer.page : page;
+      const size = sizeFor(pageNumber);
+      const width = size?.width && size.width > 0 ? size.width : pageWidth;
+      const height = size?.height && size.height > 0 ? size.height : pageHeight;
       const label = pointer.label?.trim() || `Callout ${ref}`;
       const content = `[${ref}] ${label}`;
       const bubble = estimateBubbleSize(content);
 
       const targetX = pointer.boundsPct
-        ? ((pointer.boundsPct.x + pointer.boundsPct.width / 2) / 100) * pageWidth
-        : (pointer.xPct / 100) * pageWidth;
+        ? ((pointer.boundsPct.x + pointer.boundsPct.width / 2) / 100) * width
+        : (pointer.xPct / 100) * width;
       const targetY = pointer.boundsPct
-        ? ((pointer.boundsPct.y + pointer.boundsPct.height / 2) / 100) * pageHeight
-        : (pointer.yPct / 100) * pageHeight;
+        ? ((pointer.boundsPct.y + pointer.boundsPct.height / 2) / 100) * height
+        : (pointer.yPct / 100) * height;
 
       const preferredX = targetX + 28;
       const preferredY = targetY - bubble.height - 24;
-      const bubbleX = clamp(preferredX, 4, Math.max(4, pageWidth - bubble.width - 4));
-      const bubbleY = clamp(preferredY, 4, Math.max(4, pageHeight - bubble.height - 4));
+      const bubbleX = clamp(preferredX, 4, Math.max(4, width - bubble.width - 4));
+      const bubbleY = clamp(preferredY, 4, Math.max(4, height - bubble.height - 4));
 
       // Leader attaches near the bubble corner closest to the target.
       const leaderStart = {
@@ -62,14 +76,14 @@ export function chatPointersToGreenPlacements(options: {
         y: bubbleY + (targetY < bubbleY ? 0 : bubble.height),
       };
       const leaderEnd = {
-        x: clamp(targetX, 0, pageWidth),
-        y: clamp(targetY, 0, pageHeight),
+        x: clamp(targetX, 0, width),
+        y: clamp(targetY, 0, height),
       };
 
       return {
         id: `${idPrefix}_callout_${ref}`,
         type: 'callout',
-        page,
+        page: pageNumber,
         points: [
           { x: bubbleX, y: bubbleY },
           { x: bubbleX + bubble.width, y: bubbleY + bubble.height },

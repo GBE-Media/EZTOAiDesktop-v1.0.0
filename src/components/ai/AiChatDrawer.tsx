@@ -29,17 +29,12 @@ import { useAISettingsStore } from '@/store/aiSettingsStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useProductStore } from '@/store/productStore';
 import {
-  BASE_RENDER_SCALE,
   commitMarkupsByConfidence,
-  convertPlacementsToMarkups,
-  createPageGeometry,
-  proposalsFromChatPointers,
+  normalizeAgentMarkupPayload,
   resolvePageAnchors,
   usePlacementDebugStore,
-  verifyMarkupProposal,
-  verifyPlacementMarkupsByPage,
+  verifyPlacementMarkupsWithGeometryGate,
 } from '@/services/ai/placement';
-import { getPageDimensions } from '@/lib/pdfLoader';
 import { useEditorStore } from '@/store/editorStore';
 import { useProductSync } from '@/hooks/useProductSync';
 import { ChatMessage } from './ChatMessage';
@@ -51,10 +46,10 @@ import type { PipelineResult } from '@/services/ai/pipeline';
 import { summarizeCatalogForChat, summarizeMarkupsForChat } from '@/services/ai/contextSummary';
 import { cn } from '@/lib/utils';
 import { capturePageCrop, createPageImageGenerator, getOptimalScale } from '@/services/ai/imageCapture';
-import { chatPointersToGreenPlacements, ensureNumberedCalloutMentions } from '@/services/ai/callouts';
+import { ensureNumberedCalloutMentions } from '@/services/ai/callouts';
 import { fetchTrainingContext } from '@/services/ai/trainingService';
-import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
-import type { BlueprintAnalysisResult, CanvasPlacement, ChatMarkupPointer } from '@/services/ai/providers/types';
+import type { CanvasMarkup } from '@/types/markup';
+import type { BlueprintAnalysisResult } from '@/services/ai/providers/types';
 import { useAuth } from '@/hooks/useAuth';
 import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
 import {
@@ -248,11 +243,11 @@ export function AgentAssistantDrawer() {
     messageId,
     signal,
     trade: useAIChatStore.getState().selectedTrade,
-    placeMarkups: (payload) => {
+    placeMarkups: async (payload) => {
       const canvas = useCanvasStore.getState();
       const docId = canvas.activeDocId;
       const pdf = docId ? canvas.pdfDocuments[docId] : null;
-      const markups = normalizeAgentMarkupPayload({
+      const markups = await normalizeAgentMarkupPayload({
         payload,
         page: canvas.getCurrentPage() || 1,
         pageWidth: pdf?.originalPageWidth || pageWidth,
@@ -260,6 +255,7 @@ export function AgentAssistantDrawer() {
         idPrefix: `agent_${messageId}`,
         messageId,
         defaultStyle,
+        pdfDocument: pdf?.pdfDocument || null,
       });
       if (!markups.length) return { placed: 0 };
       const gated = commitMarkupsByConfidence({
@@ -357,83 +353,57 @@ export function AgentAssistantDrawer() {
     if (options.result.placements?.markups.length) {
       const placementMarkups = options.result.placements.markups;
       void (async () => {
-        const pageNumbers = Array.from(new Set(
-          placementMarkups.map(markup => markup.page || 1),
-        ));
-        const geometryByPage = new Map<number, ReturnType<typeof createPageGeometry>>();
-        const fallbackWidth = docData?.originalPageWidth || pageWidth;
-        const fallbackHeight = docData?.originalPageHeight || pageHeight;
-
-        await Promise.all(pageNumbers.map(async (pageNumber) => {
-          let docWidth = fallbackWidth;
-          let docHeight = fallbackHeight;
-          // Prefer real per-page PDF metadata when available (page need not be on-screen).
-          if (docData?.pdfDocument) {
-            try {
-              const dims = await getPageDimensions(docData.pdfDocument, pageNumber);
-              docWidth = dims.width;
-              docHeight = dims.height;
-            } catch (error) {
-              console.warn(`[AI] Failed to read page ${pageNumber} dimensions; using document fallback`, error);
-            }
-          }
-          geometryByPage.set(pageNumber, createPageGeometry({
-            pageNumber,
-            docWidth,
-            docHeight,
-          }));
-        }));
-
-        const verified = verifyPlacementMarkupsByPage({
+        const {
+          verified,
+          reviewOnly,
+          geometryByPage,
+          verifiedResults,
+        } = await verifyPlacementMarkupsWithGeometryGate({
           markups: placementMarkups,
-          enableSnap: true,
-          resolvePageContext: (pageNumber) => {
-            const page = geometryByPage.get(pageNumber) || createPageGeometry({
-              pageNumber,
-              docWidth: fallbackWidth,
-              docHeight: fallbackHeight,
-            });
-            return {
-              page,
-              anchors: resolvePageAnchors({ page, pageNumber }),
-            };
-          },
-        });
-
-        const debugPageNumber = canvas.getCurrentPage() || pageNumbers[0] || 1;
-        const debugPage = geometryByPage.get(debugPageNumber)
-          || createPageGeometry({
-            pageNumber: debugPageNumber,
-            docWidth: fallbackWidth,
-            docHeight: fallbackHeight,
-          });
-        usePlacementDebugStore.getState().setDebugScene({
-          page: debugPage,
-          proposals: verified
-            .map(item => item.proposal)
-            .filter(proposal => proposal.pageNumber === debugPage.pageNumber),
-          anchors: resolvePageAnchors({ page: debugPage, pageNumber: debugPage.pageNumber }),
-        });
-
-        const proposedMarkups = convertPlacementsToMarkups(
-          options.result.placements!,
+          pdfDocument: docData?.pdfDocument || null,
           defaultStyle,
-          `takeoff_${options.assistantMsgId}`,
-          BASE_RENDER_SCALE,
-          BASE_RENDER_SCALE,
-          verified.map(item => ({
-            id: item.proposal.id,
-            pending: item.requiresConfirmation,
-            confidence: item.proposal.confidence,
-            boundingBox: item.proposal.boundingBox,
-          })),
-        );
-        queueMarkupApproval({
-          assistantMsgId: options.assistantMsgId,
-          runId: options.runId,
-          markups: proposedMarkups,
-          description: `Place ${proposedMarkups.length} verified green callout${proposedMarkups.length === 1 ? '' : 's'} from this takeoff.`,
+          idPrefix: `takeoff_${options.assistantMsgId}`,
+          resolveAnchors: (page, pageNumber) => resolvePageAnchors({ page, pageNumber }),
         });
+
+        if (reviewOnly.length > 0) {
+          const existing = useAIChatStore.getState().pendingPlacements;
+          const byId = new Map(existing.map(row => [row.id, row]));
+          for (const { page, markup } of reviewOnly) {
+            byId.set(markup.id, {
+              id: markup.id,
+              type: markup.type,
+              page: markup.page || page,
+              data: markup,
+            });
+          }
+          setPendingPlacements([...byId.values()]);
+        }
+
+        const debugPageNumber = canvas.getCurrentPage()
+          || Array.from(geometryByPage.keys())[0]
+          || 1;
+        const debugPage = geometryByPage.get(debugPageNumber);
+        if (debugPage) {
+          usePlacementDebugStore.getState().setDebugScene({
+            page: debugPage,
+            proposals: verifiedResults
+              .map(item => item.proposal)
+              .filter(proposal => proposal.pageNumber === debugPage.pageNumber),
+            anchors: resolvePageAnchors({ page: debugPage, pageNumber: debugPage.pageNumber }),
+          });
+        }
+
+        if (verified.length > 0) {
+          queueMarkupApproval({
+            assistantMsgId: options.assistantMsgId,
+            runId: options.runId,
+            markups: verified,
+            description: `Place ${verified.length} verified green callout${verified.length === 1 ? '' : 's'} from this takeoff.`,
+          });
+        } else {
+          useAIChatStore.getState().finishRun(options.runId, 'completed');
+        }
       })();
     } else {
       store.finishRun(options.runId, 'completed');
@@ -444,6 +414,7 @@ export function AgentAssistantDrawer() {
     pageHeight,
     pageWidth,
     queueMarkupApproval,
+    setPendingPlacements,
   ]);
   
   // Handle sending a message
@@ -737,7 +708,7 @@ export function AgentAssistantDrawer() {
         if (approval.toolId === 'place_markups' || approval.toolId === 'propose_callouts') {
           const pageWidthPx = docData?.originalPageWidth || pageWidth;
           const pageHeightPx = docData?.originalPageHeight || pageHeight;
-          const normalized = normalizeAgentMarkupPayload({
+          const normalized = await normalizeAgentMarkupPayload({
             payload: approval.payload,
             page: currentPage || 1,
             pageWidth: pageWidthPx,
@@ -745,6 +716,7 @@ export function AgentAssistantDrawer() {
             idPrefix: `agent_${assistantMsgId}`,
             messageId: assistantMsgId,
             defaultStyle,
+            pdfDocument: docData?.pdfDocument || null,
           });
           if (normalized.length > 0) {
             setPendingMarkups(normalized);
@@ -1058,7 +1030,7 @@ export function AgentAssistantDrawer() {
           const canvas = useCanvasStore.getState();
           const docId = canvas.activeDocId;
           const pdf = docId ? canvas.pdfDocuments[docId] : null;
-          const markups = normalizeAgentMarkupPayload({
+          const markups = await normalizeAgentMarkupPayload({
             payload: approval.payload,
             page: canvas.getCurrentPage() || 1,
             pageWidth: pdf?.originalPageWidth || pageWidth,
@@ -1066,6 +1038,7 @@ export function AgentAssistantDrawer() {
             idPrefix: `agent_${approval.messageId}`,
             messageId: approval.messageId,
             defaultStyle,
+            pdfDocument: pdf?.pdfDocument || null,
           });
           if (markups.length === 0 && Array.isArray(approval.payload)) {
             // Pipeline path: payload already CanvasMarkup pairs
@@ -1845,127 +1818,4 @@ function applyProductCountMappings(options: {
       groupLabel: key,
     });
   });
-}
-
-/**
- * Normalize agent/pipeline approval payloads into page+markup pairs.
- * Accepts: [{page, markup}], pointer arrays, or { markups|callouts|pointers: [...] }.
- */
-function normalizeAgentMarkupPayload(options: {
-  payload: unknown;
-  page: number;
-  pageWidth: number;
-  pageHeight: number;
-  idPrefix: string;
-  messageId: string;
-  defaultStyle: MarkupStyle;
-}): Array<{ page: number; markup: CanvasMarkup }> {
-  const raw = options.payload;
-  if (!raw) return [];
-
-  const asArray = Array.isArray(raw)
-    ? raw
-    : Array.isArray((raw as { payload?: unknown }).payload)
-      ? (raw as { payload: unknown[] }).payload
-      : Array.isArray((raw as { markups?: unknown[] }).markups)
-        ? (raw as { markups: unknown[] }).markups
-        : Array.isArray((raw as { callouts?: unknown[] }).callouts)
-          ? (raw as { callouts: unknown[] }).callouts
-          : Array.isArray((raw as { pointers?: unknown[] }).pointers)
-            ? (raw as { pointers: unknown[] }).pointers
-            : null;
-
-  if (!asArray || asArray.length === 0) return [];
-
-  const first = asArray[0] as Record<string, unknown>;
-  if (first && typeof first === 'object' && first.markup && (first.page != null || true)) {
-    const legacy = asArray.filter((item): item is { page: number; markup: CanvasMarkup } => {
-      const row = item as { page?: number; markup?: CanvasMarkup };
-      return !!row?.markup;
-    });
-    if (legacy.length > 0) {
-      return legacy.map(item => ({
-        page: item.page || options.page,
-        markup: {
-          ...item.markup,
-          messageId: options.messageId,
-          page: item.markup.page || item.page || options.page,
-        } as CanvasMarkup,
-      }));
-    }
-  }
-
-  const pointers = asArray.map((item, index) => {
-    const row = item as Record<string, unknown>;
-    const xPct = Number(row.xPct ?? row.x ?? 50);
-    const yPct = Number(row.yPct ?? row.y ?? 50);
-    return {
-      type: (row.type as 'callout') || 'callout',
-      ref: Number(row.ref ?? index + 1),
-      xPct: Number.isFinite(xPct) ? xPct : 50,
-      yPct: Number.isFinite(yPct) ? yPct : 50,
-      boundsPct: row.boundsPct as ChatMarkupPointer['boundsPct'],
-      label: typeof row.label === 'string' ? row.label : typeof row.content === 'string' ? row.content : `Callout ${index + 1}`,
-      note: typeof row.note === 'string' ? row.note : undefined,
-      confidence: typeof row.confidence === 'number' ? row.confidence : undefined,
-    };
-  });
-
-  const placements = chatPointersToGreenPlacements({
-    pointers,
-    page: options.page,
-    pageWidth: options.pageWidth,
-    pageHeight: options.pageHeight,
-    idPrefix: options.idPrefix,
-  });
-
-  // pageWidth/Height here are document points (originalPage*). Proposals stay in doc space;
-  // convertPlacementsToMarkups applies BASE_RENDER_SCALE at the canvas boundary.
-  // Path B is single-page by construction: chatPointersToGreenPlacements stamps
-  // options.page onto every markup, so one pageGeom/anchors pair is correct here.
-  const pageGeom = createPageGeometry({
-    pageNumber: options.page,
-    docWidth: options.pageWidth,
-    docHeight: options.pageHeight,
-  });
-  const proposals = proposalsFromChatPointers({ pointers, page: pageGeom });
-  const anchors = resolvePageAnchors({
-    page: pageGeom,
-    pageNumber: options.page,
-  });
-  const verified = proposals.map(proposal => verifyMarkupProposal(proposal, {
-    page: pageGeom,
-    anchors,
-    enableSnap: true,
-  }));
-  usePlacementDebugStore.getState().setDebugScene({
-    page: pageGeom,
-    proposals: verified.map(item => item.proposal),
-    anchors,
-    ocrRects: (useCanvasStore.getState().getTextContent(options.page) || [])
-      .slice(0, 80)
-      .map(item => ({
-        x: item.x / BASE_RENDER_SCALE,
-        y: item.y / BASE_RENDER_SCALE,
-        width: item.width / BASE_RENDER_SCALE,
-        height: item.height / BASE_RENDER_SCALE,
-      })),
-  });
-
-  return convertPlacementsToMarkups(
-    placements,
-    options.defaultStyle,
-    options.idPrefix,
-    BASE_RENDER_SCALE,
-    BASE_RENDER_SCALE,
-    verified.map(item => ({
-      id: item.proposal.id,
-      pending: item.requiresConfirmation,
-      confidence: item.proposal.confidence,
-      boundingBox: item.proposal.boundingBox,
-    })),
-  ).map(({ page, markup }) => ({
-    page,
-    markup: { ...markup, messageId: options.messageId } as CanvasMarkup,
-  }));
 }
