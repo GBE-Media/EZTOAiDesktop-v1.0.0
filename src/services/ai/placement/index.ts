@@ -21,9 +21,23 @@ export {
 } from './types';
 export { buildPageLayoutModel } from './pageModel';
 export { anchorsFromLayout, anchorsFromVectorSnap } from './anchors';
+export { resolvePageAnchors } from './resolvePageAnchors';
 export { snapProposalToAnchors } from './snap';
+export {
+  confidencePlacementBand,
+  partitionMarkupsByConfidence,
+  commitMarkupsByConfidence,
+  type ConfidencePlacementBand,
+  type PageMarkupPair,
+} from './confidenceGate';
 export { verifyMarkupProposal, type VerifyContext } from './verify';
 export { proposalsFromChatPointers, proposalsFromPlacementMarkups } from './proposals';
+export {
+  convertPlacementsToMarkups,
+  isUsableVerifiedBox,
+  reattachLeaderToVerifiedBox,
+  type PlacementVerificationMeta,
+} from './convertPlacements';
 export {
   usePlacementDebugStore,
   type PlacementDebugState,

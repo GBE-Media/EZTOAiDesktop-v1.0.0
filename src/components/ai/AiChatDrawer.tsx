@@ -30,9 +30,12 @@ import { useCanvasStore } from '@/store/canvasStore';
 import { useProductStore } from '@/store/productStore';
 import {
   BASE_RENDER_SCALE,
+  commitMarkupsByConfidence,
+  convertPlacementsToMarkups,
   createPageGeometry,
   proposalsFromChatPointers,
   proposalsFromPlacementMarkups,
+  resolvePageAnchors,
   usePlacementDebugStore,
   verifyMarkupProposal,
 } from '@/services/ai/placement';
@@ -50,7 +53,7 @@ import { capturePageCrop, createPageImageGenerator, getOptimalScale } from '@/se
 import { chatPointersToGreenPlacements, ensureNumberedCalloutMentions } from '@/services/ai/callouts';
 import { fetchTrainingContext } from '@/services/ai/trainingService';
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
-import type { BlueprintAnalysisResult, CanvasPlacement, ChatMarkupPointer, PlacementMarkup } from '@/services/ai/providers/types';
+import type { BlueprintAnalysisResult, CanvasPlacement, ChatMarkupPointer } from '@/services/ai/providers/types';
 import { useAuth } from '@/hooks/useAuth';
 import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
 import {
@@ -258,16 +261,19 @@ export function AgentAssistantDrawer() {
         defaultStyle,
       });
       if (!markups.length) return { placed: 0 };
-      addAIMarkupBatch(markups, placementMode === 'confirm');
-      if (placementMode === 'confirm') {
-        setPendingPlacements(markups.map(({ markup }) => ({
-          id: markup.id,
-          type: markup.type,
-          page: markup.page,
-          data: markup,
-        })));
-      }
-      return { placed: markups.length };
+      const gated = commitMarkupsByConfidence({
+        markups,
+        forceConfirm: placementMode === 'confirm',
+        addAIMarkupBatch,
+        setPendingPlacements,
+        getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
+      });
+      return {
+        placed: gated.placed,
+        autoCommitted: gated.auto,
+        needsConfirmation: gated.confirm,
+        reviewQueued: gated.review,
+      };
     },
     navigateToPage: (page, bounds) => {
       const canvas = useCanvasStore.getState();
@@ -358,13 +364,19 @@ export function AgentAssistantDrawer() {
         markups: options.result.placements.markups,
         page: pageGeom,
       });
+      const anchors = resolvePageAnchors({
+        page: pageGeom,
+        pageNumber: pageGeom.pageNumber,
+      });
       const verified = proposals.map(proposal => verifyMarkupProposal(proposal, {
         page: pageGeom,
-        enableSnap: false,
+        anchors,
+        enableSnap: true,
       }));
       usePlacementDebugStore.getState().setDebugScene({
         page: pageGeom,
         proposals: verified.map(item => item.proposal),
+        anchors,
       });
       const proposedMarkups = convertPlacementsToMarkups(
         options.result.placements,
@@ -376,6 +388,7 @@ export function AgentAssistantDrawer() {
           id: item.proposal.id,
           pending: item.requiresConfirmation,
           confidence: item.proposal.confidence,
+          boundingBox: item.proposal.boundingBox,
         })),
       );
       queueMarkupApproval({
@@ -893,19 +906,13 @@ export function AgentAssistantDrawer() {
       return;
     }
 
-    if (placementMode === 'confirm') {
-      addAIMarkupBatch(pendingMarkups, true);
-      setPendingPlacements(
-        pendingMarkups.map(({ markup }) => ({
-          id: markup.id,
-          type: markup.type,
-          page: markup.page,
-          data: markup,
-        }))
-      );
-    } else {
-      addAIMarkupBatch(pendingMarkups, false);
-    }
+    commitMarkupsByConfidence({
+      markups: pendingMarkups,
+      forceConfirm: placementMode === 'confirm',
+      addAIMarkupBatch,
+      setPendingPlacements,
+      getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
+    });
 
     if (pendingDetectedKeys.length > 0) {
       setProductMapKeys(pendingDetectedKeys);
@@ -1025,27 +1032,33 @@ export function AgentAssistantDrawer() {
           if (markups.length === 0 && Array.isArray(approval.payload)) {
             // Pipeline path: payload already CanvasMarkup pairs
             const legacy = approval.payload as Array<{ page: number; markup: CanvasMarkup }>;
-            addAIMarkupBatch(legacy, placementMode === 'confirm');
-            if (placementMode === 'confirm') {
-              setPendingPlacements(legacy.map(({ markup }) => ({
-                id: markup.id,
-                type: markup.type,
-                page: markup.page,
-                data: markup,
-              })));
-            }
-            executionResult = { placed: legacy.length };
+            const gated = commitMarkupsByConfidence({
+              markups: legacy,
+              forceConfirm: placementMode === 'confirm',
+              addAIMarkupBatch,
+              setPendingPlacements,
+              getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
+            });
+            executionResult = {
+              placed: gated.placed,
+              autoCommitted: gated.auto,
+              needsConfirmation: gated.confirm,
+              reviewQueued: gated.review,
+            };
           } else {
-            addAIMarkupBatch(markups, placementMode === 'confirm');
-            if (placementMode === 'confirm') {
-              setPendingPlacements(markups.map(({ markup }) => ({
-                id: markup.id,
-                type: markup.type,
-                page: markup.page,
-                data: markup,
-              })));
-            }
-            executionResult = { placed: markups.length };
+            const gated = commitMarkupsByConfidence({
+              markups,
+              forceConfirm: placementMode === 'confirm',
+              addAIMarkupBatch,
+              setPendingPlacements,
+              getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
+            });
+            executionResult = {
+              placed: gated.placed,
+              autoCommitted: gated.auto,
+              needsConfirmation: gated.confirm,
+              reviewQueued: gated.review,
+            };
           }
         } else {
           const toolContext = createAgentToolContext({
@@ -1796,166 +1809,6 @@ function applyProductCountMappings(options: {
   });
 }
 
-function convertPlacementsToMarkups(
-  placements: CanvasPlacement,
-  defaultStyle: MarkupStyle,
-  groupId: string,
-  scaleX: number = BASE_RENDER_SCALE,
-  scaleY: number = BASE_RENDER_SCALE,
-  verificationById?: Array<{ id: string; pending: boolean; confidence: number }>,
-): Array<{ page: number; markup: CanvasMarkup }> {
-  const now = new Date().toISOString();
-  const markups: Array<{ page: number; markup: CanvasMarkup }> = [];
-  const verificationMap = new Map(
-    (verificationById || []).map(item => [item.id, item]),
-  );
-  
-  const buildStyle = (placementStyle?: PlacementMarkup['style']): MarkupStyle => ({
-    strokeColor: placementStyle?.strokeColor || defaultStyle.strokeColor,
-    fillColor: placementStyle?.fillColor || defaultStyle.fillColor,
-    strokeWidth: placementStyle?.strokeWidth || defaultStyle.strokeWidth,
-    opacity: 100,
-    fontSize: defaultStyle.fontSize,
-    fontFamily: defaultStyle.fontFamily,
-  });
-  
-  placements.markups.forEach((placement, index) => {
-    const style = buildStyle(placement.style);
-    const verification = verificationMap.get(placement.id || '')
-      || verificationMap.get(`proposal_pl_${index}`)
-      || verificationMap.get(`proposal_ptr_${placement.calloutRef || index + 1}`);
-    const pending = verification?.pending ?? placement.pending;
-    const confidence = verification?.confidence ?? placement.confidence;
-    const base = {
-      id: placement.id || `ai_${Date.now()}_${index}`,
-      type: placement.type,
-      page: placement.page,
-      style,
-      locked: false,
-      author: 'AI',
-      createdAt: now,
-      label: placement.label,
-      aiGenerated: true,
-      aiPending: pending,
-      aiNote: placement.aiNote,
-      aiConfidence: confidence,
-      aiLinkedItemId: placement.linkedItemId,
-      calloutRef: placement.calloutRef,
-    } as const;
-
-    if (placement.type === 'rectangle') {
-      const start = placement.points?.[0] || { x: 0, y: 0 };
-      const end = placement.points?.[1] || start;
-      markups.push({
-        page: placement.page,
-        markup: {
-          ...base,
-          type: 'rectangle',
-          x: Math.min(start.x, end.x) * scaleX,
-          y: Math.min(start.y, end.y) * scaleY,
-          width: Math.abs(end.x - start.x) * scaleX,
-          height: Math.abs(end.y - start.y) * scaleY,
-        },
-      });
-      return;
-    }
-    
-    if (placement.type === 'count-marker') {
-      const point = placement.points?.[0] || { x: 0, y: 0 };
-      markups.push({
-        page: placement.page,
-        markup: {
-          ...base,
-          type: 'count-marker',
-          x: point.x * scaleX,
-          y: point.y * scaleY,
-          number: 1,
-          groupId,
-        },
-      });
-      return;
-    }
-    
-    if (placement.type === 'measurement-length' || placement.type === 'measurement-area') {
-      markups.push({
-        page: placement.page,
-        markup: {
-          ...base,
-          type: placement.type,
-          points: (placement.points || []).map((point) => ({
-            x: point.x * scaleX,
-            y: point.y * scaleY,
-          })),
-          value: 0,
-          scaledValue: 0,
-          unit: 'ft',
-        },
-      });
-      return;
-    }
-    
-    if (placement.type === 'polyline' || placement.type === 'polygon') {
-      markups.push({
-        page: placement.page,
-        markup: {
-          ...base,
-          type: placement.type,
-          points: (placement.points || []).map((point) => ({
-            x: point.x * scaleX,
-            y: point.y * scaleY,
-          })),
-        },
-      });
-      return;
-    }
-    
-    if (placement.type === 'text') {
-      const point = placement.points?.[0] || { x: 0, y: 0 };
-      markups.push({
-        page: placement.page,
-        markup: {
-          ...base,
-          type: 'text',
-          x: point.x * scaleX,
-          y: point.y * scaleY,
-          width: 200,
-          height: 50,
-          content: placement.label || placement.aiNote || 'AI Note',
-        },
-      });
-      return;
-    }
-
-    if (placement.type === 'callout') {
-      const start = placement.points?.[0] || { x: 0, y: 0 };
-      const end = placement.points?.[1] || {
-        x: start.x + 120,
-        y: start.y + 36,
-      };
-      const ref = placement.calloutRef || index + 1;
-      markups.push({
-        page: placement.page,
-        markup: {
-          ...base,
-          type: 'callout',
-          x: Math.min(start.x, end.x) * scaleX,
-          y: Math.min(start.y, end.y) * scaleY,
-          width: Math.max(Math.abs(end.x - start.x) * scaleX, 72),
-          height: Math.max(Math.abs(end.y - start.y) * scaleY, 28),
-          content: placement.content || `[${ref}] ${placement.label || 'Callout'}`,
-          leaderPoints: (placement.leaderPoints || []).map((point) => ({
-            x: point.x * scaleX,
-            y: point.y * scaleY,
-          })),
-          calloutRef: ref,
-        },
-      });
-    }
-  });
-  
-  return markups;
-}
-
 /**
  * Normalize agent/pipeline approval payloads into page+markup pairs.
  * Accepts: [{page, markup}], pointer arrays, or { markups|callouts|pointers: [...] }.
@@ -2036,13 +1889,19 @@ function normalizeAgentMarkupPayload(options: {
     docHeight: options.pageHeight,
   });
   const proposals = proposalsFromChatPointers({ pointers, page: pageGeom });
+  const anchors = resolvePageAnchors({
+    page: pageGeom,
+    pageNumber: options.page,
+  });
   const verified = proposals.map(proposal => verifyMarkupProposal(proposal, {
     page: pageGeom,
-    enableSnap: false,
+    anchors,
+    enableSnap: true,
   }));
   usePlacementDebugStore.getState().setDebugScene({
     page: pageGeom,
     proposals: verified.map(item => item.proposal),
+    anchors,
     ocrRects: (useCanvasStore.getState().getTextContent(options.page) || [])
       .slice(0, 80)
       .map(item => ({
@@ -2063,6 +1922,7 @@ function normalizeAgentMarkupPayload(options: {
       id: item.proposal.id,
       pending: item.requiresConfirmation,
       confidence: item.proposal.confidence,
+      boundingBox: item.proposal.boundingBox,
     })),
   ).map(({ page, markup }) => ({
     page,
