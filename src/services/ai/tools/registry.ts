@@ -131,6 +131,22 @@ const coreTools: AssistantToolDefinition[] = [
     }),
   },
   {
+    id: 'extract_page_text',
+    title: 'Extract page text',
+    description: 'Extract native PDF text-layer content, falling back to OCR when the page is scanned.',
+    risk: 'read',
+    requiresConfirmation: false,
+    undoable: false,
+    schema: z.object({
+      page: z.number().int().positive(),
+    }),
+    execute: async (context, input) => ({
+      status: 'completed',
+      summary: `Extracted text from page ${input.page}.`,
+      output: await context.extractPageText(input),
+    }),
+  },
+  {
     id: 'search_document',
     title: 'Search document',
     description: 'Search native PDF text and OCR evidence.',

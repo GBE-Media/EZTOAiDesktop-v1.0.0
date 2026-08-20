@@ -32,6 +32,7 @@ describe('deterministic assistant workflow', () => {
           signal: operation.signal,
           getDocumentContext: () => ({ document: 'E-201.pdf', page: 2 }),
           analyzePage: async () => ({ detections: 2, confidence: 0.96 }),
+          extractPageText: async () => ({ status: 'completed', context: '', source: 'none', items: [] }),
           searchDocument: async () => [],
           inspectCatalog: () => [],
           inspectMarkups: () => [],
