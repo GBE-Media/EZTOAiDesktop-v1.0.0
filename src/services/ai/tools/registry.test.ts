@@ -14,6 +14,7 @@ function makeContext(): AssistantToolContext {
     messageId: 'message-1',
     getDocumentContext: vi.fn(() => ({ page: 3 })),
     analyzePage: vi.fn(async input => input),
+    extractPageText: vi.fn(async input => input),
     searchDocument: vi.fn(async () => []),
     inspectCatalog: vi.fn(() => []),
     inspectMarkups: vi.fn(() => []),

@@ -4,11 +4,13 @@ import { useEditorStore } from '@/store/editorStore';
 import { useProductStore } from '@/store/productStore';
 import { summarizeCatalogForChat, summarizeMarkupsForChat } from '../contextSummary';
 import { suggestLayoutsFromItems } from '../layouts';
+import { analyzePageMaximumAccuracy, extractPageTextEvidence } from '../pipeline';
+import { BASE_RENDER_SCALE, clampDocRect, createPageGeometry } from '../placement/coords';
+import type { DocRect } from '../placement/types';
 import type { DetectedItem, TradeType } from '../providers/types';
 import type { AssistantToolContext } from '../tools/types';
 import type { CanvasMarkup } from '@/types/markup';
 import { searchTextItemsWithBounds } from './searchTextItems';
-import { BASE_RENDER_SCALE } from '../placement/coords';
 
 export interface CreateAgentToolContextOptions {
   runId: string;
@@ -19,10 +21,256 @@ export interface CreateAgentToolContextOptions {
   saveProjectDraft?: () => Promise<{ saved: boolean; path?: string | null; reason?: string }>;
   lastSaveStatus?: () => { saved: boolean; path?: string | null; at?: string };
   analyzePage?: (input: unknown) => Promise<unknown>;
+  extractPageText?: (input: unknown) => Promise<unknown>;
   searchDocument?: (query: string) => Promise<import('@/types/assistant').EvidenceCitation[]>;
   navigateToPage?: (page: number, bounds?: { x: number; y: number; width: number; height: number }) => void;
   activateEditorTool?: (tool: string) => void;
   projectPath?: string | null;
+}
+
+type AnalyzePageScope = 'full' | 'viewport' | 'selection';
+
+/** Minimum usable region size in document points (DocRect / page-point space). */
+const MIN_ANALYSIS_REGION_POINTS = 1;
+
+/**
+ * Clamp a viewport/selection rect to the page and reject zero/near-zero area.
+ * Canvas viewport math can yield width/height 0; imageCapture coerces those to 1px
+ * crops rather than failing — so we gate here before calling the vision pipeline.
+ */
+function normalizeScopedAnalysisRegion(
+  rect: DocRect,
+  page: number,
+  pageWidth: number,
+  pageHeight: number,
+): DocRect | null {
+  const pageGeometry = createPageGeometry({
+    pageNumber: page,
+    docWidth: pageWidth,
+    docHeight: pageHeight,
+  });
+  const clamped = clampDocRect(rect, pageGeometry);
+  if (
+    !Number.isFinite(clamped.width)
+    || !Number.isFinite(clamped.height)
+    || clamped.width < MIN_ANALYSIS_REGION_POINTS
+    || clamped.height < MIN_ANALYSIS_REGION_POINTS
+  ) {
+    return null;
+  }
+  return clamped;
+}
+
+/**
+ * Default analyze_page adapter: runs the Takeoff maximum-accuracy pipeline on the
+ * active PDF. Returns a compact payload (no overviewImage base64). Override via
+ * CreateAgentToolContextOptions.analyzePage for tests.
+ */
+async function defaultAnalyzePage(
+  input: unknown,
+  options: { trade: TradeType; signal?: AbortSignal },
+): Promise<unknown> {
+  if (options.signal?.aborted) {
+    throw new DOMException('Assistant run cancelled', 'AbortError');
+  }
+
+  const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};
+  const page = typeof raw.page === 'number' && Number.isInteger(raw.page) && raw.page > 0
+    ? raw.page
+    : null;
+  const scope: AnalyzePageScope =
+    raw.scope === 'viewport' || raw.scope === 'selection' || raw.scope === 'full'
+      ? raw.scope
+      : 'full';
+  const prompt = typeof raw.prompt === 'string' ? raw.prompt : undefined;
+
+  if (page == null) {
+    return {
+      status: 'unavailable',
+      message: 'analyze_page requires a positive page number.',
+    };
+  }
+
+  const canvas = useCanvasStore.getState();
+  const docId = canvas.activeDocId;
+  const pdfData = docId ? canvas.pdfDocuments[docId] : null;
+  const pdfDoc = pdfData?.pdfDocument;
+  const pageWidth = pdfData?.originalPageWidth;
+  const pageHeight = pdfData?.originalPageHeight;
+  const totalPages = pdfData?.totalPages || 0;
+
+  if (!docId || !pdfDoc || !pageWidth || !pageHeight) {
+    return {
+      status: 'unavailable',
+      message: 'No PDF document is open for page analysis.',
+    };
+  }
+
+  if (page > totalPages) {
+    return {
+      status: 'unavailable',
+      message: `Page ${page} is out of range (document has ${totalPages} page${totalPages === 1 ? '' : 's'}).`,
+    };
+  }
+
+  let analysisRegion: DocRect | undefined;
+  if (scope === 'selection') {
+    const rect = canvas.getAiSelectionForPage(docId, page);
+    if (!rect) {
+      return {
+        status: 'unavailable',
+        message: 'Select a region on the canvas before analyzing with scope "selection".',
+      };
+    }
+    const normalized = normalizeScopedAnalysisRegion(rect, page, pageWidth, pageHeight);
+    if (!normalized) {
+      return {
+        status: 'unavailable',
+        message: 'The selected region has no usable area on this page. Draw a larger selection and retry.',
+      };
+    }
+    analysisRegion = normalized;
+  } else if (scope === 'viewport') {
+    const rect = canvas.getAiViewportForPage(docId, page);
+    if (!rect) {
+      return {
+        status: 'unavailable',
+        message: 'Unable to determine the visible viewport for scope "viewport". Try zooming or fit-to-canvas and retry.',
+      };
+    }
+    const normalized = normalizeScopedAnalysisRegion(rect, page, pageWidth, pageHeight);
+    if (!normalized) {
+      return {
+        status: 'unavailable',
+        message: 'The visible viewport has no usable area on this page. Try zooming or fit-to-canvas and retry.',
+      };
+    }
+    analysisRegion = normalized;
+  }
+
+  if (options.signal?.aborted) {
+    throw new DOMException('Assistant run cancelled', 'AbortError');
+  }
+
+  try {
+    const result = await analyzePageMaximumAccuracy({
+      pdfDoc,
+      page,
+      pageWidth,
+      pageHeight,
+      trade: options.trade,
+      userPrompt: prompt,
+      analysisRegion,
+      getCachedText: canvas.getTextContent,
+      setCachedText: canvas.setTextContent,
+    });
+
+    // Compact agent payload: omit overviewImage (large base64) to avoid token bloat.
+    return {
+      status: 'completed',
+      page,
+      scope,
+      analysis: result.analysis,
+      textEvidence: {
+        source: result.textEvidence.source,
+        confidence: result.textEvidence.confidence,
+        context: result.textEvidence.context,
+        itemCount: result.textEvidence.items.length,
+      },
+    };
+  } catch (error) {
+    if (options.signal?.aborted) {
+      throw error instanceof DOMException ? error : new DOMException('Assistant run cancelled', 'AbortError');
+    }
+    return {
+      status: 'failed',
+      message: error instanceof Error ? error.message : String(error),
+      page,
+      scope,
+    };
+  }
+}
+
+/**
+ * Default extract_page_text adapter: native PDF text layer with OCR fallback via
+ * extractPageTextEvidence. Override via CreateAgentToolContextOptions.extractPageText for tests.
+ */
+async function defaultExtractPageText(
+  input: unknown,
+  options: { signal?: AbortSignal } = {},
+): Promise<unknown> {
+  if (options.signal?.aborted) {
+    throw new DOMException('Assistant run cancelled', 'AbortError');
+  }
+
+  const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};
+  const page = typeof raw.page === 'number' && Number.isInteger(raw.page) && raw.page > 0
+    ? raw.page
+    : null;
+
+  if (page == null) {
+    return {
+      status: 'unavailable',
+      message: 'extract_page_text requires a positive page number.',
+    };
+  }
+
+  const canvas = useCanvasStore.getState();
+  const docId = canvas.activeDocId;
+  const pdfData = docId ? canvas.pdfDocuments[docId] : null;
+  const pdfDoc = pdfData?.pdfDocument;
+  const pageWidth = pdfData?.originalPageWidth;
+  const pageHeight = pdfData?.originalPageHeight;
+  const totalPages = pdfData?.totalPages || 0;
+
+  if (!docId || !pdfDoc || !pageWidth || !pageHeight) {
+    return {
+      status: 'unavailable',
+      message: 'No PDF document is open for page text extraction.',
+    };
+  }
+
+  if (page > totalPages) {
+    return {
+      status: 'unavailable',
+      message: `Page ${page} is out of range (document has ${totalPages} page${totalPages === 1 ? '' : 's'}).`,
+    };
+  }
+
+  if (options.signal?.aborted) {
+    throw new DOMException('Assistant run cancelled', 'AbortError');
+  }
+
+  try {
+    const evidence = await extractPageTextEvidence(
+      pdfDoc,
+      page,
+      pageWidth,
+      pageHeight,
+      canvas.getTextContent,
+      canvas.setTextContent,
+    );
+
+    return {
+      status: 'completed',
+      page,
+      source: evidence.source,
+      confidence: evidence.confidence,
+      context: evidence.context,
+      itemCount: evidence.items.length,
+      // Real bounded text items from native/OCR extraction (no fabricated content).
+      items: evidence.items,
+    };
+  } catch (error) {
+    if (options.signal?.aborted) {
+      throw error instanceof DOMException ? error : new DOMException('Assistant run cancelled', 'AbortError');
+    }
+    return {
+      status: 'failed',
+      message: error instanceof Error ? error.message : String(error),
+      page,
+    };
+  }
 }
 
 /**
@@ -73,10 +321,13 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
       };
     },
 
-    analyzePage: options.analyzePage || (async input => ({
-      status: 'unavailable',
-      message: 'Full page analysis is available via the Takeoff pipeline. Pass analyzePage adapter for agent vision.',
-      input,
+    analyzePage: options.analyzePage || (input => defaultAnalyzePage(input, {
+      trade: options.trade,
+      signal: options.signal,
+    })),
+
+    extractPageText: options.extractPageText || (input => defaultExtractPageText(input, {
+      signal: options.signal,
     })),
 
     searchDocument: options.searchDocument || (async query => {

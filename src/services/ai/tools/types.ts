@@ -13,6 +13,7 @@ export interface AssistantToolContext {
   signal?: AbortSignal;
   getDocumentContext: () => unknown;
   analyzePage: (input: unknown) => Promise<unknown>;
+  extractPageText: (input: unknown) => Promise<unknown>;
   searchDocument: (query: string) => Promise<EvidenceCitation[]>;
   inspectCatalog: () => unknown;
   inspectMarkups: () => unknown;

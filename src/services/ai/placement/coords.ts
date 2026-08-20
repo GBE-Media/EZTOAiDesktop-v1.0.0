@@ -81,16 +81,34 @@ export function docToPct(point: DocPoint, page: PageGeometry): { xPct: number; y
   };
 }
 
+/**
+ * Intersect a DocRect with the page bounds (true AABB intersection).
+ * Returns width/height <= 0 when there is no overlap with the page.
+ */
 export function clampDocRect(rect: DocRect, page: PageGeometry): DocRect {
-  const x = clamp(rect.x, 0, page.docWidth);
-  const y = clamp(rect.y, 0, page.docHeight);
-  const maxW = Math.max(0, page.docWidth - x);
-  const maxH = Math.max(0, page.docHeight - y);
+  const pageLeft = 0;
+  const pageTop = 0;
+  const pageRight = page.docWidth;
+  const pageBottom = page.docHeight;
+
+  const regionRight = rect.x + rect.width;
+  const regionBottom = rect.y + rect.height;
+
+  const clampedLeft = Math.max(rect.x, pageLeft);
+  const clampedTop = Math.max(rect.y, pageTop);
+  const clampedRight = Math.min(regionRight, pageRight);
+  const clampedBottom = Math.min(regionBottom, pageBottom);
+
+  const clampedWidth = clampedRight - clampedLeft;
+  const clampedHeight = clampedBottom - clampedTop;
+
   return {
-    x,
-    y,
-    width: clamp(rect.width, 0, maxW),
-    height: clamp(rect.height, 0, maxH),
+    x: clampedLeft,
+    y: clampedTop,
+    // Preserve non-positive sizes so callers (e.g. normalizeScopedAnalysisRegion)
+    // can detect zero/near-zero or no-overlap without inventing an on-page rect.
+    width: clampedWidth,
+    height: clampedHeight,
   };
 }
 
