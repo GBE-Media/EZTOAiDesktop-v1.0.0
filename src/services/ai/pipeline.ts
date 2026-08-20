@@ -40,7 +40,7 @@ export type PipelineProgressCallback = (progress: PipelineProgress) => void;
 export interface PipelineOptions {
   trade: TradeType;
   pages: number[]; // Page numbers to analyze
-  imageGenerator: (page: number) => Promise<string>; // Function to get page image as base64
+  imageGenerator?: (page: number) => Promise<string>; // Required unless resuming after vision
   pageWidth: number;
   pageHeight: number;
   userPrompt?: string;
@@ -54,6 +54,11 @@ export interface PipelineOptions {
   analysisRegion?: { x: number; y: number; width: number; height: number };
   getCachedText?: (page: number) => TextItemWithBounds[];
   setCachedText?: (page: number, items: TextItemWithBounds[]) => void;
+  /** Continue after clarification with already-computed vision analysis. */
+  resumeFrom?: {
+    analysis: BlueprintAnalysisResult[];
+    clarificationContext: string;
+  };
 }
 
 const KEYWORDS = [
@@ -637,6 +642,7 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     analysisRegion,
     getCachedText,
     setCachedText,
+    resumeFrom,
   } = options;
 
   const reportProgress = (stage: PipelineProgress['stage'], progress: number, message: string, data?: unknown) => {
@@ -645,11 +651,18 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
 
   try {
     // Stage 1: Vision - Analyze blueprints
-    reportProgress('vision', 0, 'Starting blueprint analysis...');
+    reportProgress('vision', 0, resumeFrom ? 'Restoring prior page analysis...' : 'Starting blueprint analysis...');
     
-    const analysisResults: BlueprintAnalysisResult[] = [];
+    const analysisResults: BlueprintAnalysisResult[] = resumeFrom
+      ? resumeFrom.analysis.map(result => ({
+          ...result,
+          // Clarifications were answered; do not ask the same questions again.
+          questions: undefined,
+          questionOptions: undefined,
+        }))
+      : [];
     
-    for (let i = 0; i < pages.length; i++) {
+    if (!resumeFrom) for (let i = 0; i < pages.length; i++) {
       const page = pages[i];
       const pageProgress = Math.round((i / pages.length) * 100);
       reportProgress('vision', pageProgress, `Analyzing page ${page}...`);
@@ -680,6 +693,9 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
       }
       
       // Get page image
+      if (!imageGenerator) {
+        throw new Error('Page image generator is required for a new pipeline analysis.');
+      }
       const imageBase64 = await imageGenerator(page);
       const textContext = '';
       const promptParts = [
@@ -827,18 +843,18 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
 
     reportProgress('vision', 100, 'Blueprint analysis complete', analysisResults);
 
-    const questions = analysisResults.flatMap(result => result.questions || []);
+    const questions = resumeFrom ? [] : analysisResults.flatMap(result => result.questions || []);
     const evidence = analysisResults.flatMap(result => result.evidence || []);
-    const questionOptions = analysisResults.flatMap(result => result.questionOptions || []);
+    const questionOptions = resumeFrom ? [] : analysisResults.flatMap(result => result.questionOptions || []);
     const totalItems = analysisResults.reduce((sum, result) => sum + (result.items?.length || 0), 0);
     const totalTypeCounts = analysisResults.reduce((sum, result) => sum + Object.keys(result.typeCounts || {}).length, 0);
     const askedForCounts = !!userPrompt && /count|how many|quantity|quantities|number of/i.test(userPrompt);
 
-    if (askedForCounts && totalItems === 0 && totalTypeCounts === 0) {
+    if (!resumeFrom && askedForCounts && totalItems === 0 && totalTypeCounts === 0) {
       questions.push('I could not detect any fixtures to count. Are the lighting symbols visible on this page, or should I zoom into a specific area?');
     }
 
-    if (highAccuracyMode && askedForCounts && totalTypeCounts > 0 && questions.length === 0) {
+    if (!resumeFrom && highAccuracyMode && askedForCounts && totalTypeCounts > 0 && questions.length === 0) {
       const typeCounts = mergeTypeCounts(analysisResults.map(result => result.typeCounts));
       const variance = Object.values(typeCounts).some(value => value > 0);
       if (!variance) {
@@ -862,7 +878,12 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
     reportProgress('estimation', 0, 'Generating material estimate...');
     
     const estimationResponse = await aiService.estimateMaterials(
-      JSON.stringify(analysisResults),
+      JSON.stringify(resumeFrom
+        ? {
+            analysis: analysisResults,
+            clarificationContext: resumeFrom.clarificationContext,
+          }
+        : analysisResults),
       trade,
       location
     );
@@ -900,6 +921,7 @@ export async function runPipeline(options: PipelineOptions): Promise<PipelineRes
       JSON.stringify({
         analysis: analysisResults,
         estimate,
+        clarificationContext: resumeFrom?.clarificationContext,
       }),
       pageWidth,
       pageHeight

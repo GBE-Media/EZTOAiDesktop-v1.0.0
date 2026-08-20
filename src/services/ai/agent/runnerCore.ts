@@ -2,7 +2,7 @@
  * Primary agent tool-loop core (Phase 3).
  * Kept separate from multi-model orchestration so each phase stays testable.
  */
-import { useAIChatStore } from '@/store/aiChatStore';
+import { flushAssistantSnapshot, useAIChatStore } from '@/store/aiChatStore';
 import type { ApprovalRequest, ClarificationRequest } from '@/types/assistant';
 import type { AssistantToolContext, AssistantToolResult } from '../tools/types';
 import { executeAssistantTool, getAssistantTool } from '../tools/registry';
@@ -21,20 +21,18 @@ import {
   emitClarificationQuestion,
   labelForAgentStatus,
 } from './clarification';
+import {
+  deleteExpiredAgentSessions,
+  deletePersistedAgentSession,
+  readPersistedAgentSession,
+  writePersistedAgentSession,
+  type PersistedAgentSessionStatus,
+} from '@/db/assistantDb';
+import type { AgentSessionState } from './types';
 
 const MAX_STEPS = 8;
-
-export interface AgentSessionState {
-  runId: string;
-  messageId: string;
-  messages: AgentModelMessage[];
-  toolHistory: AgentToolHistoryEntry[];
-  actionsTaken: AgentActionTaken[];
-  contextText: string;
-  imageBase64?: string;
-  plan?: string;
-  pendingApprovalId?: string;
-}
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_PERSISTED_IMAGE_CHARS = 1_000_000;
 
 const sessions = new Map<string, AgentSessionState>();
 
@@ -44,10 +42,204 @@ export function getAgentSession(runId: string): AgentSessionState | undefined {
 
 export function clearAgentSession(runId: string): void {
   sessions.delete(runId);
+  void deleteDurableAgentSession(runId);
 }
 
 export function setAgentSession(session: AgentSessionState): void {
   sessions.set(session.runId, session);
+}
+
+export async function deleteDurableAgentSession(runId: string): Promise<void> {
+  try {
+    await deletePersistedAgentSession(runId);
+  } catch (error) {
+    console.warn('[Agent] Failed to delete durable session:', error);
+  }
+}
+
+/** Load a parked session from the L1 cache or durable Dexie storage. */
+export async function loadAgentSession(runId: string): Promise<AgentSessionState | undefined> {
+  const cached = sessions.get(runId);
+
+  try {
+    const now = new Date().toISOString();
+    await deleteExpiredAgentSessions(now);
+    const record = await readPersistedAgentSession(runId);
+    if (!record) return cached;
+    if (record.expiresAt <= now) {
+      await deletePersistedAgentSession(runId);
+      sessions.delete(runId);
+      return undefined;
+    }
+    sessions.set(runId, record.session);
+    return record.session;
+  } catch (error) {
+    console.warn('[Agent] Failed to load durable session; using memory cache:', error);
+    return sessions.get(runId);
+  }
+}
+
+/** Persist only resumable parked states; live runtime dependencies never enter this DTO. */
+export async function parkAgentSession(
+  session: AgentSessionState,
+  status: PersistedAgentSessionStatus,
+): Promise<void> {
+  sessions.set(session.runId, session);
+  const now = Date.now();
+  const persisted = toPersistedSession(session);
+  let durableSessionWritten = false;
+  try {
+    await writePersistedAgentSession({
+      runId: session.runId,
+      messageId: session.messageId,
+      status,
+      session: persisted,
+      updatedAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + SESSION_TTL_MS).toISOString(),
+    });
+    durableSessionWritten = true;
+    await flushAssistantSnapshot();
+  } catch (error) {
+    // Keep the L1 session usable even if IndexedDB quota/storage is unavailable.
+    console.warn('[Agent] Failed to persist resumable session:', error);
+    if (durableSessionWritten) {
+      try {
+        await deletePersistedAgentSession(session.runId);
+      } catch (cleanupError) {
+        console.warn('[Agent] Failed to clean up partially persisted session:', cleanupError);
+      }
+    }
+  }
+}
+
+/** Test helper: simulate a reload without deleting durable state. */
+export function clearAgentSessionMemoryForTests(): void {
+  sessions.clear();
+}
+
+function toPersistedSession(session: AgentSessionState): AgentSessionState {
+  return {
+    ...session,
+    imageBase64: session.imageBase64 && session.imageBase64.length <= MAX_PERSISTED_IMAGE_CHARS
+      ? session.imageBase64
+      : undefined,
+    messages: session.messages.map(message => ({ ...message })),
+    actionsTaken: session.actionsTaken.map(action => ({ ...action })),
+    toolHistory: session.toolHistory.map(entry => ({
+      ...entry,
+      args: clonePersistable(entry.args),
+      result: {
+        ...entry.result,
+        output: clonePersistable(entry.result.output),
+        approval: entry.result.approval
+          ? {
+              ...entry.result.approval,
+              payload: clonePersistable(entry.result.approval.payload),
+              preview: clonePersistable(entry.result.approval.preview),
+            }
+          : undefined,
+      },
+    })),
+    continuation: persistContinuation(session.continuation),
+  };
+}
+
+/**
+ * Takeoff analysis feeds the estimator on resume — never run it through the
+ * general size/depth truncator used for tool payloads.
+ */
+function persistContinuation(
+  continuation: AgentSessionState['continuation'],
+): AgentSessionState['continuation'] {
+  if (!continuation) return undefined;
+  if (continuation.kind !== 'pipeline') {
+    return clonePersistable(continuation) as AgentSessionState['continuation'];
+  }
+
+  const { analysis, analysisTruncated: alreadyTruncated, ...rest } = continuation;
+  const sanitizedRest = clonePersistable(rest) as Omit<
+    typeof continuation,
+    'analysis' | 'analysisTruncated'
+  >;
+
+  // Honor an existing truncation marker — never silently clear it on re-park.
+  if (alreadyTruncated) {
+    return {
+      ...sanitizedRest,
+      kind: 'pipeline',
+      analysis: [],
+      analysisTruncated: true,
+    };
+  }
+
+  // Prefer full analysis even when generic clonePersistable would truncate it.
+  if (wouldTruncatePersistable(analysis)) {
+    console.warn(
+      '[Agent] Takeoff analysis exceeds generic persistence guards; storing full analysis intact.',
+    );
+  }
+
+  try {
+    return {
+      ...sanitizedRest,
+      kind: 'pipeline',
+      analysis: cloneAnalysisIntact(analysis),
+      analysisTruncated: false,
+    };
+  } catch (error) {
+    console.warn('[Agent] Failed to persist full takeoff analysis:', error);
+    return {
+      ...sanitizedRest,
+      kind: 'pipeline',
+      analysis: [],
+      analysisTruncated: true,
+    };
+  }
+}
+
+function cloneAnalysisIntact<T>(value: T): T {
+  if (typeof structuredClone === 'function') {
+    return structuredClone(value);
+  }
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+/** True when clonePersistable would drop or replace data (size/depth/image-key guards). */
+export function wouldTruncatePersistable(value: unknown, depth = 0): boolean {
+  if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return false;
+  }
+  if (depth >= 8) return true;
+  if (Array.isArray(value)) {
+    if (value.length > 500) return true;
+    return value.some(item => wouldTruncatePersistable(item, depth + 1));
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > 500) return true;
+    for (const [key, child] of entries) {
+      if (/base64|imageData|dataUrl/i.test(key)) return true;
+      if (wouldTruncatePersistable(child, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+function clonePersistable(value: unknown, depth = 0): unknown {
+  if (value == null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (depth >= 8) return '[truncated]';
+  if (Array.isArray(value)) return value.slice(0, 500).map(item => clonePersistable(item, depth + 1));
+  if (typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>).slice(0, 500)) {
+      if (/base64|imageData|dataUrl/i.test(key)) continue;
+      output[key] = clonePersistable(child, depth + 1);
+    }
+    return output;
+  }
+  return String(value);
 }
 
 export interface RunPrimaryLoopOptions {
@@ -88,7 +280,7 @@ export interface ResumeClarificationOptions {
 /** Continue an agent run after the user approves or rejects a write tool. */
 export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Promise<AgentTurnResult> {
   ensureDomainToolsRegistered();
-  const session = sessions.get(options.runId);
+  const session = await loadAgentSession(options.runId);
   if (!session) {
     return {
       status: 'failed',
@@ -96,11 +288,11 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
       actionsTaken: [],
       toolHistory: [],
       finalStatus: 'failed',
+      errorCode: 'SESSION_EXPIRED',
       runId: options.runId,
       messageId: options.approval.messageId,
     };
   }
-
   const signal = registerAssistantRunController(options.runId);
   const toolContext: AssistantToolContext = {
     ...options.toolContext,
@@ -171,7 +363,9 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
   }
 
   session.pendingApprovalId = undefined;
+  session.continuation = undefined;
   sessions.set(options.runId, session);
+  await deleteDurableAgentSession(options.runId);
 
   try {
     const result = await runPrimaryAgentLoop({
@@ -199,7 +393,7 @@ export async function resumeAgentAfterClarification(
   options: ResumeClarificationOptions,
 ): Promise<AgentTurnResult> {
   ensureDomainToolsRegistered();
-  const session = sessions.get(options.runId);
+  const session = await loadAgentSession(options.runId);
   if (!session) {
     return {
       status: 'failed',
@@ -207,11 +401,11 @@ export async function resumeAgentAfterClarification(
       actionsTaken: [],
       toolHistory: [],
       finalStatus: 'failed',
+      errorCode: 'SESSION_EXPIRED',
       runId: options.runId,
       messageId: options.clarification.messageId,
     };
   }
-
   const signal = registerAssistantRunController(options.runId);
   const toolContext: AssistantToolContext = {
     ...options.toolContext,
@@ -250,7 +444,9 @@ export async function resumeAgentAfterClarification(
     role: 'user',
     content: answerLines.join('\n'),
   });
+  session.continuation = undefined;
   sessions.set(options.runId, session);
+  await deleteDurableAgentSession(options.runId);
 
   try {
     const result = await runPrimaryAgentLoop({
@@ -336,7 +532,8 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
 
     if (decision.type === 'clarify') {
       session.messages.push({ role: 'assistant', content: JSON.stringify(decision) });
-      sessions.set(session.runId, session);
+      session.continuation = { kind: 'agent', waitingFor: 'clarification' };
+      await parkAgentSession(session, 'waiting-clarification');
       onStatus?.('needs_clarification');
       const clarification = emitClarificationQuestion({
         runId: session.runId,
@@ -459,6 +656,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
           approvalId: result.approval.id,
         });
         session.pendingApprovalId = result.approval.id;
+        session.continuation = { kind: 'agent', waitingFor: 'approval' };
         session.messages.push({
           role: 'tool',
           name: call.name,
@@ -467,6 +665,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         });
         onStatus?.('needs_approval');
         store().finishRun(session.runId, 'waiting-approval');
+        await parkAgentSession(session, 'waiting-approval');
         return finishWith(session, {
           status: 'needs_approval',
           finalStatus: 'needs_approval',

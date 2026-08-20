@@ -9,15 +9,20 @@ import type { ModelAdapter } from './modelAdapter';
 
 export {
   clearAgentSession,
+  clearAgentSessionMemoryForTests,
+  deleteDurableAgentSession,
   getAgentSession,
+  loadAgentSession,
+  parkAgentSession,
   resumeAgentAfterApproval,
   resumeAgentAfterClarification,
   runPrimaryAgentLoop,
   setAgentSession,
-  type AgentSessionState,
+  wouldTruncatePersistable,
   type ResumeAgentOptions,
   type ResumeClarificationOptions,
 } from './runnerCore';
+export type { AgentSessionState } from './types';
 
 export interface RunAgentTurnOptions {
   messageId: string;

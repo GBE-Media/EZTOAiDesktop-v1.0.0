@@ -469,22 +469,34 @@ export const selectPendingPlacements = (state: AIChatState) => state.pendingPlac
 export const selectHasPendingPlacements = (state: AIChatState) => state.pendingPlacements.length > 0;
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Persist the current visible assistant state immediately (used when parking resumable tasks). */
+export async function flushAssistantSnapshot(): Promise<void> {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  const current = useAIChatStore.getState();
+  if (!current.conversation || !current.conversationContextId) return;
+  const updatedAt = new Date().toISOString();
+  await writeAssistantSnapshot({
+    id: current.conversation.id,
+    contextId: current.conversationContextId,
+    conversation: { ...current.conversation, trade: current.selectedTrade, updatedAt },
+    messages: current.messages,
+    runs: Object.values(current.runs),
+    approvals: Object.values(current.approvals),
+    clarifications: Object.values(current.clarifications),
+    updatedAt,
+  });
+}
+
 useAIChatStore.subscribe(state => {
   if (!state.conversationHydrated || !state.conversation || !state.conversationContextId) return;
   if (persistTimer) clearTimeout(persistTimer);
   persistTimer = setTimeout(() => {
-    const current = useAIChatStore.getState();
-    if (!current.conversation || !current.conversationContextId) return;
-    const updatedAt = new Date().toISOString();
-    void writeAssistantSnapshot({
-      id: current.conversation.id,
-      contextId: current.conversationContextId,
-      conversation: { ...current.conversation, trade: current.selectedTrade, updatedAt },
-      messages: current.messages,
-      runs: Object.values(current.runs),
-      approvals: Object.values(current.approvals),
-      clarifications: Object.values(current.clarifications),
-      updatedAt,
+    void flushAssistantSnapshot().catch(error => {
+      console.warn('[Assistant] Failed to persist conversation snapshot:', error);
     });
   }, 250);
 });

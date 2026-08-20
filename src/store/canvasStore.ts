@@ -1454,7 +1454,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
         snapshot.after
           .filter(markup => !beforeIds.has(markup.id))
           .forEach(markup => {
-            const productId = markup.productId;
+            const productId = (markup as CanvasMarkup & { productId?: string }).productId;
             if (!productId || !state.activeDocId) return;
             const measurement = buildMeasurementFromMarkup(markup, state.activeDocId);
             if (measurement && !productStore.getMeasurementByMarkupId(measurement.markupId)) {

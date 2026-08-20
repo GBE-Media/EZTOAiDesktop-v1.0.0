@@ -1,6 +1,7 @@
 import type { ApprovalRequest, ClarificationRequest, ToolActivity } from '@/types/assistant';
 import type { AssistantToolResult } from '../tools/types';
 import type { AgentModelRole } from './roles';
+import type { BlueprintAnalysisResult, TradeType } from '../providers/types';
 
 /** UI-facing agent turn status (maps onto AssistantRun + message blocks). */
 export type AgentUiStatus =
@@ -21,6 +22,8 @@ export type AgentFinalStatus =
   | 'failed'
   | 'cancelled'
   | 'max_steps';
+
+export type AgentErrorCode = 'SESSION_EXPIRED' | 'DOCUMENT_MISMATCH' | 'ANALYSIS_TRUNCATED';
 
 export type RoutingPath =
   | 'answer_directly'
@@ -86,6 +89,63 @@ export interface AgentToolHistoryEntry {
   completedAt: string;
 }
 
+export interface PipelineClarificationStep {
+  id: string;
+  prompt: string;
+  options: Array<{ id: string; label: string; value: string }>;
+  allowMultiple?: boolean;
+  answer?: {
+    selectedValues: string[];
+    freeform?: string;
+    displayText: string;
+  };
+}
+
+export interface PipelineContinuationState {
+  kind: 'pipeline';
+  originalPrompt: string;
+  analysis: BlueprintAnalysisResult[];
+  /**
+   * Set when takeoff analysis could not be stored intact for resume.
+   * Resume must refuse estimation rather than silently using partial data.
+   */
+  analysisTruncated?: boolean;
+  evidence: string[];
+  questions: PipelineClarificationStep[];
+  nextQuestionIndex: number;
+  pendingClarificationId?: string;
+  pendingClarificationStepKey?: string;
+  config: {
+    trade: TradeType;
+    pages: number[];
+    pageWidth: number;
+    pageHeight: number;
+    highAccuracyMode: boolean;
+    visibleOnly: boolean;
+    refinePlacements: boolean;
+    documentId?: string;
+  };
+}
+
+export interface AgentContinuationState {
+  kind: 'agent';
+  waitingFor: 'clarification' | 'approval';
+}
+
+/** Serializable agent/task state. Runtime contexts and abort signals are rebuilt on resume. */
+export interface AgentSessionState {
+  runId: string;
+  messageId: string;
+  messages: AgentModelMessage[];
+  toolHistory: AgentToolHistoryEntry[];
+  actionsTaken: AgentActionTaken[];
+  contextText: string;
+  imageBase64?: string;
+  plan?: string;
+  pendingApprovalId?: string;
+  continuation?: AgentContinuationState | PipelineContinuationState;
+}
+
 export interface AgentTurnResult {
   status: AgentUiStatus;
   assistantMessage: string;
@@ -94,6 +154,7 @@ export interface AgentTurnResult {
   clarificationRequest?: ClarificationRequest;
   toolHistory: AgentToolHistoryEntry[];
   finalStatus: AgentFinalStatus;
+  errorCode?: AgentErrorCode;
   clarifyingQuestions?: string[];
   runId: string;
   messageId: string;

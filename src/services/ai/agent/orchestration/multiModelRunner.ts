@@ -1,16 +1,21 @@
 import { useAIChatStore } from '@/store/aiChatStore';
-import type { AssistantToolContext } from '../tools/types';
-import type { TradeType } from '../providers/types';
+import type { AssistantToolContext } from '../../tools/types';
+import type { TradeType } from '../../providers/types';
 import { createJsonToolModelAdapter, type ModelAdapter } from '../modelAdapter';
 import { runIntake } from '../phases/intake';
 import { finalizeAgentTurn } from '../phases/finalize';
 import { runVerificationPhase } from '../phases/verifier';
 import { runRouting } from '../routing/routerModel';
 import { emitAgentTrace } from '../trace';
-import type { AgentTurnResult, ModelUsedEntry, RoutingDecision } from '../types';
-import type { AgentSessionState } from '../runnerCore';
+import type {
+  AgentSessionState,
+  AgentTurnResult,
+  ModelUsedEntry,
+  RoutingDecision,
+} from '../types';
 import {
-  getAgentSession,
+  loadAgentSession,
+  parkAgentSession,
   runPrimaryAgentLoop,
   setAgentSession,
 } from '../runnerCore';
@@ -61,7 +66,7 @@ export async function runMultiModelTurn(options: MultiModelRunOptions): Promise<
   const signal = registerAssistantRunController(runId);
   const modelsUsed: ModelUsedEntry[] = [];
 
-  const session: AgentSessionState = getAgentSession(runId) || {
+  const session: AgentSessionState = await loadAgentSession(runId) || {
     runId,
     messageId: options.messageId,
     messages: [],
@@ -148,7 +153,8 @@ export async function runMultiModelTurn(options: MultiModelRunOptions): Promise<
         role: 'assistant',
         content: JSON.stringify({ type: 'clarify', message: question, questions: [question] }),
       });
-      setAgentSession(session);
+      session.continuation = { kind: 'agent', waitingFor: 'clarification' };
+      await parkAgentSession(session, 'waiting-clarification');
       const clarification = emitClarificationQuestion({
         runId,
         messageId: options.messageId,
@@ -293,7 +299,7 @@ async function finishWithOptionalVerify(options: {
       finalStatus = 'needs_clarification';
       clarifyingQuestions = [verify.blockedClarification];
       options.onStatus?.('needs_clarification');
-      let session = getAgentSession(primaryResult.runId);
+      let session = await loadAgentSession(primaryResult.runId);
       if (!session) {
         session = {
           runId: primaryResult.runId,
@@ -317,7 +323,8 @@ async function finishWithOptionalVerify(options: {
           questions: [verify.blockedClarification],
         }),
       });
-      setAgentSession(session);
+      session.continuation = { kind: 'agent', waitingFor: 'clarification' };
+      await parkAgentSession(session, 'waiting-clarification');
       emitClarificationQuestion({
         runId: primaryResult.runId,
         messageId: primaryResult.messageId,

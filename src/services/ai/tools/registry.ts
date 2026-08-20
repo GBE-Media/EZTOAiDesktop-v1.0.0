@@ -19,6 +19,11 @@ const mutationPayloadSchema = z.object({
   description: z.string().min(1),
   preview: z.unknown().optional(),
 });
+type MutationPayload = {
+  payload: unknown;
+  description: string;
+  preview?: unknown;
+};
 
 function coerceMutationInput(raw: unknown): unknown {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
@@ -79,7 +84,7 @@ function createMutationTool(
     verifyWith,
     schema: mutationPayloadSchema,
     execute: async (context, rawInput) => {
-      const input = mutationPayloadSchema.parse(coerceMutationInput(rawInput));
+      const input = mutationPayloadSchema.parse(coerceMutationInput(rawInput)) as MutationPayload;
       const approval = createApproval(definition, context, input);
       context.addApproval(approval);
       return {
@@ -248,7 +253,7 @@ export function proposeAssistantMutation(
   if (!tool || !toolRequiresApproval(tool)) {
     throw new Error(`Tool ${toolId} is not an approval-gated mutation.`);
   }
-  const input = mutationPayloadSchema.parse(coerceMutationInput(rawInput));
+  const input = mutationPayloadSchema.parse(coerceMutationInput(rawInput)) as MutationPayload;
   return createApproval(tool, identity, input);
 }
 
