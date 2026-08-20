@@ -73,14 +73,42 @@ export function inferClarificationStepKey(question: string, explicit?: string): 
 }
 
 /**
+ * Normalize and validate model-supplied clarification chips.
+ * Returns null when the set is missing or malformed so callers can fall back to templates.
+ */
+export function validateModelClarificationOptions(
+  options: unknown,
+): ClarificationOption[] | null {
+  if (!Array.isArray(options) || options.length === 0) return null;
+
+  const normalized: ClarificationOption[] = [];
+  for (const raw of options.slice(0, 6)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const item = raw as Record<string, unknown>;
+    const label = String(item.label ?? '').trim();
+    const value = String(item.value ?? item.id ?? label).trim();
+    const id = String(item.id ?? value).trim();
+    if (!label || !value || !id) continue;
+    normalized.push({ id, label, value });
+  }
+
+  // Model-supplied sets must include 2–6 usable options.
+  if (normalized.length < 2) return null;
+  return normalized;
+}
+
+/**
  * Resolve clickable options for a clarification. Returns [] for freeform-only cards.
+ * Precedence: validated model options → keyword templates → empty (freeform).
  */
 export function resolveClarificationOptions(
   question: string,
-  options?: ClarificationOption[],
+  options?: ClarificationOption[] | unknown,
   stepKey?: string,
 ): ClarificationOption[] {
-  if (options && options.length > 0) return options.slice(0, 6);
+  const modelOptions = validateModelClarificationOptions(options);
+  if (modelOptions) return modelOptions;
+
   const key = inferClarificationStepKey(question, stepKey);
   return (BIDVERA_QUESTION_TEMPLATES[key] || []).slice(0, 6);
 }

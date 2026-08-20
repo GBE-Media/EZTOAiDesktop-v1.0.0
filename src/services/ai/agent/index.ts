@@ -39,6 +39,7 @@ export {
   BIDVERA_QUESTION_TEMPLATES,
   inferClarificationStepKey,
   resolveClarificationOptions,
+  validateModelClarificationOptions,
 } from './clarificationTemplates';
 export type { AgentModelRole, AgentModelsConfig, AgentModelSelection } from './roles';
 export type {

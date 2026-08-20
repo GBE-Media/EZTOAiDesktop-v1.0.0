@@ -27,13 +27,26 @@ export function parseAgentDecision(raw: string): AgentModelDecision {
 
   if (type === 'clarify') {
     const questions = Array.isArray(obj.questions)
-      ? obj.questions.map(String)
+      ? obj.questions.map(item => {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object' && !Array.isArray(item)) {
+            const prompt = (item as Record<string, unknown>).prompt
+              ?? (item as Record<string, unknown>).question
+              ?? (item as Record<string, unknown>).message;
+            return prompt != null ? String(prompt) : '';
+          }
+          return String(item ?? '');
+        }).filter(Boolean)
       : [];
-    return {
+    const decision: Extract<AgentModelDecision, { type: 'clarify' }> = {
       type: 'clarify',
-      message: String(obj.message || obj.assistantMessage || 'I need a bit more information.'),
+      message: String(obj.message || obj.assistantMessage || questions[0] || 'I need a bit more information.'),
       questions,
     };
+    if (Array.isArray(obj.options)) {
+      decision.options = obj.options as NonNullable<typeof decision.options>;
+    }
+    return decision;
   }
 
   if (type === 'tool_calls' || Array.isArray(obj.toolCalls) || Array.isArray(obj.tool_calls)) {

@@ -540,6 +540,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         messageId: session.messageId,
         question: decision.message,
         questions: decision.questions,
+        options: decision.options,
       });
       return finishWith(session, {
         status: 'needs_clarification',
