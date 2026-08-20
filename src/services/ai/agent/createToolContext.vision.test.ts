@@ -194,6 +194,39 @@ describe('createAgentToolContext vision defaults (Phase 3)', () => {
     }));
   });
 
+  it('returns unavailable for zero-area viewport/selection regions without calling the pipeline', async () => {
+    seedOpenPdf();
+    const canvas = useCanvasStore.getState();
+    const context = editorStyleContext('run-zero', 'msg-zero');
+
+    canvas.setAiViewportRect('doc-vision', 1, { x: 10, y: 20, width: 0, height: 100 });
+    const zeroWidth = await context.analyzePage({ page: 1, scope: 'viewport' });
+    expect(zeroWidth).toMatchObject({
+      status: 'unavailable',
+      message: expect.stringContaining('no usable area'),
+    });
+    expect(analyzePageMaximumAccuracyMock).not.toHaveBeenCalled();
+
+    analyzePageMaximumAccuracyMock.mockClear();
+    canvas.setAiViewportRect('doc-vision', 1, { x: 10, y: 20, width: 100, height: 0 });
+    const zeroHeight = await context.analyzePage({ page: 1, scope: 'viewport' });
+    expect(zeroHeight).toMatchObject({
+      status: 'unavailable',
+      message: expect.stringContaining('no usable area'),
+    });
+    expect(analyzePageMaximumAccuracyMock).not.toHaveBeenCalled();
+
+    analyzePageMaximumAccuracyMock.mockClear();
+    canvas.clearAiViewport();
+    canvas.setAiSelectionRect('doc-vision', 1, { x: 50, y: 50, width: 0, height: 0 });
+    const zeroSelection = await context.analyzePage({ page: 1, scope: 'selection' });
+    expect(zeroSelection).toMatchObject({
+      status: 'unavailable',
+      message: expect.stringContaining('no usable area'),
+    });
+    expect(analyzePageMaximumAccuracyMock).not.toHaveBeenCalled();
+  });
+
   it('analyze_page returns unavailable with no PDF or out-of-range page', async () => {
     const context = editorStyleContext('run-miss', 'msg-miss');
     expect(await context.analyzePage({ page: 1, scope: 'full' })).toEqual({

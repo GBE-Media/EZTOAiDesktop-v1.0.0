@@ -5,11 +5,12 @@ import { useProductStore } from '@/store/productStore';
 import { summarizeCatalogForChat, summarizeMarkupsForChat } from '../contextSummary';
 import { suggestLayoutsFromItems } from '../layouts';
 import { analyzePageMaximumAccuracy, extractPageTextEvidence } from '../pipeline';
+import { BASE_RENDER_SCALE, clampDocRect, createPageGeometry } from '../placement/coords';
+import type { DocRect } from '../placement/types';
 import type { DetectedItem, TradeType } from '../providers/types';
 import type { AssistantToolContext } from '../tools/types';
 import type { CanvasMarkup } from '@/types/markup';
 import { searchTextItemsWithBounds } from './searchTextItems';
-import { BASE_RENDER_SCALE } from '../placement/coords';
 
 export interface CreateAgentToolContextOptions {
   runId: string;
@@ -28,6 +29,37 @@ export interface CreateAgentToolContextOptions {
 }
 
 type AnalyzePageScope = 'full' | 'viewport' | 'selection';
+
+/** Minimum usable region size in document points (DocRect / page-point space). */
+const MIN_ANALYSIS_REGION_POINTS = 1;
+
+/**
+ * Clamp a viewport/selection rect to the page and reject zero/near-zero area.
+ * Canvas viewport math can yield width/height 0; imageCapture coerces those to 1px
+ * crops rather than failing — so we gate here before calling the vision pipeline.
+ */
+function normalizeScopedAnalysisRegion(
+  rect: DocRect,
+  page: number,
+  pageWidth: number,
+  pageHeight: number,
+): DocRect | null {
+  const pageGeometry = createPageGeometry({
+    pageNumber: page,
+    docWidth: pageWidth,
+    docHeight: pageHeight,
+  });
+  const clamped = clampDocRect(rect, pageGeometry);
+  if (
+    !Number.isFinite(clamped.width)
+    || !Number.isFinite(clamped.height)
+    || clamped.width < MIN_ANALYSIS_REGION_POINTS
+    || clamped.height < MIN_ANALYSIS_REGION_POINTS
+  ) {
+    return null;
+  }
+  return clamped;
+}
 
 /**
  * Default analyze_page adapter: runs the Takeoff maximum-accuracy pipeline on the
@@ -81,7 +113,7 @@ async function defaultAnalyzePage(
     };
   }
 
-  let analysisRegion: { x: number; y: number; width: number; height: number } | undefined;
+  let analysisRegion: DocRect | undefined;
   if (scope === 'selection') {
     const rect = canvas.getAiSelectionForPage(docId, page);
     if (!rect) {
@@ -90,7 +122,14 @@ async function defaultAnalyzePage(
         message: 'Select a region on the canvas before analyzing with scope "selection".',
       };
     }
-    analysisRegion = rect;
+    const normalized = normalizeScopedAnalysisRegion(rect, page, pageWidth, pageHeight);
+    if (!normalized) {
+      return {
+        status: 'unavailable',
+        message: 'The selected region has no usable area on this page. Draw a larger selection and retry.',
+      };
+    }
+    analysisRegion = normalized;
   } else if (scope === 'viewport') {
     const rect = canvas.getAiViewportForPage(docId, page);
     if (!rect) {
@@ -99,7 +138,14 @@ async function defaultAnalyzePage(
         message: 'Unable to determine the visible viewport for scope "viewport". Try zooming or fit-to-canvas and retry.',
       };
     }
-    analysisRegion = rect;
+    const normalized = normalizeScopedAnalysisRegion(rect, page, pageWidth, pageHeight);
+    if (!normalized) {
+      return {
+        status: 'unavailable',
+        message: 'The visible viewport has no usable area on this page. Try zooming or fit-to-canvas and retry.',
+      };
+    }
+    analysisRegion = normalized;
   }
 
   if (options.signal?.aborted) {
