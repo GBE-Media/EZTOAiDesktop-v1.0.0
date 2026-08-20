@@ -198,12 +198,11 @@ export function Canvas() {
         setPageDimensions(pageInfo.width, pageInfo.height);
 
         // Populate analysis scene only when review/layers request it (never force-show).
+        // Dimensions come from getPageDimensions inside activatePlacementDebugForPage.
         if (useCanvasLayersStore.getState().shouldPopulateAnalysisScene()) {
           void activatePlacementDebugForPage({
             pdfDoc: pdfDocument,
             pageNumber: currentPage,
-            docWidth: originalPageWidth || pageInfo.originalWidth || pageInfo.width / BASE_RENDER_SCALE,
-            docHeight: originalPageHeight || pageInfo.originalHeight || pageInfo.height / BASE_RENDER_SCALE,
           });
         }
       } catch (err) {
@@ -217,7 +216,7 @@ export function Canvas() {
     return () => {
       cancelled = true;
     };
-  }, [pdfDocument, currentPage, setPageDimensions, originalPageWidth, originalPageHeight]);
+  }, [pdfDocument, currentPage, setPageDimensions]);
 
   // Populate analysis scene when user enables review/layers after the page is already open
   useEffect(() => {
@@ -226,16 +225,10 @@ export function Canvas() {
     void activatePlacementDebugForPage({
       pdfDoc: pdfDocument,
       pageNumber: currentPage,
-      docWidth: originalPageWidth || canvasDimensions.width / BASE_RENDER_SCALE,
-      docHeight: originalPageHeight || canvasDimensions.height / BASE_RENDER_SCALE,
     });
   }, [
     pdfDocument,
     currentPage,
-    originalPageWidth,
-    originalPageHeight,
-    canvasDimensions.width,
-    canvasDimensions.height,
     reviewAnalysisMode,
     layerOcr,
     layerAnchors,

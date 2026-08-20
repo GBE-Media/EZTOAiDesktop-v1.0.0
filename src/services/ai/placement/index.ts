@@ -54,6 +54,7 @@ export {
 } from './normalizeAgentMarkupPayload';
 export {
   usePlacementDebugStore,
+  applyDebugSceneUpdate,
   type PlacementDebugState,
 } from './debugStore';
 export { activatePlacementDebugForPage } from './activateDebug';
