@@ -63,14 +63,19 @@ function toOpenAIMessages(messages: ProxyMessage[]): unknown[] {
       out.push({
         role: 'assistant',
         content: msg.content || '',
-        tool_calls: msg.toolCalls.map(call => ({
-          id: call.id,
-          type: 'function',
-          function: {
-            name: call.name,
-            arguments: typeof call.input === 'string' ? call.input : JSON.stringify(call.input ?? {}),
-          },
-        })),
+        tool_calls: msg.toolCalls.map(call => {
+          const input = (call as { input?: unknown; arguments?: unknown }).input
+            ?? (call as { arguments?: unknown }).arguments
+            ?? {};
+          return {
+            id: call.id,
+            type: 'function',
+            function: {
+              name: call.name,
+              arguments: typeof input === 'string' ? input : JSON.stringify(input ?? {}),
+            },
+          };
+        }),
       });
       continue;
     }
@@ -363,8 +368,12 @@ async function callOpenAI(
   const body: Record<string, unknown> = {
     model,
     messages: openaiMessages,
-    temperature: temperature ?? 0.7,
   };
+
+  // gpt-5 / o-series reject custom temperature — omit rather than send 0.2/0.7.
+  if (!/^(gpt-5|o1|o3|o4)(\b|[.-])/i.test(model)) {
+    body.temperature = temperature ?? 0.7;
+  }
 
   if (/^gpt-5/i.test(model)) {
     body.max_completion_tokens = maxTokens ?? 16384;
@@ -416,9 +425,13 @@ async function callLovable(
   const body: Record<string, unknown> = {
     model,
     messages: gatewayMessages,
-    temperature: temperature ?? 0.7,
     max_completion_tokens: maxTokens ?? 16384,
   };
+
+  // openai/gpt-5* (and bare gpt-5*) via Lovable also reject custom temperature.
+  if (!/(^|\/)(gpt-5|o1|o3|o4)(\b|[.-])/i.test(model)) {
+    body.temperature = temperature ?? 0.7;
+  }
 
   if (responseFormat === 'json') {
     body.response_format = { type: 'json_object' };

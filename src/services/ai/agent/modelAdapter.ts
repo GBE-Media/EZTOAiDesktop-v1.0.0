@@ -4,13 +4,14 @@ import type { AgentModelDecision, AgentModelMessage, ModelUsedEntry } from './ty
 import type { AgentModelRole } from './roles';
 import { buildAgentSystemPrompt } from './prompts/system';
 import { emitAgentTrace } from './trace';
-import { parseAgentDecision } from './decisionParser';
 import { registerAllAgentTools } from './tools/registerAll';
 import {
   assistantToolsToProxyDefinitions,
   decisionFromCompletion,
 } from '../tools/toProxyTools';
 import { projectMessagesPreservingToolFields } from '../providers/projectMessagesPreservingToolFields';
+import { agentMessagesToProviderMessages } from './providerMessages';
+import { resolveRequestTemperature } from '../providers/modelRequestConstraints';
 
 export { parseAgentDecision } from './decisionParser';
 export { decisionFromCompletion } from '../tools/toProxyTools';
@@ -49,33 +50,9 @@ export function createJsonToolModelAdapter(
 
       const role = options.role || defaultRole;
       const system = `${buildAgentSystemPrompt()}\n\n${options.contextText}`;
-      const history = options.messages
-        .filter(message => message.role !== 'system')
-        .map(message => {
-          if (message.role === 'tool') {
-            return {
-              role: 'tool' as const,
-              content: message.content,
-              toolCallId: message.toolCallId,
-              name: message.name,
-            };
-          }
-          if (message.role === 'assistant' && message.toolCalls && message.toolCalls.length > 0) {
-            return {
-              role: 'assistant' as const,
-              content: message.content,
-              toolCalls: message.toolCalls.map(call => ({
-                id: call.id,
-                name: call.name,
-                input: call.arguments,
-              })),
-            };
-          }
-          return {
-            role: message.role as 'user' | 'assistant' | 'system',
-            content: message.content,
-          };
-        });
+      // Shared for vision + non-vision: normalize arguments→input, guarantee
+      // toolCallIds, and repair multi-round pairing before provider serialization.
+      const history = agentMessagesToProviderMessages(options.messages);
 
       const ai = getAIService();
       const selection = ai.getAgentRoleConfig(role);
@@ -86,11 +63,13 @@ export function createJsonToolModelAdapter(
         phase: role === 'fallback' ? 'fallback' : 'primary',
       });
 
+      const temperature = resolveRequestTemperature(selection.model, 0.2);
+
       // Native tools + text responses. Do not force json_object — that conflicts
       // with provider tool_use / tool_calls on several models. JSON plan/clarify/
       // final (and JSON tool_calls) still work via parseAgentDecision fallback.
       const shared = {
-        temperature: 0.2,
+        ...(temperature != null ? { temperature } : {}),
         maxTokens: 4096,
         responseFormat: 'text' as const,
         tools,
@@ -101,8 +80,6 @@ export function createJsonToolModelAdapter(
 
       if (options.imageBase64) {
         const lastUserIndex = [...history].map((m, i) => (m.role === 'user' ? i : -1)).filter(i => i >= 0).pop();
-        // Preserve toolCalls / toolCallId / name — dropping them breaks native
-        // tool association on the next (image-backed) turn.
         response = await ai.visionForRole(role, {
           messages: projectMessagesPreservingToolFields([
             { role: 'system', content: system },
@@ -114,11 +91,12 @@ export function createJsonToolModelAdapter(
           ...shared,
         });
       } else {
+        // Same preservation helper as vision — do not use a lossy parallel path.
         response = await ai.completeForRole(role, {
-          messages: [
+          messages: projectMessagesPreservingToolFields([
             { role: 'system', content: system },
             ...history,
-          ],
+          ]),
           ...shared,
         });
       }

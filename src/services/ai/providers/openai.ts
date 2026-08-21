@@ -13,6 +13,7 @@ import type {
   PipelineStage,
 } from './types';
 import { toOpenAIChatMessages } from './toolMessageAdapters';
+import { resolveRequestTemperature } from './modelRequestConstraints';
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
@@ -109,13 +110,14 @@ export class OpenAIProvider implements AIProvider {
 
     const model = request.model || 'gpt-5';
     const messages = toOpenAIChatMessages(request.messages);
+    const temperature = resolveRequestTemperature(model, request.temperature ?? 0.7);
 
     const body: Record<string, unknown> = {
       model,
       messages,
-      temperature: request.temperature ?? 0.7,
       max_tokens: request.maxTokens ?? 4096,
     };
+    if (temperature != null) body.temperature = temperature;
 
     if (request.responseFormat === 'json') {
       body.response_format = { type: 'json_object' };
@@ -183,13 +185,14 @@ export class OpenAIProvider implements AIProvider {
 
     const model = request.model || 'gpt-5';
     const messages = toOpenAIChatMessages(request.messages);
+    const temperature = resolveRequestTemperature(model, request.temperature ?? 0.3);
 
     const body: Record<string, unknown> = {
       model,
       messages,
-      temperature: request.temperature ?? 0.3, // Lower temperature for vision accuracy
       max_tokens: request.maxTokens ?? 4096,
     };
+    if (temperature != null) body.temperature = temperature;
 
     if (request.responseFormat === 'json') {
       body.response_format = { type: 'json_object' };

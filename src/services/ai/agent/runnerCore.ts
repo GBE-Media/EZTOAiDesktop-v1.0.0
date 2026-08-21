@@ -565,7 +565,12 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
     session.messages.push({
       role: 'assistant',
       content: decision.assistantText || '',
-      toolCalls: decision.toolCalls,
+      toolCalls: decision.toolCalls.map((call, index) => ({
+        ...call,
+        id: (typeof call.id === 'string' && call.id.trim())
+          ? call.id.trim()
+          : `call_${call.name || 'tool'}_${steps}_${index + 1}`,
+      })),
     });
     onStatus?.('running_tools');
     store().upsertRunStep(session.runId, {
