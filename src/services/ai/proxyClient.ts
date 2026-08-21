@@ -17,9 +17,12 @@ export interface ProxyRequest {
   provider: AIProviderType;
   model: string;
   messages: Array<{
-    role: 'user' | 'assistant' | 'system';
+    role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
     images?: string[];
+    toolCallId?: string;
+    name?: string;
+    toolCalls?: AIToolCall[];
   }>;
   temperature?: number;
   maxTokens?: number;

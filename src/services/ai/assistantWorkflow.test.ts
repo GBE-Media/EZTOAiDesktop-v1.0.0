@@ -52,8 +52,11 @@ describe('deterministic assistant workflow', () => {
         });
         await executeAssistantTool('get_document_context', {}, context);
         const proposal = await executeAssistantTool('place_markups', {
-          payload: [{ id: 'green-1' }, { id: 'green-2' }],
           description: 'Place two verified green callouts',
+          pointers: [
+            { type: 'callout', ref: 1, point: { x: 100, y: 200 }, page: 2, label: 'green-1' },
+            { type: 'callout', ref: 2, point: { x: 300, y: 220 }, page: 2, label: 'green-2' },
+          ],
         }, context);
         expect(proposal.status).toBe('approval-required');
       },

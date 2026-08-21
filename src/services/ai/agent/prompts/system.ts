@@ -1,4 +1,5 @@
 import { listAssistantTools } from '../../tools/registry';
+import { zodToJsonSchema } from '../../tools/zodToJsonSchema';
 
 /**
  * Runtime system prompt for the BidveraAi agent.
@@ -67,7 +68,25 @@ function formatToolCatalog(): string {
         tool.isStub ? 'STUB' : null,
         tool.verifyWith?.length ? `verify:${tool.verifyWith.join(',')}` : null,
       ].filter(Boolean).join(', ');
-      return `- ${tool.id}: ${tool.description} (${flags})`;
+      const params = summarizeToolParams(tool.schema);
+      return `- ${tool.id}: ${tool.description} (${flags})\n  params: ${params}`;
     })
     .join('\n');
+}
+
+/** Compact param summary from each tool's real Zod → JSON Schema shape. */
+function summarizeToolParams(schema: import('zod').ZodTypeAny): string {
+  const json = zodToJsonSchema(schema);
+  const properties = (json.properties && typeof json.properties === 'object')
+    ? json.properties as Record<string, unknown>
+    : null;
+  if (!properties || Object.keys(properties).length === 0) {
+    return '(none)';
+  }
+  const required = new Set(
+    Array.isArray(json.required) ? json.required.map(String) : [],
+  );
+  return Object.keys(properties)
+    .map((key) => (required.has(key) ? key : `${key}?`))
+    .join(', ');
 }

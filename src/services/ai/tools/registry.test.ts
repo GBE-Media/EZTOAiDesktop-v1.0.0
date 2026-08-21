@@ -41,8 +41,14 @@ describe('assistant tool registry', () => {
   it('requires approval for every document mutation', async () => {
     const context = makeContext();
     const result = await executeAssistantTool('place_markups', {
-      payload: [{ id: 'markup-1' }],
       description: 'Place one verified callout',
+      pointers: [{
+        type: 'callout',
+        ref: 1,
+        point: { x: 100, y: 200 },
+        page: 2,
+        label: 'Receptacle',
+      }],
     }, context);
     expect(result.status).toBe('approval-required');
     expect(result.approval).toMatchObject({
@@ -64,12 +70,40 @@ describe('assistant tool registry', () => {
 
   it('executes only an explicitly approved action', async () => {
     const context = makeContext();
+    const pointers = [{
+      type: 'callout' as const,
+      ref: 1,
+      point: { x: 100, y: 200 },
+      page: 2,
+    }];
     const result = await executeAssistantTool('place_markups', {
-      payload: [{ id: 'markup-1' }],
       description: 'Place one verified callout',
+      pointers,
     }, context);
     await executeApprovedAssistantAction(result.approval!, context);
-    expect(context.placeMarkups).toHaveBeenCalledWith([{ id: 'markup-1' }]);
+    expect(context.placeMarkups).toHaveBeenCalledWith(pointers);
+  });
+
+  it('rejects mismatched mutation payloads per tool schema', async () => {
+    const context = makeContext();
+    const placeAsDelete = await executeAssistantTool('place_markups', {
+      description: 'Should fail',
+      markupIds: ['m1'],
+    }, context);
+    expect(placeAsDelete.status).toBe('failed');
+
+    const deleteAsPlace = await executeAssistantTool('delete_markups', {
+      description: 'Should fail',
+      pointers: [{ type: 'callout', ref: 1, point: { x: 1, y: 2 } }],
+    }, context);
+    expect(deleteAsPlace.status).toBe('failed');
+
+    const deleteOk = await executeAssistantTool('delete_markups', {
+      description: 'Remove one markup',
+      markupIds: ['m1'],
+    }, context);
+    expect(deleteOk.status).toBe('approval-required');
+    expect(deleteOk.approval?.payload).toEqual({ markupIds: ['m1'], page: undefined });
   });
 
   it('registers BidveraAi domain tools including stubs', () => {

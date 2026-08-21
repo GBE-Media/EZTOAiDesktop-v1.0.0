@@ -30,15 +30,140 @@ interface AIRequest {
   provider: 'openai' | 'anthropic' | 'lovable';
   model: string;
   messages: Array<{
-    role: 'user' | 'assistant' | 'system';
+    role: 'user' | 'assistant' | 'system' | 'tool';
     content: string;
     images?: string[];
+    toolCallId?: string;
+    name?: string;
+    toolCalls?: Array<{ id: string; name: string; input: unknown }>;
   }>;
   temperature?: number;
   maxTokens?: number;
   responseFormat?: 'text' | 'json';
   tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
   toolChoice?: 'auto' | 'none' | { name: string };
+}
+
+type ProxyMessage = AIRequest['messages'][number];
+
+/** OpenAI / Lovable: role "tool" + tool_call_id. */
+function toOpenAIMessages(messages: ProxyMessage[]): unknown[] {
+  const out: unknown[] = [];
+  for (const msg of messages) {
+    if (msg.role === 'tool') {
+      out.push({
+        role: 'tool',
+        tool_call_id: msg.toolCallId || msg.name || 'tool_call',
+        content: msg.content ?? '',
+        ...(msg.name ? { name: msg.name } : {}),
+      });
+      continue;
+    }
+    if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+      out.push({
+        role: 'assistant',
+        content: msg.content || '',
+        tool_calls: msg.toolCalls.map(call => ({
+          id: call.id,
+          type: 'function',
+          function: {
+            name: call.name,
+            arguments: typeof call.input === 'string' ? call.input : JSON.stringify(call.input ?? {}),
+          },
+        })),
+      });
+      continue;
+    }
+    if (msg.role === 'user' && msg.images && msg.images.length > 0) {
+      const content: Array<Record<string, unknown>> = [];
+      if (msg.content) content.push({ type: 'text', text: msg.content });
+      for (const image of msg.images) {
+        content.push({
+          type: 'image_url',
+          image_url: {
+            url: image.startsWith('data:') ? image : `data:image/png;base64,${image}`,
+            detail: 'high',
+          },
+        });
+      }
+      out.push({ role: 'user', content });
+      continue;
+    }
+    out.push({ role: msg.role, content: msg.content ?? '' });
+  }
+  return out;
+}
+
+/**
+ * Anthropic: no "tool" role — tool results are user messages with tool_result blocks.
+ * Consecutive tool messages are merged into one user message.
+ */
+function toAnthropicMessages(messages: ProxyMessage[]): {
+  system?: string;
+  messages: unknown[];
+} {
+  const system = messages.find(m => m.role === 'system')?.content;
+  const out: unknown[] = [];
+  let pendingTools: ProxyMessage[] = [];
+
+  const flushTools = () => {
+    if (pendingTools.length === 0) return;
+    out.push({
+      role: 'user',
+      content: pendingTools.map(msg => ({
+        type: 'tool_result',
+        tool_use_id: msg.toolCallId || msg.name || 'tool_call',
+        content: msg.content ?? '',
+      })),
+    });
+    pendingTools = [];
+  };
+
+  for (const msg of messages) {
+    if (msg.role === 'system') continue;
+    if (msg.role === 'tool') {
+      pendingTools.push(msg);
+      continue;
+    }
+    flushTools();
+    if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+      const blocks: Array<Record<string, unknown>> = [];
+      if (msg.content?.trim()) blocks.push({ type: 'text', text: msg.content });
+      for (const call of msg.toolCalls) {
+        let input: unknown = call.input ?? {};
+        if (typeof call.input === 'string') {
+          try { input = JSON.parse(call.input); } catch { input = {}; }
+        }
+        blocks.push({ type: 'tool_use', id: call.id, name: call.name, input });
+      }
+      out.push({ role: 'assistant', content: blocks });
+      continue;
+    }
+    if (msg.role === 'user' && msg.images && msg.images.length > 0) {
+      const content: Array<Record<string, unknown>> = [];
+      for (const image of msg.images) {
+        let mediaType = 'image/png';
+        let base64Data = image;
+        if (image.startsWith('data:')) {
+          const match = image.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            mediaType = match[1];
+            base64Data = match[2];
+          }
+        }
+        content.push({
+          type: 'image',
+          source: { type: 'base64', media_type: mediaType, data: base64Data },
+        });
+      }
+      if (msg.content) content.push({ type: 'text', text: msg.content });
+      out.push({ role: 'user', content });
+      continue;
+    }
+    out.push({ role: msg.role, content: msg.content ?? '' });
+  }
+  flushTools();
+  return { system, messages: out };
 }
 
 interface RateLimitResult {
@@ -233,31 +358,7 @@ async function callOpenAI(
   tools?: AIRequest['tools'],
   toolChoice?: AIRequest['toolChoice']
 ): Promise<Response> {
-  // Build OpenAI messages format
-  const openaiMessages = messages.map(msg => {
-    // Handle vision (images)
-    if (msg.role === 'user' && msg.images && msg.images.length > 0) {
-      const content: Array<{ type: string; text?: string; image_url?: { url: string; detail?: string } }> = [];
-      
-      if (msg.content) {
-        content.push({ type: 'text', text: msg.content });
-      }
-      
-      for (const image of msg.images) {
-        content.push({
-          type: 'image_url',
-          image_url: {
-            url: image.startsWith('data:') ? image : `data:image/png;base64,${image}`,
-            detail: 'high',
-          },
-        });
-      }
-      
-      return { role: msg.role, content };
-    }
-    
-    return { role: msg.role, content: msg.content };
-  });
+  const openaiMessages = toOpenAIMessages(messages);
 
   const body: Record<string, unknown> = {
     model,
@@ -309,31 +410,8 @@ async function callLovable(
   tools?: AIRequest['tools'],
   toolChoice?: AIRequest['toolChoice']
 ): Promise<Response> {
-  // The Lovable AI Gateway is OpenAI-compatible; model IDs are namespaced,
-  // e.g. "openai/gpt-5.6-sol" or "google/gemini-3.1-pro-preview".
-  const gatewayMessages = messages.map(msg => {
-    if (msg.role === 'user' && msg.images && msg.images.length > 0) {
-      const content: Array<{ type: string; text?: string; image_url?: { url: string; detail?: string } }> = [];
-
-      if (msg.content) {
-        content.push({ type: 'text', text: msg.content });
-      }
-
-      for (const image of msg.images) {
-        content.push({
-          type: 'image_url',
-          image_url: {
-            url: image.startsWith('data:') ? image : `data:image/png;base64,${image}`,
-            detail: 'high',
-          },
-        });
-      }
-
-      return { role: msg.role, content };
-    }
-
-    return { role: msg.role, content: msg.content };
-  });
+  // Lovable AI Gateway is OpenAI-compatible (including tool role messages).
+  const gatewayMessages = toOpenAIMessages(messages);
 
   const body: Record<string, unknown> = {
     model,
@@ -379,54 +457,7 @@ async function callAnthropic(
   tools?: AIRequest['tools'],
   toolChoice?: AIRequest['toolChoice']
 ): Promise<Response> {
-  // Extract system message
-  const systemMessage = messages.find(m => m.role === 'system')?.content;
-  
-  // Build Anthropic messages format
-  const anthropicMessages = messages
-    .filter(m => m.role !== 'system')
-    .map(msg => {
-      // Handle vision (images)
-      if (msg.role === 'user' && msg.images && msg.images.length > 0) {
-        const content: Array<{
-          type: string;
-          text?: string;
-          source?: { type: string; media_type: string; data: string };
-        }> = [];
-        
-        // Add images first
-        for (const image of msg.images) {
-          let mediaType = 'image/png';
-          let base64Data = image;
-          
-          if (image.startsWith('data:')) {
-            const match = image.match(/^data:([^;]+);base64,(.+)$/);
-            if (match) {
-              mediaType = match[1];
-              base64Data = match[2];
-            }
-          }
-          
-          content.push({
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mediaType,
-              data: base64Data,
-            },
-          });
-        }
-        
-        // Add text
-        if (msg.content) {
-          content.push({ type: 'text', text: msg.content });
-        }
-        
-        return { role: msg.role, content };
-      }
-      
-      return { role: msg.role, content: msg.content };
-    });
+  const { system: systemMessage, messages: anthropicMessages } = toAnthropicMessages(messages);
 
   const body: Record<string, unknown> = {
     model,

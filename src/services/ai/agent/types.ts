@@ -169,6 +169,8 @@ export interface AgentModelMessage {
   content: string;
   toolCallId?: string;
   name?: string;
+  /** Assistant tool requests to replay as provider-native tool_calls / tool_use. */
+  toolCalls?: AgentToolCallRequest[];
 }
 
 export interface AgentToolCallRequest {

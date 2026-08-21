@@ -12,6 +12,7 @@ import type {
   AIModelInfo,
   PipelineStage,
 } from './types';
+import { toOpenAIChatMessages } from './toolMessageAdapters';
 
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
@@ -107,11 +108,7 @@ export class OpenAIProvider implements AIProvider {
     }
 
     const model = request.model || 'gpt-5';
-    
-    const messages = request.messages.map(msg => ({
-      role: msg.role,
-      content: msg.content,
-    }));
+    const messages = toOpenAIChatMessages(request.messages);
 
     const body: Record<string, unknown> = {
       model,
@@ -122,6 +119,21 @@ export class OpenAIProvider implements AIProvider {
 
     if (request.responseFormat === 'json') {
       body.response_format = { type: 'json_object' };
+    }
+    if (request.tools?.length) {
+      body.tools = request.tools.map(tool => ({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        },
+      }));
+      body.tool_choice = request.toolChoice === 'none'
+        ? 'none'
+        : typeof request.toolChoice === 'object'
+          ? { type: 'function', function: { name: request.toolChoice.name } }
+          : 'auto';
     }
 
     const response = await fetch(OPENAI_API_URL, {
@@ -140,6 +152,16 @@ export class OpenAIProvider implements AIProvider {
 
     const data = await response.json();
     const choice = data.choices?.[0];
+    const toolCalls = (choice?.message?.tool_calls || []).map((call: {
+      id: string;
+      function?: { name?: string; arguments?: string };
+    }) => ({
+      id: call.id,
+      name: call.function?.name || '',
+      input: (() => {
+        try { return JSON.parse(call.function?.arguments || '{}'); } catch { return {}; }
+      })(),
+    }));
 
     return {
       content: choice?.message?.content || '',
@@ -150,6 +172,7 @@ export class OpenAIProvider implements AIProvider {
         totalTokens: data.usage.total_tokens,
       } : undefined,
       finishReason: choice?.finish_reason as AICompletionResponse['finishReason'],
+      toolCalls,
     };
   }
 
@@ -159,34 +182,7 @@ export class OpenAIProvider implements AIProvider {
     }
 
     const model = request.model || 'gpt-5';
-    
-    // Build messages with images
-    const messages = request.messages.map(msg => {
-      if (msg.role === 'user' && msg.images && msg.images.length > 0) {
-        // Create content array with text and images
-        const content: Array<{ type: string; text?: string; image_url?: { url: string; detail?: string } }> = [];
-        
-        // Add text content
-        if (msg.content) {
-          content.push({ type: 'text', text: msg.content });
-        }
-        
-        // Add image content
-        for (const image of msg.images) {
-          content.push({
-            type: 'image_url',
-            image_url: {
-              url: image.startsWith('data:') ? image : `data:image/png;base64,${image}`,
-              detail: 'high', // Use high detail for blueprint analysis
-            },
-          });
-        }
-        
-        return { role: msg.role, content };
-      }
-      
-      return { role: msg.role, content: msg.content };
-    });
+    const messages = toOpenAIChatMessages(request.messages);
 
     const body: Record<string, unknown> = {
       model,
@@ -197,6 +193,21 @@ export class OpenAIProvider implements AIProvider {
 
     if (request.responseFormat === 'json') {
       body.response_format = { type: 'json_object' };
+    }
+    if (request.tools?.length) {
+      body.tools = request.tools.map(tool => ({
+        type: 'function',
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.inputSchema,
+        },
+      }));
+      body.tool_choice = request.toolChoice === 'none'
+        ? 'none'
+        : typeof request.toolChoice === 'object'
+          ? { type: 'function', function: { name: request.toolChoice.name } }
+          : 'auto';
     }
 
     const response = await fetch(OPENAI_API_URL, {
@@ -215,6 +226,16 @@ export class OpenAIProvider implements AIProvider {
 
     const data = await response.json();
     const choice = data.choices?.[0];
+    const toolCalls = (choice?.message?.tool_calls || []).map((call: {
+      id: string;
+      function?: { name?: string; arguments?: string };
+    }) => ({
+      id: call.id,
+      name: call.function?.name || '',
+      input: (() => {
+        try { return JSON.parse(call.function?.arguments || '{}'); } catch { return {}; }
+      })(),
+    }));
 
     return {
       content: choice?.message?.content || '',
@@ -225,6 +246,7 @@ export class OpenAIProvider implements AIProvider {
         totalTokens: data.usage.total_tokens,
       } : undefined,
       finishReason: choice?.finish_reason as AICompletionResponse['finishReason'],
+      toolCalls,
     };
   }
 }

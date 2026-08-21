@@ -10,9 +10,18 @@ export type PipelineStage = 'vision' | 'estimation' | 'placement';
 export type TradeType = 'electrical' | 'plumbing' | 'hvac';
 
 export interface AIMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   images?: string[]; // Base64 encoded images for vision models
+  /** Required for role "tool" — links this result to the provider tool call id. */
+  toolCallId?: string;
+  /** Tool name (helpful for OpenAI; used as fallback id if toolCallId missing). */
+  name?: string;
+  /**
+   * When the assistant previously requested tools, include them so the next
+   * request can replay provider-native tool_calls / tool_use blocks.
+   */
+  toolCalls?: AIToolCall[];
 }
 
 export interface AICompletionRequest {
