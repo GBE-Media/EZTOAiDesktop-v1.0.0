@@ -19,6 +19,7 @@ import {
   proposeCalloutsSchema,
   updateMarkupsSchema,
 } from './mutationSchemas';
+import { analyzePageInputSchema } from './analyzePageSchema';
 
 const boundsSchema = z.object({
   x: z.number(),
@@ -104,15 +105,12 @@ const coreTools: AssistantToolDefinition[] = [
   {
     id: 'analyze_page',
     title: 'Analyze page',
-    description: 'Run maximum-accuracy analysis on a document page.',
+    description:
+      "Run maximum-accuracy analysis on a document page. scope must be exactly one of: 'full', 'viewport', or 'selection' (use 'full' for the entire page — never 'full page').",
     risk: 'read',
     requiresConfirmation: false,
     undoable: false,
-    schema: z.object({
-      page: z.number().int().positive(),
-      scope: z.enum(['full', 'viewport', 'selection']).default('full'),
-      prompt: z.string().optional(),
-    }),
+    schema: analyzePageInputSchema,
     execute: async (context, input) => ({
       status: 'completed',
       summary: `Analyzed page ${input.page}.`,
