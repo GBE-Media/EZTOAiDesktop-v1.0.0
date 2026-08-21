@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   executeApprovedAssistantAction,
   executeAssistantTool,
+  getAssistantTool,
   registerAssistantTools,
 } from './registry';
 import type { AssistantToolContext } from './types';
@@ -36,6 +37,12 @@ describe('assistant tool registry', () => {
     expect(context.analyzePage).toHaveBeenCalledWith({ page: 2, scope: 'full' });
     const invalid = await executeAssistantTool('analyze_page', { page: 0 }, context);
     expect(invalid.status).toBe('failed');
+  });
+
+  it('documents analyze_page scope literals so models are less likely to emit "full page"', () => {
+    const tool = getAssistantTool('analyze_page');
+    expect(tool?.description).toMatch(/'full'/);
+    expect(tool?.description).toMatch(/never 'full page'/i);
   });
 
   it('requires approval for every document mutation', async () => {
