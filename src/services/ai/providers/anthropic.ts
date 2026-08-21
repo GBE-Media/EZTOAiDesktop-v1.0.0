@@ -19,21 +19,21 @@ const ANTHROPIC_VERSION = '2023-06-01';
 
 const ANTHROPIC_MODELS: AIModelInfo[] = [
   {
-    id: 'claude-opus-4-5',
-    name: 'Claude Opus 4.5',
+    id: 'claude-opus-4-7',
+    name: 'Claude Opus 4.7',
     provider: 'anthropic',
     capabilities: ['text', 'vision', 'code', 'reasoning'],
-    contextWindow: 200000,
+    contextWindow: 1000000,
     supportsVision: true,
     supportsStructuredOutput: true,
     costPer1kTokens: { input: 0.005, output: 0.025 },
   },
   {
-    id: 'claude-sonnet-4-5',
-    name: 'Claude Sonnet 4.5',
+    id: 'claude-sonnet-4-6',
+    name: 'Claude Sonnet 4.6',
     provider: 'anthropic',
     capabilities: ['text', 'vision', 'code', 'reasoning'],
-    contextWindow: 200000,
+    contextWindow: 1000000,
     supportsVision: true,
     supportsStructuredOutput: true,
     costPer1kTokens: { input: 0.003, output: 0.015 },
@@ -50,6 +50,10 @@ const ANTHROPIC_MODELS: AIModelInfo[] = [
   },
 ];
 
+/** Default Anthropic model ID — must remain in ANTHROPIC_MODELS. */
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-4-7';
+
+export { ANTHROPIC_MODELS };
 export class AnthropicProvider implements AIProvider {
   name: AIProviderType = 'anthropic';
   private apiKey: string | null = null;
@@ -73,13 +77,13 @@ export class AnthropicProvider implements AIProvider {
   getDefaultModel(stage: PipelineStage): string {
     switch (stage) {
       case 'vision':
-        return 'claude-opus-4-5'; // Flagship vision + reasoning capabilities
+        return DEFAULT_ANTHROPIC_MODEL;
       case 'estimation':
-        return 'claude-opus-4-5'; // Best reasoning for construction estimation
+        return DEFAULT_ANTHROPIC_MODEL;
       case 'placement':
-        return 'claude-opus-4-5'; // Structured output for coordinates
+        return DEFAULT_ANTHROPIC_MODEL;
       default:
-        return 'claude-opus-4-5';
+        return DEFAULT_ANTHROPIC_MODEL;
     }
   }
 
@@ -88,7 +92,7 @@ export class AnthropicProvider implements AIProvider {
       throw new Error('Anthropic API key not configured');
     }
 
-    const model = request.model || 'claude-opus-4-5';
+    const model = request.model || DEFAULT_ANTHROPIC_MODEL;
     const { system: systemMessage, messages } = toAnthropicChatMessages(request.messages);
 
     const body: Record<string, unknown> = {
@@ -159,7 +163,7 @@ export class AnthropicProvider implements AIProvider {
       throw new Error('Anthropic API key not configured');
     }
 
-    const model = request.model || 'claude-opus-4-5';
+    const model = request.model || DEFAULT_ANTHROPIC_MODEL;
     const { system: systemMessage, messages } = toAnthropicChatMessages(request.messages);
 
     const body: Record<string, unknown> = {

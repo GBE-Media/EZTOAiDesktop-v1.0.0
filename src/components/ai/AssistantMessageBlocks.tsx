@@ -6,6 +6,7 @@ import { ToolActivityCard } from './ToolActivityCard';
 import { QuestionCard } from './QuestionCard';
 import { ResultSummaryCard } from './ResultSummaryCard';
 import { ProgressEventRow } from './ProgressEventRow';
+import { AssistantMarkdown } from './AssistantMarkdown';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 
 export function AssistantMessageBlocks({ blocks }: { blocks?: AssistantMessageBlock[] }) {
@@ -48,7 +49,7 @@ export function AssistantMessageBlocks({ blocks }: { blocks?: AssistantMessageBl
           case 'tool-result':
             return <ToolActivityCard key={block.id} activity={block.activity} />;
           case 'markdown':
-            return <div key={block.id} className="whitespace-pre-wrap text-sm">{block.markdown}</div>;
+            return <AssistantMarkdown key={block.id} markdown={block.markdown} />;
           default:
             return null;
         }

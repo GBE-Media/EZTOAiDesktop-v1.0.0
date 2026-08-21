@@ -5,7 +5,7 @@
 
 export * from './types';
 export { OpenAIProvider, getOpenAIProvider } from './openai';
-export { AnthropicProvider, getAnthropicProvider } from './anthropic';
+export { AnthropicProvider, getAnthropicProvider, ANTHROPIC_MODELS, DEFAULT_ANTHROPIC_MODEL } from './anthropic';
 export { LovableProvider, getLovableProvider } from './lovable';
 
 import type { AIProvider, AIProviderType } from './types';
