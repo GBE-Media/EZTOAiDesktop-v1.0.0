@@ -58,12 +58,12 @@ export function chatPointersToGreenPlacements(options: {
       const content = `[${ref}] ${label}`;
       const bubble = estimateBubbleSize(content);
 
-      const targetX = pointer.boundsPct
-        ? ((pointer.boundsPct.x + pointer.boundsPct.width / 2) / 100) * width
-        : (pointer.xPct / 100) * width;
-      const targetY = pointer.boundsPct
-        ? ((pointer.boundsPct.y + pointer.boundsPct.height / 2) / 100) * height
-        : (pointer.yPct / 100) * height;
+      const targetX = pointer.bounds
+        ? pointer.bounds.x + pointer.bounds.width / 2
+        : pointer.point.x;
+      const targetY = pointer.bounds
+        ? pointer.bounds.y + pointer.bounds.height / 2
+        : pointer.point.y;
 
       const preferredX = targetX + 28;
       const preferredY = targetY - bubble.height - 24;

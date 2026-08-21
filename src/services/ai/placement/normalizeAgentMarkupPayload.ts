@@ -10,9 +10,12 @@ import {
   loadPageGeometries,
   type PdfDocumentLike,
 } from './loadPageGeometries';
+import { parseChatMarkupPointerRow } from './parseChatMarkupPointer';
 import { resolvePageAnchors } from './resolvePageAnchors';
-import { CONFIDENCE_REVIEW, type GeometryAnchor, type PageGeometry, type VerificationResult } from './types';
+import { CONFIDENCE_REVIEW, type GeometryAnchor, type PageCalibration, type PageGeometry, type VerificationResult } from './types';
 import { verifyPlacementMarkupsByPage } from './verifyPlacementsByPage';
+import { useCanvasStore } from '@/store/canvasStore';
+import { nonePageCalibration } from './pageCalibration';
 
 export type NormalizeAgentMarkupOptions = {
   payload: unknown;
@@ -67,12 +70,21 @@ function withMessageId(
   }));
 }
 
+function resolveCalibrationForPage(pageNumber: number): PageCalibration {
+  const getPageCalibration = useCanvasStore.getState().getPageCalibration;
+  if (typeof getPageCalibration !== 'function') {
+    return nonePageCalibration(pageNumber);
+  }
+  return getPageCalibration(pageNumber);
+}
+
 function convertVerifiedBatch(options: {
   markups: PlacementMarkup[];
   geometryByPage: Map<number, PageGeometry>;
   defaultStyle: MarkupStyle;
   idPrefix: string;
   resolveAnchors: (page: PageGeometry, pageNumber: number) => GeometryAnchor[];
+  resolveCalibration?: (pageNumber: number) => PageCalibration | null;
 }): Array<{ page: number; markup: CanvasMarkup }> {
   if (options.markups.length === 0) return [];
 
@@ -87,6 +99,7 @@ function convertVerifiedBatch(options: {
       return {
         page,
         anchors: options.resolveAnchors(page, pageNumber),
+        calibration: options.resolveCalibration?.(pageNumber) ?? null,
       };
     },
   });
@@ -194,6 +207,7 @@ export async function normalizeAgentMarkupPayload(
           defaultStyle: options.defaultStyle,
           idPrefix: options.idPrefix,
           resolveAnchors,
+          resolveCalibration: resolveCalibrationForPage,
         }),
         ...convertUnverifiableBatch({
           markups: unverifiable,
@@ -205,32 +219,21 @@ export async function normalizeAgentMarkupPayload(
     }
   }
 
-  const pointers: ChatMarkupPointer[] = asArray.map((item, index) => {
-    const row = item as Record<string, unknown>;
-    const xPct = Number(row.xPct ?? row.x ?? 50);
-    const yPct = Number(row.yPct ?? row.y ?? 50);
-    const pageRaw = row.page;
-    const page = typeof pageRaw === 'number' && Number.isFinite(pageRaw) && pageRaw > 0
-      ? pageRaw
-      : undefined;
-    return {
-      type: (row.type as ChatMarkupPointer['type']) || 'callout',
-      ref: Number(row.ref ?? index + 1),
-      xPct: Number.isFinite(xPct) ? xPct : 50,
-      yPct: Number.isFinite(yPct) ? yPct : 50,
-      boundsPct: row.boundsPct as ChatMarkupPointer['boundsPct'],
-      label: typeof row.label === 'string'
-        ? row.label
-        : typeof row.content === 'string'
-          ? row.content
-          : `Callout ${index + 1}`,
-      note: typeof row.note === 'string' ? row.note : undefined,
-      confidence: typeof row.confidence === 'number' ? row.confidence : undefined,
-      page,
-    };
-  });
+  const rawPointerRows = asArray
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null;
+      const row = item as Record<string, unknown>;
+      const pageRaw = row.page;
+      const pageNumber = typeof pageRaw === 'number' && Number.isFinite(pageRaw) && pageRaw > 0
+        ? pageRaw
+        : options.page;
+      return { row, index, pageNumber };
+    })
+    .filter((item): item is { row: Record<string, unknown>; index: number; pageNumber: number } => !!item);
 
-  const pageNumbers = pointers.map(pointer => pointer.page ?? options.page);
+  if (rawPointerRows.length === 0) return [];
+
+  const pageNumbers = rawPointerRows.map(item => item.pageNumber);
   const { geometryByPage, failedPages } = await loadPageGeometries({
     pageNumbers,
     pdfDocument: options.pdfDocument,
@@ -244,13 +247,36 @@ export async function normalizeAgentMarkupPayload(
 
   const verifiablePointers: ChatMarkupPointer[] = [];
   const unverifiablePointers: ChatMarkupPointer[] = [];
-  for (const pointer of pointers) {
-    const pageNumber = pointer.page ?? options.page;
+
+  for (const { row, index, pageNumber } of rawPointerRows) {
     if (failedPages.has(pageNumber) || !geometryByPage.has(pageNumber)) {
-      unverifiablePointers.push({ ...pointer, page: pageNumber });
-    } else {
-      verifiablePointers.push({ ...pointer, page: pageNumber });
+      // Still try DocPoint-native parse without page clamp for review stub identity.
+      const parsed = parseChatMarkupPointerRow(row, { defaultRef: index + 1 });
+      unverifiablePointers.push({
+        type: (parsed?.type || 'callout'),
+        ref: parsed?.ref || index + 1,
+        point: parsed?.point || { x: 0, y: 0 },
+        bounds: parsed?.bounds,
+        page: pageNumber,
+        label: parsed?.label || (typeof row.label === 'string' ? row.label : `Callout ${index + 1}`),
+        note: parsed?.note || (typeof row.note === 'string' ? row.note : undefined),
+        confidence: parsed?.confidence,
+      });
+      continue;
     }
+
+    const page = geometryByPage.get(pageNumber)!;
+    const parsed = parseChatMarkupPointerRow(row, {
+      defaultRef: index + 1,
+      pageWidth: page.docWidth,
+      pageHeight: page.docHeight,
+    });
+    if (!parsed) continue;
+    verifiablePointers.push({
+      ...parsed,
+      page: parsed.page ?? pageNumber,
+      label: parsed.label || `Callout ${parsed.ref}`,
+    });
   }
 
   const byPage = new Map<number, ChatMarkupPointer[]>();
@@ -310,6 +336,7 @@ export async function normalizeAgentMarkupPayload(
       defaultStyle: options.defaultStyle,
       idPrefix: options.idPrefix,
       resolveAnchors,
+      resolveCalibration: resolveCalibrationForPage,
     }),
     ...convertUnverifiableBatch({
       markups: unverifiableMarkups,
@@ -372,6 +399,7 @@ export async function verifyPlacementMarkupsWithGeometryGate(options: {
         return {
           page,
           anchors: resolveAnchors(page, pageNumber),
+          calibration: resolveCalibrationForPage(pageNumber),
         };
       },
     })

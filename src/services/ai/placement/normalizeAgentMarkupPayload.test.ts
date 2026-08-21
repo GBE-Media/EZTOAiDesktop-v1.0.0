@@ -91,8 +91,8 @@ describe('normalizeAgentMarkupPayload multi-page', () => {
 
     const result = await normalizeAgentMarkupPayload({
       payload: [
-        { type: 'callout', ref: 1, xPct: 50, yPct: 50, page: 2, label: 'On page 2', confidence: 0.9 },
-        { type: 'callout', ref: 2, xPct: 50, yPct: 50, page: 5, label: 'On page 5', confidence: 0.9 },
+        { type: 'callout', ref: 1, point: { x: 500, y: 400 }, page: 2, label: 'On page 2', confidence: 0.9 },
+        { type: 'callout', ref: 2, point: { x: 306, y: 1000 }, page: 5, label: 'On page 5', confidence: 0.9 },
       ],
       page: 1,
       pageWidth: 1000,

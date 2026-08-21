@@ -1,6 +1,6 @@
 import type { PlacementMarkup } from '../providers/types';
 import { proposalsFromPlacementMarkups } from './proposals';
-import type { GeometryAnchor, PageGeometry, VerificationResult } from './types';
+import type { GeometryAnchor, PageCalibration, PageGeometry, VerificationResult } from './types';
 import { verifyMarkupProposal } from './verify';
 
 /**
@@ -12,12 +12,14 @@ export function verifyPlacementMarkupsByPage(options: {
   resolvePageContext: (pageNumber: number) => {
     page: PageGeometry;
     anchors: GeometryAnchor[];
+    calibration?: PageCalibration | null;
   };
   enableSnap?: boolean;
 }): VerificationResult[] {
   const contextCache = new Map<number, {
     page: PageGeometry;
     anchors: GeometryAnchor[];
+    calibration?: PageCalibration | null;
   }>();
 
   const getContext = (pageNumber: number) => {
@@ -31,7 +33,7 @@ export function verifyPlacementMarkupsByPage(options: {
 
   return options.markups.map((markup, index) => {
     const pageNumber = markup.page || 1;
-    const { page, anchors } = getContext(pageNumber);
+    const { page, anchors, calibration } = getContext(pageNumber);
     const [proposal] = proposalsFromPlacementMarkups({
       markups: [markup],
       page,
@@ -43,6 +45,7 @@ export function verifyPlacementMarkupsByPage(options: {
     return verifyMarkupProposal(withId, {
       page,
       anchors,
+      calibration: calibration ?? null,
       enableSnap: options.enableSnap !== false,
     });
   });

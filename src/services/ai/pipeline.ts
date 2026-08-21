@@ -27,6 +27,10 @@ import type {
   PipelineStage,
   ChatMarkupPointer,
 } from './providers/types';
+import {
+  detectionPctToDocPointerFields,
+  parseChatMarkupPointerRow,
+} from './placement/parseChatMarkupPointer';
 
 export interface PipelineProgress {
   stage: PipelineStage | 'complete' | 'error';
@@ -1078,6 +1082,7 @@ export async function chat(options: {
         })),
         questions: maximumResult.analysis.questions,
         evidence: maximumResult.analysis.evidence,
+        coordinateNote: 'Detection xPct/yPct are 0–100 percentages. Callout JSON must use DocPoint page points (scale 1), not percentages.',
       })}`
     : '';
 
@@ -1085,14 +1090,17 @@ export async function chat(options: {
     ? `
 
 Only place visual callouts when you intentionally need to point at something specific on the page.
-If you do, mention each callout in your prose with a numbered ref like [1], and end with a fenced json block in this exact shape (percentages, top-left origin):
+If you do, mention each callout in your prose with a numbered ref like [1], and end with a fenced json block in this exact shape.
+Coordinates are PDF page points at scale 1 (document points), top-left origin — NOT 0–100 percentages.
+Page size for this sheet: ${options.pageWidth || '?'} × ${options.pageHeight || '?'} points.
 \`\`\`json
-{"callouts": [{"ref": 1, "xPct": 42.5, "yPct": 18.0, "boundsPct": {"x": 39, "y": 14, "width": 7, "height": 8}, "label": "Timeclock", "note": "24hr timeclock on lighting control detail", "confidence": 0.94}]}
+{"callouts": [{"ref": 1, "point": {"x": 306.0, "y": 129.6}, "bounds": {"x": 280.8, "y": 100.8, "width": 50.4, "height": 57.6}, "label": "Timeclock", "note": "24hr timeclock on lighting control detail", "confidence": 0.94}]}
 \`\`\`
 Rules:
 - Omit the callouts block entirely for ordinary Q&A that does not need pointing.
 - Every callout MUST include a positive integer "ref" that also appears as [ref] in the written answer.
-- Prefer boundsPct when the object outline is visible; otherwise use xPct/yPct for the tip of the leader.
+- Prefer "bounds" (AABB in page points) when the object outline is visible; otherwise use "point" for the tip of the leader.
+- Use fractional page points for sub-point precision (e.g. 306.25). Do not emit xPct/yPct/boundsPct.
 - Include at most 10 callouts and never mention the JSON block itself in your written answer.`
     : '';
 
@@ -1147,7 +1155,10 @@ Be helpful, accurate, and reference specific codes when applicable.`,
       response = await aiService.complete('estimation', { messages });
     }
 
-    const extracted = extractChatMarkupPointers(response.content);
+    const extracted = extractChatMarkupPointers(response.content, {
+      pageWidth: options.pageWidth,
+      pageHeight: options.pageHeight,
+    });
     if (!maximumResult) return extracted;
 
     // Snap intentional callouts onto verified detections when labels match.
@@ -1156,7 +1167,10 @@ Be helpful, accurate, and reference specific codes when applicable.`,
       text: extracted.text,
       markupPointers: snapIntentionalCalloutsToDetections(
         maximumResult.analysis,
-        extracted.markupPointers
+        extracted.markupPointers,
+        options.pageWidth && options.pageHeight
+          ? { pageWidth: options.pageWidth, pageHeight: options.pageHeight }
+          : undefined,
       ),
     };
   } catch (error) {
@@ -1169,7 +1183,8 @@ const MAX_CHAT_MARKUP_POINTERS = 10;
 
 export function snapIntentionalCalloutsToDetections(
   analysis: BlueprintAnalysisResult,
-  pointers: ChatMarkupPointer[]
+  pointers: ChatMarkupPointer[],
+  pageSize?: { pageWidth: number; pageHeight: number },
 ): ChatMarkupPointer[] {
   if (!pointers.length) return [];
 
@@ -1186,12 +1201,27 @@ export function snapIntentionalCalloutsToDetections(
 
     if (!match) return pointer;
 
+    const canConvert = pageSize
+      && Number.isFinite(pageSize.pageWidth)
+      && Number.isFinite(pageSize.pageHeight)
+      && pageSize.pageWidth > 0
+      && pageSize.pageHeight > 0;
+
+    // DetectedItem location/boundingBox remain 0–100 vision percents; convert to DocPoint
+    // only when page size is known. Never copy percents into DocPoint fields.
+    const docFields = canConvert && pageSize
+      ? detectionPctToDocPointerFields(
+        match.location,
+        match.boundingBox,
+        pageSize.pageWidth,
+        pageSize.pageHeight,
+      )
+      : null;
+
     return {
       ...pointer,
       type: 'callout',
-      xPct: match.location.x,
-      yPct: match.location.y,
-      boundsPct: match.boundingBox,
+      ...(docFields || {}),
       label: pointer.label || match.name,
       note: pointer.note || match.evidence || `Verified ${match.type} detection`,
       confidence: pointer.confidence ?? match.confidence,
@@ -1203,14 +1233,18 @@ export function snapIntentionalCalloutsToDetections(
 export function buildVerifiedCalloutPointers(
   analysis: BlueprintAnalysisResult,
   _responseText: string,
-  intentionalPointers: ChatMarkupPointer[] = []
+  intentionalPointers: ChatMarkupPointer[] = [],
+  pageSize?: { pageWidth: number; pageHeight: number },
 ): ChatMarkupPointer[] {
-  return snapIntentionalCalloutsToDetections(analysis, intentionalPointers);
+  return snapIntentionalCalloutsToDetections(analysis, intentionalPointers, pageSize);
 }
 
 // Pulls an optional trailing intentional callouts JSON block out of a chat
 // response, validating each pointer and stripping the raw JSON from user text.
-function extractChatMarkupPointers(content: string): { text: string; markupPointers: ChatMarkupPointer[] } {
+function extractChatMarkupPointers(
+  content: string,
+  pageSize?: { pageWidth?: number; pageHeight?: number },
+): { text: string; markupPointers: ChatMarkupPointer[] } {
   if (!content) return { text: content, markupPointers: [] };
 
   const fencedMatch = content.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/i);
@@ -1236,51 +1270,12 @@ function extractChatMarkupPointers(content: string): { text: string; markupPoint
     if (markupPointers.length >= MAX_CHAT_MARKUP_POINTERS) break;
     if (!item || typeof item !== 'object') continue;
     const candidate = item as Record<string, unknown>;
-    const ref = Number(candidate.ref);
-    if (!Number.isInteger(ref) || ref < 1) continue;
-
-    const xPct = Number(candidate.xPct);
-    const yPct = Number(candidate.yPct);
-    if (!Number.isFinite(xPct) || !Number.isFinite(yPct)) continue;
-    if (xPct < 0 || xPct > 100 || yPct < 0 || yPct > 100) continue;
-
-    const rawBounds = candidate.boundsPct;
-    const bounds = rawBounds && typeof rawBounds === 'object'
-      ? rawBounds as Record<string, unknown>
-      : null;
-    const boundsPct = bounds
-      ? {
-          x: Number(bounds.x),
-          y: Number(bounds.y),
-          width: Number(bounds.width),
-          height: Number(bounds.height),
-        }
-      : undefined;
-    const validBounds = boundsPct &&
-      Number.isFinite(boundsPct.x) &&
-      Number.isFinite(boundsPct.y) &&
-      Number.isFinite(boundsPct.width) &&
-      Number.isFinite(boundsPct.height) &&
-      boundsPct.width > 0 &&
-      boundsPct.height > 0;
-
-    markupPointers.push({
-      type: 'callout',
-      ref,
-      xPct,
-      yPct,
-      boundsPct: validBounds ? {
-        x: Math.max(0, Math.min(100, boundsPct.x)),
-        y: Math.max(0, Math.min(100, boundsPct.y)),
-        width: Math.max(0.1, Math.min(100, boundsPct.width)),
-        height: Math.max(0.1, Math.min(100, boundsPct.height)),
-      } : undefined,
-      label: typeof candidate.label === 'string' ? candidate.label : undefined,
-      note: typeof candidate.note === 'string' ? candidate.note : undefined,
-      confidence: Number.isFinite(Number(candidate.confidence))
-        ? Math.max(0, Math.min(1, Number(candidate.confidence)))
-        : undefined,
+    const pointer = parseChatMarkupPointerRow(candidate, {
+      pageWidth: pageSize?.pageWidth,
+      pageHeight: pageSize?.pageHeight,
     });
+    if (!pointer) continue;
+    markupPointers.push(pointer);
   }
 
   const text = content.slice(0, fencedMatch.index).trim();

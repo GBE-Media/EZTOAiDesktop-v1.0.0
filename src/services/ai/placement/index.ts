@@ -1,4 +1,4 @@
-export { BASE_RENDER_SCALE, createPageGeometry, docToRender, docRectToRender, renderToDoc, renderRectToDoc, pctToDoc, pctRectToDoc, docToPct, clampDocRect, isRectInPage, rectCenter, roundTripStable } from './coords';
+export { BASE_RENDER_SCALE, createPageGeometry, docToRender, docRectToRender, renderToDoc, renderRectToDoc, pctToDoc, pctRectToDoc, docToPct, clampDocRect, isRectInPage, rectCenter, roundTripStable, normalizeRotationDeg, rotateDocPointClockwise, unrotateRenderPointToDoc, getRenderPageSize } from './coords';
 export type {
   DocPoint,
   DocRect,
@@ -58,3 +58,15 @@ export {
   type PlacementDebugState,
 } from './debugStore';
 export { activatePlacementDebugForPage } from './activateDebug';
+export {
+  parseChatMarkupPointerRow,
+  detectionPctToDocPointerFields,
+} from './parseChatMarkupPointer';
+export {
+  nonePageCalibration,
+  pageCalibrationFromManualMeasure,
+  pageCalibrationFromLegacyGlobal,
+  resolvePageCalibration,
+  pageCalibrationToRenderPixelsPerUnit,
+  renderPointToDocPoint,
+} from './pageCalibration';

@@ -93,30 +93,31 @@ describe('reconcileTileDetections', () => {
 });
 
 describe('buildVerifiedCalloutPointers', () => {
-  it('snaps intentional callouts onto reconciled detection bounds', () => {
+  it('snaps intentional callouts onto reconciled detection bounds as DocPoints', () => {
     const item = createItem('panel-1', 'electrical panel', 52, 38, 0.97);
     item.name = 'Panel LP1';
     item.boundingBox = { x: 48, y: 32, width: 8, height: 12 };
     item.evidence = 'Panel outline labeled LP1';
 
+    const pageWidth = 1000;
+    const pageHeight = 800;
     const pointers = buildVerifiedCalloutPointers(
       createResult([item]),
       'See [1] near the center of the sheet.',
       [{
         type: 'callout',
         ref: 1,
-        xPct: 10,
-        yPct: 10,
+        point: { x: 100, y: 80 },
         label: 'Panel LP1',
-      }]
+      }],
+      { pageWidth, pageHeight },
     );
 
     expect(pointers).toEqual([{
       type: 'callout',
       ref: 1,
-      xPct: 52,
-      yPct: 38,
-      boundsPct: { x: 48, y: 32, width: 8, height: 12 },
+      point: { x: 520, y: 304 },
+      bounds: { x: 480, y: 256, width: 80, height: 96 },
       label: 'Panel LP1',
       note: 'Panel outline labeled LP1',
       confidence: 0.97,

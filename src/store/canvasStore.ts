@@ -6,6 +6,13 @@ import { useEditorStore } from './editorStore';
 import { useProductStore } from './productStore';
 import type { TextItemWithBounds, TextWord } from '@/lib/pdfLoader';
 import type { LinkedMeasurement } from '@/types/product';
+import type { PageCalibration } from '@/services/ai/placement/types';
+import {
+  pageCalibrationFromManualMeasure,
+  pageCalibrationToRenderPixelsPerUnit,
+  renderPointToDocPoint,
+  resolvePageCalibration,
+} from '@/services/ai/placement/pageCalibration';
 
 const buildMeasurementFromMarkup = (
   markup: CanvasMarkup,
@@ -91,8 +98,13 @@ interface CanvasState {
   
   // Calibration
   calibration: CalibrationState;
-  scale: number; // pixels per unit
+  scale: number; // render-space pixels per unit (legacy document-wide)
   scaleUnit: string;
+  /**
+   * Per-document, per-page PageCalibration (DocPoint pixelsPerUnit).
+   * When a page has no entry, resolvePageCalibration falls back to legacy scale/scaleUnit.
+   */
+  pageCalibrationsByDoc: Record<string, Record<number, PageCalibration>>;
   
   // Grid and snap
   gridSize: number;
@@ -172,6 +184,10 @@ interface CanvasActions {
   setCalibrationPoint: (point: Point, isFirst: boolean) => void;
   completeCalibration: (knownDistance: number, unit: string) => void;
   cancelCalibration: () => void;
+  setPageCalibration: (pageNumber: number, calibration: PageCalibration) => void;
+  getPageCalibration: (pageNumber: number) => PageCalibration;
+  /** Render-space px/unit + unit for measurement tools on a page (page-specific or legacy). */
+  getScaleForPage: (pageNumber: number) => { scale: number; unit: string };
   
   // Grid/snap actions
   setGridSize: (size: number) => void;
@@ -253,6 +269,7 @@ const initialState: CanvasState = {
   },
   scale: 1,
   scaleUnit: 'ft',
+  pageCalibrationsByDoc: {},
   
   gridSize: 20,
   snapToGrid: false,
@@ -471,6 +488,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   clearAllDocuments: () => set({
     pdfDocuments: {},
     activeDocId: null,
+    pageCalibrationsByDoc: {},
   }),
   
   setCurrentPage: (page) => set((state) => {
@@ -856,11 +874,35 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
       Math.pow(point2.x - point1.x, 2) + Math.pow(point2.y - point1.y, 2)
     );
     
+    // Legacy document-wide scale stays in render-space px/unit (unchanged behavior).
     const scale = pixelDistance / knownDistance;
+    const pageNumber = state.getCurrentPage() || 1;
+    const docId = state.activeDocId;
+
+    // PageCalibration uses DocPoint space (scale 1).
+    const pageCal = pageCalibrationFromManualMeasure({
+      pageNumber,
+      pointA: renderPointToDocPoint(point1),
+      pointB: renderPointToDocPoint(point2),
+      knownDistance,
+      unit,
+      confidence: 1,
+    });
+
+    const nextPageCals = docId
+      ? {
+        ...state.pageCalibrationsByDoc,
+        [docId]: {
+          ...(state.pageCalibrationsByDoc[docId] || {}),
+          [pageNumber]: pageCal,
+        },
+      }
+      : state.pageCalibrationsByDoc;
     
     set({
       scale,
       scaleUnit: unit,
+      pageCalibrationsByDoc: nextPageCals,
       calibration: {
         isCalibrating: false,
         point1: null,
@@ -869,6 +911,48 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
         unit,
       },
     });
+  },
+
+  setPageCalibration: (pageNumber, calibration) => {
+    const state = get();
+    const docId = state.activeDocId;
+    if (!docId) return;
+    set({
+      pageCalibrationsByDoc: {
+        ...state.pageCalibrationsByDoc,
+        [docId]: {
+          ...(state.pageCalibrationsByDoc[docId] || {}),
+          [pageNumber]: { ...calibration, pageNumber },
+        },
+      },
+    });
+  },
+
+  getPageCalibration: (pageNumber) => {
+    const state = get();
+    const docId = state.activeDocId;
+    const pageSpecific = docId
+      ? state.pageCalibrationsByDoc[docId]?.[pageNumber]
+      : undefined;
+    return resolvePageCalibration({
+      pageNumber,
+      pageSpecific,
+      legacy: {
+        renderPixelsPerUnit: state.scale,
+        unit: state.scaleUnit,
+        isCalibrated: state.calibration.knownDistance > 0,
+      },
+    });
+  },
+
+  getScaleForPage: (pageNumber) => {
+    const state = get();
+    const cal = state.getPageCalibration(pageNumber);
+    const renderScale = pageCalibrationToRenderPixelsPerUnit(cal);
+    return {
+      scale: renderScale != null ? renderScale : state.scale,
+      unit: cal.unit || state.scaleUnit,
+    };
   },
   
   cancelCalibration: () => set((state) => ({
