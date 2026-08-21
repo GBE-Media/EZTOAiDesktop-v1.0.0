@@ -315,15 +315,10 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
 
   if (options.decision === 'rejected') {
     emitAgentTrace(options.runId, 'approval_denied', { approvalId: options.approval.id });
-    session.messages.push({
-      role: 'tool',
-      name: options.approval.toolId,
-      toolCallId: options.approval.id,
-      content: formatToolResultForPrompt({
-        status: 'failed',
-        summary: 'User rejected the proposed action. Document was not changed.',
-        output: { rejected: true, toolId: options.approval.toolId },
-      }),
+    appendApprovalOutcomeMessage(session, options.approval, {
+      status: 'failed',
+      summary: 'User rejected the proposed action. Document was not changed.',
+      output: { rejected: true, toolId: options.approval.toolId },
     });
     session.actionsTaken.push({
       toolId: options.approval.toolId,
@@ -338,12 +333,7 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
       summary: `Approved and executed: ${options.approval.description}`,
       output: options.executionResult ?? { executed: true },
     };
-    session.messages.push({
-      role: 'tool',
-      name: options.approval.toolId,
-      toolCallId: options.approval.id,
-      content: formatToolResultForPrompt(completed),
-    });
+    appendApprovalOutcomeMessage(session, options.approval, completed);
     session.actionsTaken.push({
       toolId: options.approval.toolId,
       title: options.approval.title,
@@ -354,10 +344,12 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
     const verifyResults = await runVerificationTools(options.approval.toolId, toolContext);
     for (const verify of verifyResults) {
       const def = getAssistantTool(options.approval.toolId);
+      const verifyName = def?.verifyWith?.[0] || 'verify';
+      // Synthetic verification — no matching model-issued tool call, so do not
+      // emit an invalid role:'tool' message without toolCallId.
       session.messages.push({
-        role: 'tool',
-        name: def?.verifyWith?.[0] || 'verify',
-        content: formatToolResultForPrompt(verify),
+        role: 'user',
+        content: `Verification (${verifyName}): ${formatToolResultForPrompt(verify)}`,
       });
     }
   }
@@ -651,9 +643,13 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       });
 
       if (result.status === 'approval-required' && result.approval) {
+        // Thread the model-issued call id onto the approval record so resume
+        // can emit a provider-valid tool result (not approval.id).
+        result.approval.toolCallId = call.id;
         emitAgentTrace(session.runId, 'approval_requested', {
           approvalId: result.approval.id,
           toolId: call.name,
+          toolCallId: call.id,
         });
         store().addMessageBlock(session.messageId, {
           id: `block_${result.approval.id}`,
@@ -698,6 +694,48 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
   store().finishRun(session.runId, 'completed');
   clearAgentSession(session.runId);
   return maxResult;
+}
+
+/**
+ * Append (or replace) the provider-facing tool result for an approval outcome.
+ * Uses the originating model toolCallId — never the approval UI id.
+ * When no originating call id exists (UI-queued mutation), emit a user-context
+ * message instead of an invalid role:'tool' without toolCallId.
+ */
+function appendApprovalOutcomeMessage(
+  session: AgentSessionState,
+  approval: ApprovalRequest,
+  result: AssistantToolResult,
+): void {
+  const content = formatToolResultForPrompt(result);
+  const originatingId = typeof approval.toolCallId === 'string' && approval.toolCallId.trim()
+    ? approval.toolCallId.trim()
+    : undefined;
+
+  if (!originatingId) {
+    session.messages.push({
+      role: 'user',
+      content: `Approval ${result.status === 'failed' ? 'rejected' : 'granted'} (${approval.toolId}): ${content}`,
+    });
+    return;
+  }
+
+  const next: AgentModelMessage = {
+    role: 'tool',
+    name: approval.toolId,
+    toolCallId: originatingId,
+    content,
+  };
+
+  // Replace the pending approval-required tool result for this call id when present.
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    const msg = session.messages[i];
+    if (msg.role === 'tool' && msg.toolCallId === originatingId) {
+      session.messages[i] = next;
+      return;
+    }
+  }
+  session.messages.push(next);
 }
 
 function pushToolResult(

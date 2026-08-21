@@ -171,6 +171,7 @@ describe('mutationSchemas', () => {
       pointers: { type: 'array' },
     });
     expect(placeJson.properties).not.toHaveProperty('payload');
+    expect(String(placeJson.description || '')).toMatch(/markups|pointers|callouts/i);
 
     const deleteJson = zodToJsonSchema(deleteMarkupsSchema);
     expect(deleteJson.properties).toMatchObject({

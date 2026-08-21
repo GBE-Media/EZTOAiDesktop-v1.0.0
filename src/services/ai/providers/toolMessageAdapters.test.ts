@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AIMessage } from './types';
 import { toAnthropicChatMessages, toOpenAIChatMessages } from './toolMessageAdapters';
@@ -109,12 +109,36 @@ describe('tool message adapters (OpenAI vs Anthropic)', () => {
 });
 
 describe('TOOL_RESULT workaround removal', () => {
-  it('modelAdapter no longer fakes tool results as TOOL_RESULT-prefixed user messages', () => {
-    const source = readFileSync(
-      join(process.cwd(), 'src/services/ai/agent/modelAdapter.ts'),
-      'utf8',
-    );
-    expect(source).not.toContain('TOOL_RESULT');
-    expect(source).toContain("role: 'tool'");
+  it('TOOL_RESULT string is gone from src/ and supabase/functions/ (not only modelAdapter)', () => {
+    const roots = [
+      join(process.cwd(), 'src'),
+      join(process.cwd(), 'supabase', 'functions'),
+    ];
+    const hits: string[] = [];
+    const walk = (dir: string) => {
+      let entries: string[] = [];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        return;
+      }
+      for (const name of entries) {
+        const full = join(dir, name);
+        const stat = statSync(full);
+        if (stat.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(name)) continue;
+        // Skip tests themselves — they may mention TOOL_RESULT while asserting absence.
+        if (/\.test\.(ts|tsx|js|jsx)$/.test(name)) continue;
+        const source = readFileSync(full, 'utf8');
+        if (source.includes('TOOL_RESULT')) {
+          hits.push(full.replace(process.cwd() + '\\', '').replace(process.cwd() + '/', ''));
+        }
+      }
+    };
+    for (const root of roots) walk(root);
+    expect(hits).toEqual([]);
   });
 });

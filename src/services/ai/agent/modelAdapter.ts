@@ -10,6 +10,7 @@ import {
   assistantToolsToProxyDefinitions,
   decisionFromCompletion,
 } from '../tools/toProxyTools';
+import { projectMessagesPreservingToolFields } from '../providers/projectMessagesPreservingToolFields';
 
 export { parseAgentDecision } from './decisionParser';
 export { decisionFromCompletion } from '../tools/toProxyTools';
@@ -100,15 +101,16 @@ export function createJsonToolModelAdapter(
 
       if (options.imageBase64) {
         const lastUserIndex = [...history].map((m, i) => (m.role === 'user' ? i : -1)).filter(i => i >= 0).pop();
+        // Preserve toolCalls / toolCallId / name — dropping them breaks native
+        // tool association on the next (image-backed) turn.
         response = await ai.visionForRole(role, {
-          messages: [
+          messages: projectMessagesPreservingToolFields([
             { role: 'system', content: system },
             ...history.map((message, index) => ({
-              role: message.role,
-              content: message.content,
+              ...message,
               images: index === lastUserIndex ? [options.imageBase64!] : undefined,
             })),
-          ],
+          ]),
           ...shared,
         });
       } else {

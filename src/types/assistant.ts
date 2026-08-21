@@ -76,6 +76,13 @@ export interface ApprovalRequest {
   createdAt: string;
   resolvedAt?: string;
   error?: string;
+  /**
+   * Provider-facing tool call id from the model that requested this mutation
+   * (OpenAI tool_call_id / Anthropic tool_use_id). Distinct from `id`, which is
+   * the approval UI/tracking record. Required for native tool-result continuity
+   * after approve/reject.
+   */
+  toolCallId?: string;
 }
 
 export interface ClarificationOption {

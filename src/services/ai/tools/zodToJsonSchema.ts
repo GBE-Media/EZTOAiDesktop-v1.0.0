@@ -90,8 +90,21 @@ function convertZod(schema: z.ZodTypeAny): Record<string, unknown> {
     }
     case 'ZodEffects': {
       // preprocess / refine / transform — export the underlying object schema.
+      // Preserve .describe() / refinement notes so the model sees constraints
+      // that JSON Schema cannot express strictly (e.g. "at least one of …").
       const inner = (def as { schema?: z.ZodTypeAny }).schema;
-      return inner ? convertZod(inner) : { type: 'object', additionalProperties: true };
+      const json = inner ? convertZod(inner) : { type: 'object', additionalProperties: true };
+      const description = getZodDescription(schema) || getZodDescription(inner);
+      if (description) {
+        const existing = typeof json.description === 'string' ? json.description : '';
+        return {
+          ...json,
+          description: existing && existing !== description
+            ? `${existing} ${description}`
+            : description,
+        };
+      }
+      return json;
     }
     case 'ZodPipeline': {
       const out = (def as { out?: z.ZodTypeAny }).out;
@@ -111,4 +124,13 @@ function isOptionalLike(schema: z.ZodTypeAny): boolean {
     return inner ? isOptionalLike(inner) : false;
   }
   return false;
+}
+
+function getZodDescription(schema: z.ZodTypeAny | undefined): string | undefined {
+  if (!schema) return undefined;
+  const direct = (schema as { description?: string }).description;
+  if (typeof direct === 'string' && direct.trim()) return direct.trim();
+  const fromDef = (schema as { _def?: { description?: string } })._def?.description;
+  if (typeof fromDef === 'string' && fromDef.trim()) return fromDef.trim();
+  return undefined;
 }

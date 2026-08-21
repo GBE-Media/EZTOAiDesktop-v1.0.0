@@ -124,7 +124,7 @@ export const placeMarkupsSchema = z.preprocess(
   }).refine(
     (value) => Boolean(value.markups?.length || value.pointers?.length || value.callouts?.length),
     { message: 'place_markups requires markups, pointers, or callouts' },
-  ),
+  ).describe('At least one of markups, pointers, or callouts must be provided.'),
 );
 
 export const proposeCalloutsSchema = z.preprocess(

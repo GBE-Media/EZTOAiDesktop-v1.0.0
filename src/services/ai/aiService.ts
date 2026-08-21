@@ -20,6 +20,7 @@ import {
   type AIModelInfo,
 } from './providers';
 import { sendProxyRequest, isProxyAvailable, ProxyRequestError, type ProxyRequest } from './proxyClient';
+import { projectMessagesPreservingToolFields } from './providers/projectMessagesPreservingToolFields';
 import { ELECTRICAL_VISION_PROMPT } from './trades/electrical';
 import { PLUMBING_VISION_PROMPT } from './trades/plumbing';
 import { HVAC_VISION_PROMPT } from './trades/hvac';
@@ -252,11 +253,7 @@ class AIService {
     request: Omit<AIVisionRequest, 'model'>
   ): Promise<AICompletionResponse> {
     if (this.config.useProxy) {
-      const messages = request.messages.map(msg => ({
-        role: msg.role,
-        content: msg.content,
-        images: msg.images,
-      }));
+      const messages = projectMessagesPreservingToolFields(request.messages);
       return this.sendProxyRequestWithFallback({
         provider: selection.provider,
         model: selection.model,
@@ -417,12 +414,8 @@ class AIService {
 
     // Use proxy if enabled (default)
     if (this.config.useProxy) {
-      // Convert messages to include images
-      const messages = request.messages.map(msg => ({
-        role: msg.role,
-        content: msg.content,
-        images: msg.images,
-      }));
+      // Keep toolCalls / toolCallId / name — vision transport must not strip them.
+      const messages = projectMessagesPreservingToolFields(request.messages);
 
       return this.sendProxyRequestWithFallback({
         provider,

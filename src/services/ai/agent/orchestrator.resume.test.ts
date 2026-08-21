@@ -365,11 +365,25 @@ describe('agent task orchestrator resume continuity', () => {
       payload: { markups: [] },
       undoable: true,
       createdAt: new Date().toISOString(),
+      toolCallId: 'call_place_1',
     };
     await parkAgentSession({
       runId: approval.runId,
       messageId: approval.messageId,
-      messages: [{ role: 'user', content: 'Place a callout' }],
+      messages: [
+        { role: 'user', content: 'Place a callout' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'call_place_1', name: 'place_markups', arguments: {} }],
+        },
+        {
+          role: 'tool',
+          name: 'place_markups',
+          toolCallId: 'call_place_1',
+          content: '{"status":"approval-required"}',
+        },
+      ],
       toolHistory: [],
       actionsTaken: [],
       contextText: 'context',
@@ -393,8 +407,15 @@ describe('agent task orchestrator resume continuity', () => {
     expect(resumed.runId).toBe(approval.runId);
     expect(resumed.agentResult?.assistantMessage).toBe('The document was not changed.');
     expect(complete.mock.calls[0][0].messages).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: 'tool', content: expect.stringContaining('rejected') }),
+      expect.objectContaining({
+        role: 'tool',
+        toolCallId: 'call_place_1',
+        content: expect.stringContaining('rejected'),
+      }),
     ]));
+    expect(complete.mock.calls[0][0].messages.some(
+      (m: { role?: string; toolCallId?: string }) => m.role === 'tool' && m.toolCallId === approval.id,
+    )).toBe(false);
     expect(await readPersistedAgentSession(approval.runId)).toBeUndefined();
   });
 
