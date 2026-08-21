@@ -126,11 +126,10 @@ export function Toolbar() {
   const ensureAnalysisScene = () => {
     const docData = activeDocId ? pdfDocuments[activeDocId] : null;
     if (!docData?.pdfDocument) return;
+    // Per-page dims resolved inside activatePlacementDebugForPage via loadPageGeometries.
     void activatePlacementDebugForPage({
       pdfDoc: docData.pdfDocument,
       pageNumber: docData.currentPage || 1,
-      docWidth: docData.originalPageWidth,
-      docHeight: docData.originalPageHeight,
     });
   };
 

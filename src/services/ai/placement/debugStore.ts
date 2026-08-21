@@ -17,6 +17,49 @@ export interface PlacementDebugState {
   clear: () => void;
 }
 
+/**
+ * Pure page-atomic scene merge for tests and the zustand store.
+ * When the page number changes, omitted per-page arrays clear instead of
+ * retaining the previous page's OCR/anchors/proposals.
+ */
+export function applyDebugSceneUpdate(scene: {
+  page: PageGeometry;
+  ocrRects?: DocRect[];
+  anchors?: GeometryAnchor[];
+  proposals?: MarkupProposal[];
+}, state: {
+  page: PageGeometry | null;
+  ocrRects: DocRect[];
+  anchors: GeometryAnchor[];
+  proposals: MarkupProposal[];
+}): {
+  page: PageGeometry;
+  ocrRects: DocRect[];
+  anchors: GeometryAnchor[];
+  proposals: MarkupProposal[];
+} {
+  const pageChanged = !state.page || state.page.pageNumber !== scene.page.pageNumber;
+
+  return {
+    page: scene.page,
+    ocrRects: scene.ocrRects !== undefined
+      ? scene.ocrRects
+      : pageChanged
+        ? []
+        : state.ocrRects,
+    anchors: scene.anchors !== undefined
+      ? scene.anchors
+      : pageChanged
+        ? []
+        : state.anchors,
+    proposals: scene.proposals !== undefined
+      ? scene.proposals
+      : pageChanged
+        ? []
+        : state.proposals.filter(proposal => proposal.pageNumber === scene.page.pageNumber),
+  };
+}
+
 export const usePlacementDebugStore = create<PlacementDebugState>((set) => ({
   enabled: false,
   page: null,
@@ -24,15 +67,7 @@ export const usePlacementDebugStore = create<PlacementDebugState>((set) => ({
   anchors: [],
   proposals: [],
   setEnabled: (enabled) => set((state) => (state.enabled === enabled ? state : { enabled })),
-  setDebugScene: (scene) => set((state) => ({
-    page: scene.page,
-    ocrRects: scene.ocrRects ?? state.ocrRects,
-    anchors: scene.anchors ?? state.anchors,
-    // Preserve proposals for the page when refreshing OCR/layout on import/page change.
-    proposals: scene.proposals !== undefined
-      ? scene.proposals
-      : state.proposals.filter(proposal => proposal.pageNumber === scene.page.pageNumber),
-  })),
+  setDebugScene: (scene) => set((state) => applyDebugSceneUpdate(scene, state)),
   clear: () => set({
     page: null,
     ocrRects: [],

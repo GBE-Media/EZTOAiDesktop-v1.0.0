@@ -1241,7 +1241,8 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
       const aiMarkup = {
         ...markup,
         aiGenerated: true,
-        aiPending: pending,
+        // Prefer per-markup confidence gating when already set by the converter.
+        aiPending: typeof markup.aiPending === 'boolean' ? markup.aiPending : pending,
       };
       
       if (!markupsByPage[page]) {

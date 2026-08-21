@@ -87,6 +87,28 @@ describe('chatPointersToGreenPlacements', () => {
     expect(bubbleEnd.x).toBeLessThanOrEqual(100);
     expect(bubbleEnd.y).toBeLessThanOrEqual(100);
   });
+
+  it('preserves each pointer\'s own page and uses per-page sizes when provided', () => {
+    const result = chatPointersToGreenPlacements({
+      pointers: [
+        { type: 'callout', ref: 1, xPct: 50, yPct: 50, page: 2, label: 'A' },
+        { type: 'callout', ref: 2, xPct: 50, yPct: 50, page: 5, label: 'B' },
+      ],
+      page: 1,
+      pageWidth: 1000,
+      pageHeight: 800,
+      idPrefix: 'multi',
+      pageSizes: {
+        2: { width: 1000, height: 800 },
+        5: { width: 200, height: 200 },
+      },
+    });
+
+    expect(result.markups.map(m => m.page)).toEqual([2, 5]);
+    // Page 5 is only 200 wide — bubble must clamp inside that page, not options.pageWidth.
+    expect(result.markups[1].points[1].x).toBeLessThanOrEqual(200);
+    expect(result.markups[1].points[1].y).toBeLessThanOrEqual(200);
+  });
 });
 
 describe('ensureNumberedCalloutMentions', () => {

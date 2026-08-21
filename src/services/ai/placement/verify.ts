@@ -112,8 +112,11 @@ export function verifyMarkupProposal(
       message: `Confidence ${working.confidence.toFixed(2)} below review threshold`,
       severity: 'warning',
     });
-  } else if (working.confidence < autoThreshold && working.placementMode !== 'needs_review') {
-    working = { ...working, placementMode: 'needs_review' };
+  } else if (working.confidence < autoThreshold) {
+    // Mid band: needs confirmation, but not the low-confidence review queue.
+    if (working.placementMode !== 'needs_review' && working.placementMode !== 'snap_adjusted') {
+      working = { ...working, placementMode: 'estimated' };
+    }
   }
 
   const hasError = issues.some(issue => issue.severity === 'error');
