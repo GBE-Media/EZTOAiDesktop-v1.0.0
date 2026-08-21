@@ -91,7 +91,7 @@ interface AISettingsState extends AISettings {
 
 const DEFAULT_PIPELINE_MODELS = {
   vision: { provider: 'lovable' as AIProviderType, model: 'openai/gpt-5.6-sol' },
-  estimation: { provider: 'anthropic' as AIProviderType, model: 'claude-opus-4-5' },
+  estimation: { provider: 'anthropic' as AIProviderType, model: 'claude-opus-4-7' },
   placement: { provider: 'lovable' as AIProviderType, model: 'openai/gpt-5.6-sol' },
 };
 

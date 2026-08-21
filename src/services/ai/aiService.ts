@@ -45,7 +45,8 @@ const FALLBACK_CHAINS: Partial<Record<AIProviderType, Array<{ provider: AIProvid
     { provider: 'openai', model: 'gpt-4o' },
   ],
   anthropic: [
-    { provider: 'anthropic', model: 'claude-sonnet-4-5' },
+    { provider: 'anthropic', model: 'claude-sonnet-4-6' },
+    { provider: 'anthropic', model: 'claude-opus-4-7' },
   ],
 };
 
@@ -91,7 +92,7 @@ const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
   },
   estimationModel: {
     provider: 'anthropic',
-    model: 'claude-opus-4-5',
+    model: 'claude-opus-4-7',
   },
   placementModel: {
     provider: 'lovable',
