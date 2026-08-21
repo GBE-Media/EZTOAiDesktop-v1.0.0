@@ -110,6 +110,39 @@ describe('normalizeAgentMarkupPayload multi-page', () => {
     expect(result.map(row => row.markup.page).sort()).toEqual([2, 5]);
     expect(result.every(row => row.markup.page !== 1)).toBe(true);
   });
+
+  it('drops legacy-pct pointers when page size is unavailable (no fabricated (0,0) markup)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const getPageDimensions = vi.fn(async () => {
+      throw new Error('cannot load page geometry');
+    });
+
+    const result = await normalizeAgentMarkupPayload({
+      payload: [
+        { type: 'callout', ref: 1, xPct: 50, yPct: 50, page: 3, label: 'Legacy only' },
+      ],
+      page: 3,
+      pageWidth: 1000,
+      pageHeight: 800,
+      idPrefix: 'reject',
+      messageId: 'msg_reject',
+      defaultStyle,
+      pdfDocument: { getPage: async () => ({}) },
+      getPageDimensions,
+      resolveAnchors: () => [],
+    });
+
+    expect(result).toHaveLength(0);
+    expect(result.some(row => {
+      const m = row.markup as { x?: number; y?: number; width?: number; height?: number };
+      return m.x === 0 || m.y === 0 || (m.x === 0 && m.y === 0);
+    })).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls.some(call =>
+      String(call.join(' ')).includes('missing page size'),
+    )).toBe(true);
+    warn.mockRestore();
+  });
 });
 
 describe('verifyPlacementMarkupsWithGeometryGate (Path A fail-closed)', () => {

@@ -32,7 +32,7 @@ export async function activatePlacementDebugForPage(options: {
   getPageDimensions?: (
     document: { getPage: (pageNumber: number) => Promise<unknown> },
     pageNumber: number,
-  ) => Promise<{ width: number; height: number }>;
+  ) => Promise<{ width: number; height: number; rotationDeg?: 0 | 90 | 180 | 270 }>;
 }): Promise<void> {
   const layers = useCanvasLayersStore.getState();
   const shouldPopulate =

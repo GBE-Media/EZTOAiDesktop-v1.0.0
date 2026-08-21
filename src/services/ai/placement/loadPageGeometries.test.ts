@@ -68,4 +68,34 @@ describe('loadPageGeometries', () => {
   it('exports a stable geometry-failure note', () => {
     expect(GEOMETRY_FAILURE_NOTE).toBe('could not verify page geometry');
   });
+
+  it('threads real pdfjs page.rotate through getPageDimensions into PageGeometry.rotationDeg', async () => {
+    const mediaW = 612;
+    const mediaH = 792;
+    const pdfDocument = {
+      getPage: async () => ({
+        rotate: 90,
+        getViewport: ({ scale = 1, rotation }: { scale?: number; rotation?: number }) => {
+          const rot = rotation !== undefined ? rotation : 90;
+          const normalized = ((rot % 360) + 360) % 360;
+          if (normalized === 90 || normalized === 270) {
+            return { width: mediaH * scale, height: mediaW * scale };
+          }
+          return { width: mediaW * scale, height: mediaH * scale };
+        },
+      }),
+    };
+
+    // Intentionally omit getPageDimensions override — must use production pdfLoader path.
+    const result = await loadPageGeometries({
+      pageNumbers: [1],
+      pdfDocument: pdfDocument as never,
+    });
+
+    expect(result.failedPages.size).toBe(0);
+    const page = result.geometryByPage.get(1);
+    expect(page?.rotationDeg).toBe(90);
+    expect(page?.docWidth).toBe(mediaW);
+    expect(page?.docHeight).toBe(mediaH);
+  });
 });

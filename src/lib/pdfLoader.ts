@@ -83,10 +83,22 @@ export async function renderPage(
 export async function getPageDimensions(
   document: pdfjsLib.PDFDocumentProxy,
   pageNumber: number
-): Promise<{ width: number; height: number }> {
+): Promise<{ width: number; height: number; rotationDeg: 0 | 90 | 180 | 270 }> {
   const page = await document.getPage(pageNumber);
+  // pdfjs page.rotate is clockwise degrees; normalize to PageGeometry contract.
+  const rawRotate = Number(page.rotate) || 0;
+  const normalized = ((Math.round(rawRotate) % 360) + 360) % 360;
+  const rotationDeg: 0 | 90 | 180 | 270 =
+    normalized === 90 || normalized === 180 || normalized === 270 ? normalized : 0;
+
+  // Display viewport (includes page.rotate) — existing UI callers use these as canvas size.
+  // loadPageGeometries converts to unrotated docWidth/docHeight for PageGeometry.
   const viewport = page.getViewport({ scale: 1 });
-  return { width: viewport.width, height: viewport.height };
+  return {
+    width: viewport.width,
+    height: viewport.height,
+    rotationDeg,
+  };
 }
 
 export async function getPageThumbnail(

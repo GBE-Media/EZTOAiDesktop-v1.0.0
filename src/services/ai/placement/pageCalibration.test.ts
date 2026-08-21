@@ -84,6 +84,19 @@ describe('pageCalibration', () => {
     }).method).toBe('none');
   });
 
+  it('does not invent calibration when legacy is omitted (page-specific-only mode)', () => {
+    expect(resolvePageCalibration({
+      pageNumber: 5,
+      pageSpecific: null,
+      legacy: null,
+    })).toMatchObject({
+      pageNumber: 5,
+      method: 'none',
+      pixelsPerUnit: null,
+      unit: null,
+    });
+  });
+
   it('round-trips render px/unit through DocPoint PageCalibration', () => {
     // Manual measure in doc space equivalent to 45 render px per unit
     const docPerUnit = 45 / BASE_RENDER_SCALE;

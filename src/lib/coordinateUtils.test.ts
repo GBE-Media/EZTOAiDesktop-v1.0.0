@@ -30,7 +30,7 @@ describe('coordinateUtils (screen ↔ render space)', () => {
     expect(renderDimensionToScreen(40, 100)).toBe(40);
   });
 
-  it('at 200% zoom, render is half of screen (same math as former screenToPdf/pdfToScreen)', () => {
+  it('at 200% zoom, render is half of screen (screenToRender / renderToScreen)', () => {
     expect(screenToRender(200, 100, 200)).toEqual({ x: 100, y: 50 });
     expect(renderToScreen(100, 50, 200)).toEqual({ x: 200, y: 100 });
     expect(screenDimensionToRender(80, 200)).toBe(40);

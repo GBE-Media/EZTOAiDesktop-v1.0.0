@@ -211,12 +211,34 @@ export function convertPlacementsToMarkups(
     }
 
     if (placement.type === 'callout') {
-      const start = placement.points?.[0] || { x: 0, y: 0 };
-      const end = placement.points?.[1] || {
+      const pts = placement.points || [];
+      const hasTrustedPoints = pts.length >= 1;
+      const ref = placement.calloutRef || index + 1;
+
+      // Geometry-less review entry: keep identity for the queue, do not invent (0,0).
+      if (!verifiedBox && !hasTrustedPoints) {
+        markups.push({
+          page: placement.page,
+          markup: {
+            ...base,
+            type: 'callout',
+            x: Number.NaN,
+            y: Number.NaN,
+            width: 0,
+            height: 0,
+            content: placement.content || `[${ref}] ${placement.label || 'Callout'}`,
+            leaderPoints: [],
+            calloutRef: ref,
+          },
+        });
+        return;
+      }
+
+      const start = pts[0] || { x: 0, y: 0 };
+      const end = pts[1] || {
         x: start.x + 120,
         y: start.y + 36,
       };
-      const ref = placement.calloutRef || index + 1;
       const bubbleX = verifiedBox ? verifiedBox.x : Math.min(start.x, end.x);
       const bubbleY = verifiedBox ? verifiedBox.y : Math.min(start.y, end.y);
       const bubbleW = verifiedBox ? verifiedBox.width : Math.abs(end.x - start.x);

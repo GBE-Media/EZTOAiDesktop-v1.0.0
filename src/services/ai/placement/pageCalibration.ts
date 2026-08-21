@@ -89,8 +89,10 @@ export function pageCalibrationFromLegacyGlobal(options: {
 }
 
 /**
- * Prefer page-specific calibration; otherwise apply legacy global as the default
- * for every page. Never invent values when neither source is calibrated.
+ * Prefer page-specific calibration. Optional `legacy` is only for a genuine
+ * document-wide default (not "last page measured"). Callers that treat every
+ * calibration as page-specific should pass legacy: null so uncalibrated pages
+ * resolve to method: 'none'.
  */
 export function resolvePageCalibration(options: {
   pageNumber: number;

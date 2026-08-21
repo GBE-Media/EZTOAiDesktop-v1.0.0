@@ -17,6 +17,10 @@ import { verifyPlacementMarkupsByPage } from './verifyPlacementsByPage';
 import { useCanvasStore } from '@/store/canvasStore';
 import { nonePageCalibration } from './pageCalibration';
 
+/** Logged/reported when a pointer is dropped because legacy pct needs page size. */
+export const POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE =
+  'could not determine placement — missing page size';
+
 export type NormalizeAgentMarkupOptions = {
   payload: unknown;
   page: number;
@@ -30,7 +34,7 @@ export type NormalizeAgentMarkupOptions = {
   getPageDimensions?: (
     document: PdfDocumentLike,
     pageNumber: number,
-  ) => Promise<{ width: number; height: number }>;
+  ) => Promise<{ width: number; height: number; rotationDeg?: import('./types').PageRotationDeg }>;
 };
 
 function appendGeometryFailureNote(existing?: string): string {
@@ -250,17 +254,20 @@ export async function normalizeAgentMarkupPayload(
 
   for (const { row, index, pageNumber } of rawPointerRows) {
     if (failedPages.has(pageNumber) || !geometryByPage.has(pageNumber)) {
-      // Still try DocPoint-native parse without page clamp for review stub identity.
+      // DocPoint-native parse only — never invent {x:0,y:0} for rejected legacy pct.
       const parsed = parseChatMarkupPointerRow(row, { defaultRef: index + 1 });
+      if (!parsed) {
+        console.warn(
+          '[normalizeAgentMarkupPayload]',
+          `${POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE} (ref=${row.ref ?? index + 1}, page=${pageNumber})`,
+        );
+        continue;
+      }
       unverifiablePointers.push({
-        type: (parsed?.type || 'callout'),
-        ref: parsed?.ref || index + 1,
-        point: parsed?.point || { x: 0, y: 0 },
-        bounds: parsed?.bounds,
-        page: pageNumber,
-        label: parsed?.label || (typeof row.label === 'string' ? row.label : `Callout ${index + 1}`),
-        note: parsed?.note || (typeof row.note === 'string' ? row.note : undefined),
-        confidence: parsed?.confidence,
+        ...parsed,
+        page: parsed.page ?? pageNumber,
+        label: parsed.label || (typeof row.label === 'string' ? row.label : `Callout ${parsed.ref}`),
+        note: parsed.note || (typeof row.note === 'string' ? row.note : undefined),
       });
       continue;
     }
@@ -271,7 +278,13 @@ export async function normalizeAgentMarkupPayload(
       pageWidth: page.docWidth,
       pageHeight: page.docHeight,
     });
-    if (!parsed) continue;
+    if (!parsed) {
+      console.warn(
+        '[normalizeAgentMarkupPayload]',
+        `${POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE} (ref=${row.ref ?? index + 1}, page=${pageNumber})`,
+      );
+      continue;
+    }
     verifiablePointers.push({
       ...parsed,
       page: parsed.page ?? pageNumber,
@@ -300,19 +313,19 @@ export async function normalizeAgentMarkupPayload(
     placementMarkups.push(...placements.markups);
   }
 
+  // Geometry load failed but pointer had real DocPoints: review-only stub.
+  // Rejected/null parses are already dropped above — never fabricate (0,0) for those.
   const unverifiableMarkups: PlacementMarkup[] = [];
   for (const pointer of unverifiablePointers) {
     const pageNumber = pointer.page ?? options.page;
-    // Without trusted page size, do not invent placement geometry from page-1 dims.
-    // Emit a review-only stub anchored at the origin for the review queue.
+    // Without trusted page size, do not invent placement from page-1 dims.
+    // DocPoint identity is preserved in label/ref; geometry stays empty so convert
+    // does not paint a fabricated origin box (see convertPlacements callout path).
     unverifiableMarkups.push({
       id: `${options.idPrefix}_callout_${pointer.ref}`,
       type: 'callout',
       page: pageNumber,
-      points: [
-        { x: 0, y: 0 },
-        { x: 1, y: 1 },
-      ],
+      points: [],
       style: {
         strokeColor: '#10b981',
         fillColor: 'rgba(16, 185, 129, 0.18)',
@@ -361,7 +374,7 @@ export async function verifyPlacementMarkupsWithGeometryGate(options: {
   getPageDimensions?: (
     document: PdfDocumentLike,
     pageNumber: number,
-  ) => Promise<{ width: number; height: number }>;
+  ) => Promise<{ width: number; height: number; rotationDeg?: import('./types').PageRotationDeg }>;
 }): Promise<{
   verified: Array<{ page: number; markup: CanvasMarkup }>;
   reviewOnly: Array<{ page: number; markup: CanvasMarkup }>;

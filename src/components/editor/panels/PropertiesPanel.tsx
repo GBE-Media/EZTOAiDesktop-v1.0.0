@@ -31,10 +31,12 @@ export function PropertiesPanel() {
     defaultStyle, 
     setDefaultStyle, 
     updateMarkup,
-    scale,
-    scaleUnit,
+    getScaleForPage,
+    getCurrentPage,
     startCalibration,
   } = useCanvasStore();
+
+  const { scale, unit: scaleUnit } = getScaleForPage(getCurrentPage() || 1);
 
   // Get current document data
   const currentDocData = activeDocId ? pdfDocuments[activeDocId] : null;
