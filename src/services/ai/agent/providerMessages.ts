@@ -86,6 +86,14 @@ export function agentMessagesToProviderMessages(
  * result (do not drop the call). Dropping would silently rewrite what the model
  * requested; a failed-placeholder keeps OpenAI/Anthropic valid while preserving
  * that the call existed in history (e.g. lost result / partial repair).
+ *
+ * Duplicate tool-role messages sharing one toolCallId: keep the LAST one in the
+ * consecutive tool block (chronological). Approval resume already replaces the
+ * pending result in place (runnerCore.appendApprovalOutcomeMessage), so duplicates
+ * are not expected from the live loop after ID canonicalization — but if a stale
+ * "approval-required" and a later completed outcome both remain (corrupt/old
+ * session, double-append), the later message is the authoritative execution
+ * outcome. Same rationale for retries.
  */
 export function repairToolCallPairing(messages: AIMessage[]): AIMessage[] {
   const out: AIMessage[] = messages.map(message => ({
@@ -130,6 +138,10 @@ export function repairToolCallPairing(messages: AIMessage[]): AIMessage[] {
     }
   }
 
+  // Dedupe: within each consecutive tool-result block, at most one message per
+  // toolCallId (keep last — see file-level policy above).
+  dedupeToolResultsKeepLast(out);
+
   // Reverse: every assistant tool_call must have a matching tool result in the
   // immediately following consecutive tool-role block.
   for (let i = 0; i < out.length; i += 1) {
@@ -162,6 +174,36 @@ export function repairToolCallPairing(messages: AIMessage[]): AIMessage[] {
   }
 
   return out;
+}
+
+/**
+ * Collapse duplicate tool-role messages that share a toolCallId inside each
+ * consecutive tool block. Keeps the last occurrence of each id (deterministic).
+ */
+function dedupeToolResultsKeepLast(messages: AIMessage[]): void {
+  let i = 0;
+  while (i < messages.length) {
+    if (messages[i].role !== 'tool') {
+      i += 1;
+      continue;
+    }
+    const start = i;
+    while (i < messages.length && messages[i].role === 'tool') {
+      i += 1;
+    }
+    const block = messages.slice(start, i);
+    const lastById = new Map<string, AIMessage>();
+    const order: string[] = [];
+    for (const msg of block) {
+      const id = String(msg.toolCallId || '');
+      if (!lastById.has(id)) order.push(id);
+      lastById.set(id, msg);
+    }
+    const deduped = order.map(id => lastById.get(id)!);
+    if (deduped.length === block.length) continue;
+    messages.splice(start, block.length, ...deduped);
+    i = start + deduped.length;
+  }
 }
 
 /** One-directional: every tool message is covered by a preceding assistant tool_calls id. */

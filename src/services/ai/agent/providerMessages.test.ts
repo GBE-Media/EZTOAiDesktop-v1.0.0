@@ -149,6 +149,37 @@ describe('providerMessages multi-round tool continuity', () => {
     expect(toolIds).toEqual(ids);
   });
 
+  it('dedupes duplicate tool results for the same call id (keeps last)', () => {
+    const duplicated: AIMessage[] = [
+      { role: 'user', content: 'Place markups' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_1', name: 'place_markups', input: {} }],
+      },
+      {
+        role: 'tool',
+        name: 'place_markups',
+        toolCallId: 'call_1',
+        content: JSON.stringify({ status: 'approval-required', summary: 'Waiting' }),
+      },
+      {
+        role: 'tool',
+        name: 'place_markups',
+        toolCallId: 'call_1',
+        content: JSON.stringify({ status: 'completed', summary: 'Placed 1 markup' }),
+      },
+    ];
+
+    expect(assertOpenAIToolBijection(duplicated).ok).toBe(false);
+    const repaired = repairToolCallPairing(duplicated);
+    const tools = repaired.filter(m => m.role === 'tool');
+    expect(tools).toHaveLength(1);
+    expect(tools[0].toolCallId).toBe('call_1');
+    expect(tools[0].content).toContain('Placed 1 markup');
+    expect(assertOpenAIToolBijection(repaired).ok).toBe(true);
+  });
+
   it('normalizes AgentToolCallRequest.arguments into AIToolCall.input', () => {
     const messages = agentMessagesToProviderMessages([
       {
