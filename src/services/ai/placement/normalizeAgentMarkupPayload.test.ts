@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
 import { BASE_RENDER_SCALE } from './coords';
 import { CONFIDENCE_REVIEW } from './types';
-import { GEOMETRY_FAILURE_NOTE, geometryFailureConfidence } from './loadPageGeometries';
+import { GEOMETRY_FAILURE_NOTE, geometryFailureConfidence, loadPageGeometries } from './loadPageGeometries';
 import {
   normalizeAgentMarkupPayload,
   verifyPlacementMarkupsWithGeometryGate,
 } from './normalizeAgentMarkupPayload';
+import { canvasMarkupToPlacementMarkup } from './canvasMarkupToPlacement';
 import type { PlacementMarkup } from '../providers/types';
 import { commitMarkupsByConfidence } from './confidenceGate';
 
@@ -91,8 +92,8 @@ describe('normalizeAgentMarkupPayload multi-page', () => {
 
     const result = await normalizeAgentMarkupPayload({
       payload: [
-        { type: 'callout', ref: 1, xPct: 50, yPct: 50, page: 2, label: 'On page 2', confidence: 0.9 },
-        { type: 'callout', ref: 2, xPct: 50, yPct: 50, page: 5, label: 'On page 5', confidence: 0.9 },
+        { type: 'callout', ref: 1, point: { x: 500, y: 400 }, page: 2, label: 'On page 2', confidence: 0.9 },
+        { type: 'callout', ref: 2, point: { x: 306, y: 1000 }, page: 5, label: 'On page 5', confidence: 0.9 },
       ],
       page: 1,
       pageWidth: 1000,
@@ -109,6 +110,39 @@ describe('normalizeAgentMarkupPayload multi-page', () => {
     expect(result.map(row => row.page).sort()).toEqual([2, 5]);
     expect(result.map(row => row.markup.page).sort()).toEqual([2, 5]);
     expect(result.every(row => row.markup.page !== 1)).toBe(true);
+  });
+
+  it('drops legacy-pct pointers when page size is unavailable (no fabricated (0,0) markup)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const getPageDimensions = vi.fn(async () => {
+      throw new Error('cannot load page geometry');
+    });
+
+    const result = await normalizeAgentMarkupPayload({
+      payload: [
+        { type: 'callout', ref: 1, xPct: 50, yPct: 50, page: 3, label: 'Legacy only' },
+      ],
+      page: 3,
+      pageWidth: 1000,
+      pageHeight: 800,
+      idPrefix: 'reject',
+      messageId: 'msg_reject',
+      defaultStyle,
+      pdfDocument: { getPage: async () => ({}) },
+      getPageDimensions,
+      resolveAnchors: () => [],
+    });
+
+    expect(result).toHaveLength(0);
+    expect(result.some(row => {
+      const m = row.markup as { x?: number; y?: number; width?: number; height?: number };
+      return m.x === 0 || m.y === 0 || (m.x === 0 && m.y === 0);
+    })).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    expect(warn.mock.calls.some(call =>
+      String(call.join(' ')).includes('missing page size'),
+    )).toBe(true);
+    warn.mockRestore();
   });
 });
 
@@ -175,5 +209,110 @@ describe('verifyPlacementMarkupsWithGeometryGate (Path A fail-closed)', () => {
     expect(placed).toContain('ok-p1');
     expect(placed).not.toContain('bad-p5');
     expect(reviewQueue).toContain('bad-p5');
+  });
+});
+
+describe('normalizeAgentMarkupPayload rotation integration (full production chain)', () => {
+  const mediaW = 612;
+  const mediaH = 792;
+
+  /** Same mock shape as loadPageGeometries B3 test — real getPageDimensions / pdfLoader path. */
+  function rotatedPdfDocument() {
+    return {
+      getPage: async () => ({
+        rotate: 90,
+        getViewport: ({ scale = 1, rotation }: { scale?: number; rotation?: number }) => {
+          const rot = rotation !== undefined ? rotation : 90;
+          const normalized = ((rot % 360) + 360) % 360;
+          if (normalized === 90 || normalized === 270) {
+            return { width: mediaH * scale, height: mediaW * scale };
+          }
+          return { width: mediaW * scale, height: mediaH * scale };
+        },
+      }),
+    };
+  }
+
+  it('threads loaded rotation through normalize → loadPageGeometries → verify → convert (DocPoint target lands at 888,150)', async () => {
+    // Agent pointer path becomes a callout; the DocPoint target is the leader end.
+    // Same scenario as the unit-level convertPlacements test: 612×792, rot 90, (100,200), scale 1.5.
+    const result = await normalizeAgentMarkupPayload({
+      payload: [
+        {
+          type: 'callout',
+          ref: 1,
+          point: { x: 100, y: 200 },
+          page: 1,
+          label: 'Rotated target',
+          confidence: 0.9,
+        },
+      ],
+      page: 1,
+      pageWidth: 10,
+      pageHeight: 10,
+      idPrefix: 'rot_chain',
+      messageId: 'msg_rot_chain',
+      defaultStyle,
+      pdfDocument: rotatedPdfDocument() as never,
+      // Intentionally omit getPageDimensions — must use production pdfLoader path.
+      resolveAnchors: () => [],
+    });
+
+    expect(result).toHaveLength(1);
+    const markup = result[0].markup as {
+      type: string;
+      x: number;
+      y: number;
+      leaderPoints?: Array<{ x: number; y: number }>;
+    };
+    expect(markup.type).toBe('callout');
+    expect(markup.leaderPoints?.length).toBeGreaterThanOrEqual(2);
+
+    const target = markup.leaderPoints![markup.leaderPoints!.length - 1];
+    // Must match unit-level convertPlacements expectation exactly.
+    expect(target).toEqual({ x: 888, y: 150 });
+    // Wiring regression guard: raw scale without rotation would yield (150, 300).
+    expect(target).not.toEqual({ x: 150, y: 300 });
+    // Bubble itself is not the DocPoint — only the leader tip is.
+    expect(markup.x).not.toBe(888);
+  });
+
+  it('round-trips render (888,150) back to DocPoint (100,200) via canvasMarkupToPlacement + loaded PageGeometry', async () => {
+    const { geometryByPage, failedPages } = await loadPageGeometries({
+      pageNumbers: [1],
+      pdfDocument: rotatedPdfDocument() as never,
+    });
+    expect(failedPages.size).toBe(0);
+    const page = geometryByPage.get(1);
+    expect(page?.rotationDeg).toBe(90);
+    expect(page?.docWidth).toBe(mediaW);
+    expect(page?.docHeight).toBe(mediaH);
+
+    const renderedMarkup: CanvasMarkup = {
+      id: 'rt-count',
+      type: 'count-marker',
+      page: 1,
+      x: 888,
+      y: 150,
+      number: 1,
+      groupId: 'rt',
+      style: defaultStyle,
+      locked: false,
+      author: 'AI',
+      createdAt: new Date().toISOString(),
+      aiGenerated: true,
+      aiConfidence: 0.9,
+    };
+
+    const placement = canvasMarkupToPlacementMarkup(
+      1,
+      renderedMarkup,
+      BASE_RENDER_SCALE,
+      page,
+    );
+    expect(placement).not.toBeNull();
+    expect(placement!.points).toHaveLength(1);
+    expect(placement!.points[0].x).toBeCloseTo(100, 5);
+    expect(placement!.points[0].y).toBeCloseTo(200, 5);
   });
 });

@@ -159,8 +159,6 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     snapToGrid,
     snapToObjects,
     defaultStyle,
-    scale,
-    scaleUnit,
     zoom,
     activeSnapPoint,
     addMarkup,
@@ -176,6 +174,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     getSnapPoint,
     setCalibrationPoint,
     cancelCalibration,
+    getScaleForPage,
     getTextContent,
     setTextContent,
     getTextWords,
@@ -195,6 +194,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const markupsByPage = currentDocData?.markupsByPage;
   const markups = (markupsByPage && markupsByPage[currentPage]) || EMPTY_MARKUPS;
   const isPanMode = activeTool === 'pan';
+  // Prefer per-page PageCalibration; fall back to legacy document-wide scale.
+  const { scale: measureScale, unit: measureUnit } = getScaleForPage(currentPage);
 
   // Helper that wraps getSnapPoint to extract point and update active snap indicator
   const getSnappedPoint = useCallback((rawPoint: Point): Point => {
@@ -398,7 +399,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       }
       
     }
-  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled]);
+  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit]);
 
   useEffect(() => {
     draw();
@@ -980,13 +981,13 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           Math.pow(endPoint.x - startPoint.x, 2) +
           Math.pow(endPoint.y - startPoint.y, 2)
         );
-        const scaledDist = dist / scale;
+        const scaledDist = dist / measureScale;
         
         ctx.setLineDash([]);
         ctx.fillStyle = '#22c55e';
         ctx.font = '11px monospace';
         ctx.fillText(
-          `${scaledDist.toFixed(2)} ${scaleUnit}`,
+          `${scaledDist.toFixed(2)} ${measureUnit}`,
           (startPoint.x + endPoint.x) / 2 + 10,
           (startPoint.y + endPoint.y) / 2 - 10
         );
@@ -1003,8 +1004,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         ctx.strokeRect(areaMinX, areaMinY, areaW, areaH);
         
         const areaPixels = areaW * areaH;
-        const scaledArea = areaPixels / (scale * scale);
-        const areaUnit = scaleUnit === 'ft' ? 'sq ft' : `sq ${scaleUnit}`;
+        const scaledArea = areaPixels / (measureScale * measureScale);
+        const areaUnit = measureUnit === 'ft' ? 'sq ft' : `sq ${measureUnit}`;
         
         ctx.setLineDash([]);
         ctx.fillStyle = '#22c55e';
@@ -1730,14 +1731,14 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     const startPoint = confirmedPoints[0];
     const endPoint = confirmedPoints[confirmedPoints.length - 1];
 
-    const newMarkup = createMarkup(activeTool, startPoint, endPoint, confirmedPoints, defaultStyle, scale, scaleUnit);
+    const newMarkup = createMarkup(activeTool, startPoint, endPoint, confirmedPoints, defaultStyle, measureScale, measureUnit);
 
     if (newMarkup) {
       addMarkup(currentPage, newMarkup);
     }
 
     finishDrawing();
-  }, [drawing, activeTool, defaultStyle, scale, scaleUnit, currentPage, addMarkup, finishDrawing]);
+  }, [drawing, activeTool, defaultStyle, measureScale, measureUnit, currentPage, addMarkup, finishDrawing]);
 
   const handleMouseUp = async (e: MouseEvent<HTMLCanvasElement>) => {
     // End resizing
@@ -1833,7 +1834,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         }
       }
       
-      const newMarkup = createMarkup(activeTool, startPoint, endPoint, points, defaultStyle, scale, scaleUnit);
+      const newMarkup = createMarkup(activeTool, startPoint, endPoint, points, defaultStyle, measureScale, measureUnit);
       
       if (newMarkup) {
         if (
@@ -1854,7 +1855,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
             page: currentPage,
             type: measurementType,
             value: (newMarkup as any).scaledValue || 0,
-            unit: (newMarkup as any).unit || scaleUnit,
+            unit: (newMarkup as any).unit || measureUnit,
           });
         }
         

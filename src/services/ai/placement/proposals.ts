@@ -1,9 +1,9 @@
 import type { ChatMarkupPointer, PlacementMarkup } from '../providers/types';
-import { createPageGeometry, pctRectToDoc, pctToDoc } from './coords';
+import { createPageGeometry } from './coords';
 import type { MarkupProposal, PageGeometry } from './types';
 
 /**
- * Convert percent-based chat pointers into document-space markup proposals.
+ * Convert DocPoint chat pointers into document-space markup proposals.
  */
 export function proposalsFromChatPointers(options: {
   pointers: ChatMarkupPointer[];
@@ -13,10 +13,10 @@ export function proposalsFromChatPointers(options: {
   const page = createPageGeometry(options.page);
   return options.pointers.map((pointer, index) => {
     const ref = pointer.ref || index + 1;
-    const boundingBox = pointer.boundsPct
-      ? pctRectToDoc(pointer.boundsPct, page)
+    const boundingBox = pointer.bounds
+      ? { ...pointer.bounds }
       : (() => {
-        const center = pctToDoc(pointer.xPct, pointer.yPct, page);
+        const center = pointer.point;
         const size = Math.min(page.docWidth, page.docHeight) * 0.04;
         return {
           x: center.x - size / 2,
@@ -38,7 +38,7 @@ export function proposalsFromChatPointers(options: {
       confidence,
       placementMode: confidence >= 0.75 ? 'exact' : confidence >= 0.45 ? 'estimated' : 'needs_review',
       rationale: pointer.note || pointer.label || `Pointer [${ref}]`,
-      sourceSignals: ['chat_pointer', pointer.boundsPct ? 'boundsPct' : 'xPct/yPct'],
+      sourceSignals: ['chat_pointer', pointer.bounds ? 'bounds' : 'point'],
     };
   });
 }

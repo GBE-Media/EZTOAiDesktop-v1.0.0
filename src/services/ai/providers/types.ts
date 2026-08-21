@@ -265,21 +265,21 @@ export interface PlacementNote {
   linkedMarkupId?: string;
 }
 
+import type { DocPoint, DocRect } from '../placement/types';
+
 // Intentional "point this out on the page" markers the assistant emits only
 // when it explicitly wants a numbered callout in chat + on the print.
+// Coordinates are PDF page points at scale 1 (DocPoint), top-left origin —
+// not coarse 0–100 percentages.
 export interface ChatMarkupPointer {
   type: 'callout' | 'count-marker' | 'text' | 'rectangle';
   ref: number; // matches [N] in the visible answer
-  xPct: number; // 0-100, left-to-right
-  yPct: number; // 0-100, top-to-bottom
+  /** Target point in PDF page points (scale 1, top-left origin). */
+  point: DocPoint;
+  /** Optional AABB in PDF page points (scale 1, top-left origin). */
+  bounds?: DocRect;
   /** Optional target page; when omitted, callers may supply a shared default page. */
   page?: number;
-  boundsPct?: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
   label?: string;
   note?: string;
   confidence?: number;

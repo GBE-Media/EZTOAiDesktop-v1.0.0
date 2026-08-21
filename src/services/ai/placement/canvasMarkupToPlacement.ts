@@ -1,6 +1,12 @@
 import type { CanvasMarkup } from '@/types/markup';
 import type { PlacementMarkup } from '../providers/types';
-import { BASE_RENDER_SCALE } from './coords';
+import {
+  BASE_RENDER_SCALE,
+  createPageGeometry,
+  renderRectToDoc,
+  renderToDoc,
+} from './coords';
+import type { DocPoint, PageGeometry } from './types';
 
 const DEFAULT_STYLE: PlacementMarkup['style'] = {
   strokeColor: '#10b981',
@@ -10,23 +16,30 @@ const DEFAULT_STYLE: PlacementMarkup['style'] = {
   fontFamily: 'Arial',
 };
 
-function scalePoint(
-  point: { x: number; y: number },
-  inv: number,
-): { x: number; y: number } {
-  return { x: point.x * inv, y: point.y * inv };
-}
-
 /**
  * Convert a canvas-space markup back to document-space PlacementMarkup
  * so it can run through per-page verification.
+ *
+ * When PageGeometry is supplied, uses renderToDoc (rotation-aware).
+ * Otherwise falls back to uniform 1/scale (rotationDeg = 0).
  */
 export function canvasMarkupToPlacementMarkup(
   page: number,
   markup: CanvasMarkup,
   scale: number = BASE_RENDER_SCALE,
+  pageGeometry?: PageGeometry | null,
 ): PlacementMarkup | null {
-  const inv = scale > 0 ? 1 / scale : 1;
+  const geometry = pageGeometry || createPageGeometry({
+    pageNumber: page,
+    docWidth: 1,
+    docHeight: 1,
+    renderScale: scale > 0 ? scale : BASE_RENDER_SCALE,
+    rotationDeg: 0,
+  });
+
+  const toDoc = (point: { x: number; y: number }): DocPoint =>
+    renderToDoc(point, geometry);
+
   const style = {
     strokeColor: markup.style?.strokeColor || DEFAULT_STYLE.strokeColor,
     fillColor: markup.style?.fillColor || DEFAULT_STYLE.fillColor,
@@ -46,26 +59,38 @@ export function canvasMarkupToPlacementMarkup(
   };
 
   if (markup.type === 'rectangle' || markup.type === 'ellipse' || markup.type === 'highlight') {
+    const docRect = renderRectToDoc({
+      x: markup.x,
+      y: markup.y,
+      width: markup.width,
+      height: markup.height,
+    }, geometry);
     return {
       ...base,
       type: 'rectangle',
       points: [
-        { x: markup.x * inv, y: markup.y * inv },
-        { x: (markup.x + markup.width) * inv, y: (markup.y + markup.height) * inv },
+        { x: docRect.x, y: docRect.y },
+        { x: docRect.x + docRect.width, y: docRect.y + docRect.height },
       ],
     };
   }
 
   if (markup.type === 'callout' || markup.type === 'text') {
+    const docRect = renderRectToDoc({
+      x: markup.x,
+      y: markup.y,
+      width: markup.width,
+      height: markup.height,
+    }, geometry);
     return {
       ...base,
       type: markup.type,
       points: [
-        { x: markup.x * inv, y: markup.y * inv },
-        { x: (markup.x + markup.width) * inv, y: (markup.y + markup.height) * inv },
+        { x: docRect.x, y: docRect.y },
+        { x: docRect.x + docRect.width, y: docRect.y + docRect.height },
       ],
       content: markup.content,
-      leaderPoints: markup.leaderPoints?.map(point => scalePoint(point, inv)),
+      leaderPoints: markup.leaderPoints?.map(point => toDoc(point)),
     };
   }
 
@@ -73,7 +98,7 @@ export function canvasMarkupToPlacementMarkup(
     return {
       ...base,
       type: 'count-marker',
-      points: [{ x: markup.x * inv, y: markup.y * inv }],
+      points: [toDoc({ x: markup.x, y: markup.y })],
     };
   }
 
@@ -83,7 +108,7 @@ export function canvasMarkupToPlacementMarkup(
     return {
       ...base,
       type: markup.type === 'polygon' ? 'polygon' : 'polyline',
-      points: points.map(point => scalePoint(point, inv)),
+      points: points.map(point => toDoc(point)),
     };
   }
 
@@ -93,7 +118,7 @@ export function canvasMarkupToPlacementMarkup(
     return {
       ...base,
       type: markup.type,
-      points: points.map(point => scalePoint(point, inv)),
+      points: points.map(point => toDoc(point)),
     };
   }
 

@@ -1,19 +1,33 @@
 import type { Point } from '@/types/markup';
 
-// Base scale used for PDF rendering (from Canvas.tsx and pdfLoader)
+/**
+ * Canvas zoom / render-space helpers.
+ *
+ * IMPORTANT — two different coordinate spaces exist in this app:
+ *
+ * 1. **Render space** (this module): pixel coordinates on the rendered PDF
+ *    canvas at BASE_RENDER_SCALE (1.5). Markup x/y/width/height on the canvas
+ *    and most editor hit-testing live here. Historically mislabeled "PDF"
+ *    coordinates in this file.
+ *
+ * 2. **Document / PDF page points** (`DocPoint` in
+ *    `src/services/ai/placement/types.ts`): true PDF page points at scale 1,
+ *    top-left origin. Placement verification, snapping, and AI DocPoint
+ *    contracts use that space — not these helpers.
+ *
+ * These functions only convert between **screen** (after UI zoom %) and
+ * **render** (pre-zoom canvas pixels). They do NOT convert to/from DocPoint.
+ */
+
+/** Base scale used for PDF page rasterization (Canvas / pdfLoader). */
 export const BASE_RENDER_SCALE = 1.5;
 
 /**
- * Convert screen coordinates to PDF coordinates.
- * Screen coordinates are what we see on the canvas after zoom is applied.
- * PDF coordinates are the "true" coordinates at 100% zoom (with base scale).
- * 
- * @param screenX - X coordinate in screen space
- * @param screenY - Y coordinate in screen space
- * @param zoom - Current zoom level (percentage, e.g., 100 = 100%)
- * @returns Point in PDF coordinate space
+ * Convert screen coordinates to render-space coordinates.
+ * Screen = what we see after zoom is applied.
+ * Render = canvas/markup storage space at BASE_RENDER_SCALE (100% zoom).
  */
-export function screenToPdf(screenX: number, screenY: number, zoom: number): Point {
+export function screenToRender(screenX: number, screenY: number, zoom: number): Point {
   const scale = zoom / 100;
   return {
     x: screenX / scale,
@@ -22,48 +36,43 @@ export function screenToPdf(screenX: number, screenY: number, zoom: number): Poi
 }
 
 /**
- * Convert PDF coordinates to screen coordinates.
- * Used when rendering markups - transforms stored PDF coordinates to current screen position.
- * 
- * @param pdfX - X coordinate in PDF space
- * @param pdfY - Y coordinate in PDF space
- * @param zoom - Current zoom level (percentage, e.g., 100 = 100%)
- * @returns Point in screen coordinate space
+ * Convert render-space coordinates to screen coordinates.
+ * Used when drawing markups — transforms stored render coords to current zoom.
  */
-export function pdfToScreen(pdfX: number, pdfY: number, zoom: number): Point {
+export function renderToScreen(renderX: number, renderY: number, zoom: number): Point {
   const scale = zoom / 100;
   return {
-    x: pdfX * scale,
-    y: pdfY * scale,
+    x: renderX * scale,
+    y: renderY * scale,
   };
 }
 
 /**
- * Convert a dimension (width/height) from screen to PDF space.
+ * Convert a dimension (width/height) from screen to render space.
  */
-export function screenDimensionToPdf(screenDimension: number, zoom: number): number {
+export function screenDimensionToRender(screenDimension: number, zoom: number): number {
   const scale = zoom / 100;
   return screenDimension / scale;
 }
 
 /**
- * Convert a dimension (width/height) from PDF to screen space.
+ * Convert a dimension (width/height) from render to screen space.
  */
-export function pdfDimensionToScreen(pdfDimension: number, zoom: number): number {
+export function renderDimensionToScreen(renderDimension: number, zoom: number): number {
   const scale = zoom / 100;
-  return pdfDimension * scale;
+  return renderDimension * scale;
 }
 
 /**
- * Transform an array of points from screen to PDF space.
+ * Transform an array of points from screen to render space.
  */
-export function screenPointsToPdf(points: Point[], zoom: number): Point[] {
-  return points.map(p => screenToPdf(p.x, p.y, zoom));
+export function screenPointsToRender(points: Point[], zoom: number): Point[] {
+  return points.map(p => screenToRender(p.x, p.y, zoom));
 }
 
 /**
- * Transform an array of points from PDF to screen space.
+ * Transform an array of points from render to screen space.
  */
-export function pdfPointsToScreen(points: Point[], zoom: number): Point[] {
-  return points.map(p => pdfToScreen(p.x, p.y, zoom));
+export function renderPointsToScreen(points: Point[], zoom: number): Point[] {
+  return points.map(p => renderToScreen(p.x, p.y, zoom));
 }

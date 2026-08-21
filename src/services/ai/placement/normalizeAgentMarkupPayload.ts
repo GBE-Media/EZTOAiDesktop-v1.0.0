@@ -10,9 +10,16 @@ import {
   loadPageGeometries,
   type PdfDocumentLike,
 } from './loadPageGeometries';
+import { parseChatMarkupPointerRow } from './parseChatMarkupPointer';
 import { resolvePageAnchors } from './resolvePageAnchors';
-import { CONFIDENCE_REVIEW, type GeometryAnchor, type PageGeometry, type VerificationResult } from './types';
+import { CONFIDENCE_REVIEW, type GeometryAnchor, type PageCalibration, type PageGeometry, type VerificationResult } from './types';
 import { verifyPlacementMarkupsByPage } from './verifyPlacementsByPage';
+import { useCanvasStore } from '@/store/canvasStore';
+import { nonePageCalibration } from './pageCalibration';
+
+/** Logged/reported when a pointer is dropped because legacy pct needs page size. */
+export const POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE =
+  'could not determine placement — missing page size';
 
 export type NormalizeAgentMarkupOptions = {
   payload: unknown;
@@ -27,7 +34,7 @@ export type NormalizeAgentMarkupOptions = {
   getPageDimensions?: (
     document: PdfDocumentLike,
     pageNumber: number,
-  ) => Promise<{ width: number; height: number }>;
+  ) => Promise<{ width: number; height: number; rotationDeg?: import('./types').PageRotationDeg }>;
 };
 
 function appendGeometryFailureNote(existing?: string): string {
@@ -67,12 +74,21 @@ function withMessageId(
   }));
 }
 
+function resolveCalibrationForPage(pageNumber: number): PageCalibration {
+  const getPageCalibration = useCanvasStore.getState().getPageCalibration;
+  if (typeof getPageCalibration !== 'function') {
+    return nonePageCalibration(pageNumber);
+  }
+  return getPageCalibration(pageNumber);
+}
+
 function convertVerifiedBatch(options: {
   markups: PlacementMarkup[];
   geometryByPage: Map<number, PageGeometry>;
   defaultStyle: MarkupStyle;
   idPrefix: string;
   resolveAnchors: (page: PageGeometry, pageNumber: number) => GeometryAnchor[];
+  resolveCalibration?: (pageNumber: number) => PageCalibration | null;
 }): Array<{ page: number; markup: CanvasMarkup }> {
   if (options.markups.length === 0) return [];
 
@@ -87,6 +103,7 @@ function convertVerifiedBatch(options: {
       return {
         page,
         anchors: options.resolveAnchors(page, pageNumber),
+        calibration: options.resolveCalibration?.(pageNumber) ?? null,
       };
     },
   });
@@ -98,6 +115,7 @@ function convertVerifiedBatch(options: {
     BASE_RENDER_SCALE,
     BASE_RENDER_SCALE,
     verificationMetaFromResults(verified),
+    options.geometryByPage,
   );
 }
 
@@ -158,17 +176,7 @@ export async function normalizeAgentMarkupPayload(
       return !!row?.markup;
     });
     if (legacy.length > 0) {
-      const placementMarkups = legacy
-        .map((item) => {
-          const page = item.page || item.markup.page || options.page;
-          return canvasMarkupToPlacementMarkup(page, {
-            ...item.markup,
-            page,
-          } as CanvasMarkup);
-        })
-        .filter((item): item is PlacementMarkup => !!item);
-
-      const pageNumbers = placementMarkups.map(markup => markup.page || options.page);
+      const pageNumbers = legacy.map(item => item.page || item.markup.page || options.page);
       const { geometryByPage, failedPages } = await loadPageGeometries({
         pageNumbers,
         pdfDocument: options.pdfDocument,
@@ -179,6 +187,21 @@ export async function normalizeAgentMarkupPayload(
         },
         getPageDimensions: options.getPageDimensions,
       });
+
+      const placementMarkups = legacy
+        .map((item) => {
+          const page = item.page || item.markup.page || options.page;
+          return canvasMarkupToPlacementMarkup(
+            page,
+            {
+              ...item.markup,
+              page,
+            } as CanvasMarkup,
+            BASE_RENDER_SCALE,
+            geometryByPage.get(page) || null,
+          );
+        })
+        .filter((item): item is PlacementMarkup => !!item);
 
       const verifiable = placementMarkups.filter(
         markup => !failedPages.has(markup.page || options.page),
@@ -194,6 +217,7 @@ export async function normalizeAgentMarkupPayload(
           defaultStyle: options.defaultStyle,
           idPrefix: options.idPrefix,
           resolveAnchors,
+          resolveCalibration: resolveCalibrationForPage,
         }),
         ...convertUnverifiableBatch({
           markups: unverifiable,
@@ -205,32 +229,21 @@ export async function normalizeAgentMarkupPayload(
     }
   }
 
-  const pointers: ChatMarkupPointer[] = asArray.map((item, index) => {
-    const row = item as Record<string, unknown>;
-    const xPct = Number(row.xPct ?? row.x ?? 50);
-    const yPct = Number(row.yPct ?? row.y ?? 50);
-    const pageRaw = row.page;
-    const page = typeof pageRaw === 'number' && Number.isFinite(pageRaw) && pageRaw > 0
-      ? pageRaw
-      : undefined;
-    return {
-      type: (row.type as ChatMarkupPointer['type']) || 'callout',
-      ref: Number(row.ref ?? index + 1),
-      xPct: Number.isFinite(xPct) ? xPct : 50,
-      yPct: Number.isFinite(yPct) ? yPct : 50,
-      boundsPct: row.boundsPct as ChatMarkupPointer['boundsPct'],
-      label: typeof row.label === 'string'
-        ? row.label
-        : typeof row.content === 'string'
-          ? row.content
-          : `Callout ${index + 1}`,
-      note: typeof row.note === 'string' ? row.note : undefined,
-      confidence: typeof row.confidence === 'number' ? row.confidence : undefined,
-      page,
-    };
-  });
+  const rawPointerRows = asArray
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null;
+      const row = item as Record<string, unknown>;
+      const pageRaw = row.page;
+      const pageNumber = typeof pageRaw === 'number' && Number.isFinite(pageRaw) && pageRaw > 0
+        ? pageRaw
+        : options.page;
+      return { row, index, pageNumber };
+    })
+    .filter((item): item is { row: Record<string, unknown>; index: number; pageNumber: number } => !!item);
 
-  const pageNumbers = pointers.map(pointer => pointer.page ?? options.page);
+  if (rawPointerRows.length === 0) return [];
+
+  const pageNumbers = rawPointerRows.map(item => item.pageNumber);
   const { geometryByPage, failedPages } = await loadPageGeometries({
     pageNumbers,
     pdfDocument: options.pdfDocument,
@@ -244,13 +257,45 @@ export async function normalizeAgentMarkupPayload(
 
   const verifiablePointers: ChatMarkupPointer[] = [];
   const unverifiablePointers: ChatMarkupPointer[] = [];
-  for (const pointer of pointers) {
-    const pageNumber = pointer.page ?? options.page;
+
+  for (const { row, index, pageNumber } of rawPointerRows) {
     if (failedPages.has(pageNumber) || !geometryByPage.has(pageNumber)) {
-      unverifiablePointers.push({ ...pointer, page: pageNumber });
-    } else {
-      verifiablePointers.push({ ...pointer, page: pageNumber });
+      // DocPoint-native parse only — never invent {x:0,y:0} for rejected legacy pct.
+      const parsed = parseChatMarkupPointerRow(row, { defaultRef: index + 1 });
+      if (!parsed) {
+        console.warn(
+          '[normalizeAgentMarkupPayload]',
+          `${POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE} (ref=${row.ref ?? index + 1}, page=${pageNumber})`,
+        );
+        continue;
+      }
+      unverifiablePointers.push({
+        ...parsed,
+        page: parsed.page ?? pageNumber,
+        label: parsed.label || (typeof row.label === 'string' ? row.label : `Callout ${parsed.ref}`),
+        note: parsed.note || (typeof row.note === 'string' ? row.note : undefined),
+      });
+      continue;
     }
+
+    const page = geometryByPage.get(pageNumber)!;
+    const parsed = parseChatMarkupPointerRow(row, {
+      defaultRef: index + 1,
+      pageWidth: page.docWidth,
+      pageHeight: page.docHeight,
+    });
+    if (!parsed) {
+      console.warn(
+        '[normalizeAgentMarkupPayload]',
+        `${POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE} (ref=${row.ref ?? index + 1}, page=${pageNumber})`,
+      );
+      continue;
+    }
+    verifiablePointers.push({
+      ...parsed,
+      page: parsed.page ?? pageNumber,
+      label: parsed.label || `Callout ${parsed.ref}`,
+    });
   }
 
   const byPage = new Map<number, ChatMarkupPointer[]>();
@@ -274,19 +319,19 @@ export async function normalizeAgentMarkupPayload(
     placementMarkups.push(...placements.markups);
   }
 
+  // Geometry load failed but pointer had real DocPoints: review-only stub.
+  // Rejected/null parses are already dropped above — never fabricate (0,0) for those.
   const unverifiableMarkups: PlacementMarkup[] = [];
   for (const pointer of unverifiablePointers) {
     const pageNumber = pointer.page ?? options.page;
-    // Without trusted page size, do not invent placement geometry from page-1 dims.
-    // Emit a review-only stub anchored at the origin for the review queue.
+    // Without trusted page size, do not invent placement from page-1 dims.
+    // DocPoint identity is preserved in label/ref; geometry stays empty so convert
+    // does not paint a fabricated origin box (see convertPlacements callout path).
     unverifiableMarkups.push({
       id: `${options.idPrefix}_callout_${pointer.ref}`,
       type: 'callout',
       page: pageNumber,
-      points: [
-        { x: 0, y: 0 },
-        { x: 1, y: 1 },
-      ],
+      points: [],
       style: {
         strokeColor: '#10b981',
         fillColor: 'rgba(16, 185, 129, 0.18)',
@@ -310,6 +355,7 @@ export async function normalizeAgentMarkupPayload(
       defaultStyle: options.defaultStyle,
       idPrefix: options.idPrefix,
       resolveAnchors,
+      resolveCalibration: resolveCalibrationForPage,
     }),
     ...convertUnverifiableBatch({
       markups: unverifiableMarkups,
@@ -334,7 +380,7 @@ export async function verifyPlacementMarkupsWithGeometryGate(options: {
   getPageDimensions?: (
     document: PdfDocumentLike,
     pageNumber: number,
-  ) => Promise<{ width: number; height: number }>;
+  ) => Promise<{ width: number; height: number; rotationDeg?: import('./types').PageRotationDeg }>;
 }): Promise<{
   verified: Array<{ page: number; markup: CanvasMarkup }>;
   reviewOnly: Array<{ page: number; markup: CanvasMarkup }>;
@@ -372,6 +418,7 @@ export async function verifyPlacementMarkupsWithGeometryGate(options: {
         return {
           page,
           anchors: resolveAnchors(page, pageNumber),
+          calibration: resolveCalibrationForPage(pageNumber),
         };
       },
     })
@@ -384,6 +431,7 @@ export async function verifyPlacementMarkupsWithGeometryGate(options: {
     BASE_RENDER_SCALE,
     BASE_RENDER_SCALE,
     verificationMetaFromResults(verifiedResults),
+    geometryByPage,
   );
 
   const reviewOnly = convertUnverifiableBatch({

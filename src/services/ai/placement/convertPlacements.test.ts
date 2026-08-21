@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { convertPlacementsToMarkups, isUsableVerifiedBox } from './convertPlacements';
-import { createPageGeometry, verifyMarkupProposal } from './index';
+import { createPageGeometry, docRectToRender, docToRender, verifyMarkupProposal } from './index';
 import type { CanvasPlacement, PlacementMarkup } from '../providers/types';
 import type { MarkupStyle } from '@/types/markup';
 import type { MarkupProposal } from './types';
+import { BASE_RENDER_SCALE } from './coords';
 
 const style: MarkupStyle = {
   strokeColor: '#10b981',
@@ -262,5 +263,138 @@ describe('convertPlacementsToMarkups verified geometry (Phase 4 Step 1)', () => 
       width: 30,
       height: 40,
     });
+  });
+});
+
+describe('convertPlacementsToMarkups rotation-aware output (Phase 5)', () => {
+  it('applies PageGeometry.rotationDeg=90 through the real convert path (not raw scale)', () => {
+    const page = createPageGeometry({
+      pageNumber: 1,
+      docWidth: 612,
+      docHeight: 792,
+      renderScale: BASE_RENDER_SCALE,
+      rotationDeg: 90,
+    });
+    const docPoint = { x: 100, y: 200 };
+    // Independent check against docToRender formula before asserting convert output.
+    // 90° CW: (x,y) → (H - y, x) = (792 - 200, 100) = (592, 100)
+    // × 1.5 → (888, 150)
+    const expected = docToRender(docPoint, page);
+    expect(expected).toEqual({ x: 888, y: 150 });
+
+    const placements: CanvasPlacement = {
+      notes: [],
+      markups: [placement({
+        id: 'rot-count',
+        type: 'count-marker',
+        page: 1,
+        points: [docPoint],
+      })],
+    };
+    const geometryByPage = new Map([[1, page]]);
+    const result = convertPlacementsToMarkups(
+      placements,
+      style,
+      'group',
+      BASE_RENDER_SCALE,
+      BASE_RENDER_SCALE,
+      undefined,
+      geometryByPage,
+    );
+
+    expect(result[0].markup).toMatchObject({
+      type: 'count-marker',
+      x: 888,
+      y: 150,
+    });
+    // Must NOT equal non-rotated raw scale (100*1.5, 200*1.5).
+    expect(result[0].markup).not.toMatchObject({ x: 150, y: 300 });
+  });
+
+  it('rotationDeg=0 through the real convert path matches pre-Phase-5 scale-only behavior', () => {
+    const page = createPageGeometry({
+      pageNumber: 1,
+      docWidth: 612,
+      docHeight: 792,
+      renderScale: BASE_RENDER_SCALE,
+      rotationDeg: 0,
+    });
+    const docPoint = { x: 100, y: 200 };
+    expect(docToRender(docPoint, page)).toEqual({ x: 150, y: 300 });
+
+    const placements: CanvasPlacement = {
+      notes: [],
+      markups: [placement({
+        id: 'plain-count',
+        type: 'count-marker',
+        page: 1,
+        points: [docPoint],
+      })],
+    };
+    const result = convertPlacementsToMarkups(
+      placements,
+      style,
+      'group',
+      BASE_RENDER_SCALE,
+      BASE_RENDER_SCALE,
+      undefined,
+      new Map([[1, page]]),
+    );
+
+    expect(result[0].markup).toMatchObject({
+      type: 'count-marker',
+      x: 150,
+      y: 300,
+    });
+  });
+
+  it('rotates callout box and leader points via docRectToRender / docToRender', () => {
+    const page = createPageGeometry({
+      pageNumber: 2,
+      docWidth: 612,
+      docHeight: 792,
+      renderScale: BASE_RENDER_SCALE,
+      rotationDeg: 90,
+    });
+    const verifiedBox = { x: 100, y: 200, width: 40, height: 20 };
+    const leaderEnd = { x: 50, y: 250 };
+    const expectedBox = docRectToRender(verifiedBox, page);
+    const expectedLeader = docToRender(leaderEnd, page);
+
+    const placements: CanvasPlacement = {
+      notes: [],
+      markups: [placement({
+        id: 'rot-callout',
+        type: 'callout',
+        page: 2,
+        calloutRef: 1,
+        points: [{ x: 100, y: 200 }, { x: 140, y: 220 }],
+        leaderPoints: [{ x: 100, y: 200 }, leaderEnd],
+        content: '[1] Rotated',
+      })],
+    };
+
+    const result = convertPlacementsToMarkups(
+      placements,
+      style,
+      'group',
+      BASE_RENDER_SCALE,
+      BASE_RENDER_SCALE,
+      [{ id: 'rot-callout', pending: false, confidence: 0.9, boundingBox: verifiedBox }],
+      new Map([[2, page]]),
+    );
+
+    const markup = result[0].markup as {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      leaderPoints?: Array<{ x: number; y: number }>;
+    };
+    expect(markup.x).toBeCloseTo(expectedBox.x, 5);
+    expect(markup.y).toBeCloseTo(expectedBox.y, 5);
+    expect(markup.width).toBeCloseTo(Math.max(expectedBox.width, 72), 5);
+    expect(markup.height).toBeCloseTo(Math.max(expectedBox.height, 28), 5);
+    expect(markup.leaderPoints?.[1]).toEqual(expectedLeader);
   });
 });

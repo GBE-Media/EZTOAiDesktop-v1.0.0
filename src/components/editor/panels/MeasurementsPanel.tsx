@@ -12,13 +12,15 @@ const typeIcons: Record<string, React.ReactNode> = {
 
 export function MeasurementsPanel() {
   const { documents, activeDocument } = useEditorStore();
-  const { pdfDocuments, activeDocId, scale, scaleUnit } = useCanvasStore();
+  const { pdfDocuments, activeDocId, getScaleForPage, getPageCalibration } = useCanvasStore();
   const [selectedMeasurements, setSelectedMeasurements] = useState<string[]>([]);
 
   // Derive values from document data
   const currentDocData = activeDocId ? pdfDocuments[activeDocId] : null;
   const currentPage = currentDocData?.currentPage || 1;
   const markupsByPage = currentDocData?.markupsByPage || {};
+  const { scale, unit: scaleUnit } = getScaleForPage(currentPage);
+  const pageCalibrated = getPageCalibration(currentPage).method !== 'none';
 
   const doc = documents.find((d) => d.id === activeDocument);
   
@@ -73,7 +75,7 @@ export function MeasurementsPanel() {
             </button>
           </div>
           <div className="text-sm font-mono">
-            {scale ? `1/4" = 1'-0" (${scale}:1)` : 'Not calibrated'}
+            {pageCalibrated ? `1/4" = 1'-0" (${scale.toFixed(2)} px/${scaleUnit})` : 'Not calibrated'}
           </div>
         </div>
       </div>

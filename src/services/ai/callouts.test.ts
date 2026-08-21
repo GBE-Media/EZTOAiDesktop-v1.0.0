@@ -6,14 +6,13 @@ import {
 } from './callouts';
 
 describe('chatPointersToGreenPlacements', () => {
-  it('creates a green labeled callout with a leader line', () => {
+  it('creates a green labeled callout with a leader line from DocPoint bounds', () => {
     const result = chatPointersToGreenPlacements({
       pointers: [{
         type: 'callout',
         ref: 1,
-        xPct: 25,
-        yPct: 30,
-        boundsPct: { x: 20, y: 25, width: 10, height: 12 },
+        point: { x: 250, y: 150 },
+        bounds: { x: 200, y: 125, width: 100, height: 60 },
         label: 'Panel',
         note: 'Verified panel',
         confidence: 0.96,
@@ -36,16 +35,16 @@ describe('chatPointersToGreenPlacements', () => {
       pending: true,
     });
     expect(result.markups[0].leaderPoints).toHaveLength(2);
+    // Bounds center = (250, 155)
     expect(result.markups[0].leaderPoints?.[1]).toEqual({ x: 250, y: 155 });
   });
 
-  it('creates a callout leader to a point when bounds are unavailable', () => {
+  it('creates a callout leader to a DocPoint when bounds are unavailable', () => {
     const result = chatPointersToGreenPlacements({
       pointers: [{
         type: 'callout',
         ref: 2,
-        xPct: 50,
-        yPct: 40,
+        point: { x: 400, y: 240 },
         label: 'Outlet',
       }],
       page: 1,
@@ -69,9 +68,8 @@ describe('chatPointersToGreenPlacements', () => {
       pointers: [{
         type: 'callout',
         ref: 1,
-        xPct: 98,
-        yPct: 98,
-        boundsPct: { x: 95, y: 96, width: 20, height: 10 },
+        point: { x: 98, y: 98 },
+        bounds: { x: 95, y: 96, width: 20, height: 10 },
         label: 'Edge',
       }],
       page: 1,
@@ -91,8 +89,8 @@ describe('chatPointersToGreenPlacements', () => {
   it('preserves each pointer\'s own page and uses per-page sizes when provided', () => {
     const result = chatPointersToGreenPlacements({
       pointers: [
-        { type: 'callout', ref: 1, xPct: 50, yPct: 50, page: 2, label: 'A' },
-        { type: 'callout', ref: 2, xPct: 50, yPct: 50, page: 5, label: 'B' },
+        { type: 'callout', ref: 1, point: { x: 500, y: 400 }, page: 2, label: 'A' },
+        { type: 'callout', ref: 2, point: { x: 100, y: 100 }, page: 5, label: 'B' },
       ],
       page: 1,
       pageWidth: 1000,
@@ -114,7 +112,7 @@ describe('chatPointersToGreenPlacements', () => {
 describe('ensureNumberedCalloutMentions', () => {
   it('injects missing numbered mentions', () => {
     const text = ensureNumberedCalloutMentions('See the lighting control detail.', [
-      { type: 'callout', ref: 1, xPct: 10, yPct: 10, label: 'Timeclock' },
+      { type: 'callout', ref: 1, point: { x: 10, y: 10 }, label: 'Timeclock' },
     ]);
     expect(text).toContain('[1] Timeclock');
   });

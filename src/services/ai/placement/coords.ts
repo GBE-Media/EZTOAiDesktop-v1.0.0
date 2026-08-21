@@ -2,6 +2,10 @@ import { BASE_RENDER_SCALE } from '@/lib/coordinateUtils';
 import type { DocPoint, DocRect, PageGeometry, PageRotationDeg } from './types';
 import { DEFAULT_RENDER_SCALE } from './types';
 
+// DocPoint ↔ render-canvas transforms (true PDF page points at scale 1).
+// Do not confuse with screen↔render zoom helpers in `@/lib/coordinateUtils`
+// (those operate on render-space markup pixels, historically misnamed "PDF").
+
 export { BASE_RENDER_SCALE, DEFAULT_RENDER_SCALE };
 
 export function createPageGeometry(options: {
@@ -11,46 +15,145 @@ export function createPageGeometry(options: {
   renderScale?: number;
   rotationDeg?: PageRotationDeg;
 }): PageGeometry {
+  const rotationDeg = normalizeRotationDeg(options.rotationDeg);
   return {
     pageNumber: options.pageNumber,
     docWidth: Math.max(1, options.docWidth),
     docHeight: Math.max(1, options.docHeight),
     renderScale: options.renderScale ?? DEFAULT_RENDER_SCALE,
-    rotationDeg: options.rotationDeg ?? 0,
+    rotationDeg,
   };
 }
 
-/** Document points → markup overlay / render-canvas pixels. */
+/** Explicit identity when rotation is missing/invalid — never invent a non-zero angle. */
+export function normalizeRotationDeg(value: unknown): PageRotationDeg {
+  if (value === 90 || value === 180 || value === 270) return value;
+  return 0;
+}
+
+/**
+ * Unscaled doc → rotated display axes (clockwise about top-left page origin).
+ * docWidth/docHeight are the unrotated page size.
+ */
+export function rotateDocPointClockwise(
+  point: DocPoint,
+  page: Pick<PageGeometry, 'docWidth' | 'docHeight' | 'rotationDeg'>,
+): DocPoint {
+  const W = page.docWidth;
+  const H = page.docHeight;
+  const x = point.x;
+  const y = point.y;
+  switch (normalizeRotationDeg(page.rotationDeg)) {
+    case 90:
+      return { x: H - y, y: x };
+    case 180:
+      return { x: W - x, y: H - y };
+    case 270:
+      return { x: y, y: W - x };
+    case 0:
+    default:
+      return { x, y };
+  }
+}
+
+/** Inverse of rotateDocPointClockwise (rotated display → unrotated doc). */
+export function unrotateRenderPointToDoc(
+  point: DocPoint,
+  page: Pick<PageGeometry, 'docWidth' | 'docHeight' | 'rotationDeg'>,
+): DocPoint {
+  const W = page.docWidth;
+  const H = page.docHeight;
+  const x = point.x;
+  const y = point.y;
+  switch (normalizeRotationDeg(page.rotationDeg)) {
+    case 90:
+      // Inverse of (H - y, x)
+      return { x: y, y: H - x };
+    case 180:
+      return { x: W - x, y: H - y };
+    case 270:
+      // Inverse of (y, W - x)
+      return { x: W - y, y: x };
+    case 0:
+    default:
+      return { x, y };
+  }
+}
+
+/** Render canvas size in pixels after rotation + scale. */
+export function getRenderPageSize(page: PageGeometry): { width: number; height: number } {
+  const scale = page.renderScale || DEFAULT_RENDER_SCALE;
+  const rot = normalizeRotationDeg(page.rotationDeg);
+  if (rot === 90 || rot === 270) {
+    return {
+      width: page.docHeight * scale,
+      height: page.docWidth * scale,
+    };
+  }
+  return {
+    width: page.docWidth * scale,
+    height: page.docHeight * scale,
+  };
+}
+
+/** Document points → markup overlay / render-canvas pixels (applies rotationDeg). */
 export function docToRender(point: DocPoint, page: PageGeometry): DocPoint {
   const scale = page.renderScale || DEFAULT_RENDER_SCALE;
-  return { x: point.x * scale, y: point.y * scale };
+  const rotated = rotateDocPointClockwise(point, page);
+  return { x: rotated.x * scale, y: rotated.y * scale };
 }
 
 export function docRectToRender(rect: DocRect, page: PageGeometry): DocRect {
-  const origin = docToRender({ x: rect.x, y: rect.y }, page);
-  const scale = page.renderScale || DEFAULT_RENDER_SCALE;
+  const corners: DocPoint[] = [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x, y: rect.y + rect.height },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+  ].map(corner => docToRender(corner, page));
+
+  const xs = corners.map(c => c.x);
+  const ys = corners.map(c => c.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
   return {
-    x: origin.x,
-    y: origin.y,
-    width: rect.width * scale,
-    height: rect.height * scale,
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
   };
 }
 
-/** Render-canvas pixels → document points. */
+/** Render-canvas pixels → document points (undoes rotationDeg). */
 export function renderToDoc(point: DocPoint, page: PageGeometry): DocPoint {
   const scale = page.renderScale || DEFAULT_RENDER_SCALE;
-  return { x: point.x / scale, y: point.y / scale };
+  if (!Number.isFinite(scale) || scale === 0) {
+    return unrotateRenderPointToDoc(point, page);
+  }
+  const unscaled = { x: point.x / scale, y: point.y / scale };
+  return unrotateRenderPointToDoc(unscaled, page);
 }
 
 export function renderRectToDoc(rect: DocRect, page: PageGeometry): DocRect {
-  const origin = renderToDoc({ x: rect.x, y: rect.y }, page);
-  const scale = page.renderScale || DEFAULT_RENDER_SCALE;
+  const corners: DocPoint[] = [
+    { x: rect.x, y: rect.y },
+    { x: rect.x + rect.width, y: rect.y },
+    { x: rect.x, y: rect.y + rect.height },
+    { x: rect.x + rect.width, y: rect.y + rect.height },
+  ].map(corner => renderToDoc(corner, page));
+
+  const xs = corners.map(c => c.x);
+  const ys = corners.map(c => c.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const maxX = Math.max(...xs);
+  const maxY = Math.max(...ys);
   return {
-    x: origin.x,
-    y: origin.y,
-    width: rect.width / scale,
-    height: rect.height / scale,
+    x: minX,
+    y: minY,
+    width: maxX - minX,
+    height: maxY - minY,
   };
 }
 

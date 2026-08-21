@@ -1,6 +1,6 @@
 import { getPageDimensions as defaultGetPageDimensions } from '@/lib/pdfLoader';
-import { createPageGeometry } from './coords';
-import type { PageGeometry } from './types';
+import { createPageGeometry, normalizeRotationDeg } from './coords';
+import type { PageGeometry, PageRotationDeg } from './types';
 
 export type PdfDocumentLike = {
   getPage: (pageNumber: number) => Promise<unknown>;
@@ -10,6 +10,32 @@ export type PageGeometryLoadResult = {
   geometryByPage: Map<number, PageGeometry>;
   failedPages: Set<number>;
 };
+
+export type PageDimensionsResult = {
+  width: number;
+  height: number;
+  rotationDeg?: PageRotationDeg;
+};
+
+/**
+ * Display viewport size from pdfjs already includes page.rotate.
+ * PageGeometry stores unrotated docWidth/docHeight + rotationDeg.
+ */
+function displayDimsToPageGeometry(
+  pageNumber: number,
+  dims: PageDimensionsResult,
+): PageGeometry {
+  const rotationDeg = normalizeRotationDeg(dims.rotationDeg);
+  // For 90/270, display width/height are swapped relative to unrotated media.
+  const docWidth = (rotationDeg === 90 || rotationDeg === 270) ? dims.height : dims.width;
+  const docHeight = (rotationDeg === 90 || rotationDeg === 270) ? dims.width : dims.height;
+  return createPageGeometry({
+    pageNumber,
+    docWidth,
+    docHeight,
+    rotationDeg,
+  });
+}
 
 /**
  * Resolve real per-page document dimensions.
@@ -25,11 +51,12 @@ export async function loadPageGeometries(options: {
     pageNumber: number;
     width: number;
     height: number;
+    rotationDeg?: PageRotationDeg;
   };
   getPageDimensions?: (
     document: PdfDocumentLike,
     pageNumber: number,
-  ) => Promise<{ width: number; height: number }>;
+  ) => Promise<PageDimensionsResult>;
 }): Promise<PageGeometryLoadResult> {
   const geometryByPage = new Map<number, PageGeometry>();
   const failedPages = new Set<number>();
@@ -55,11 +82,7 @@ export async function loadPageGeometries(options: {
           failedPages.add(pageNumber);
           return;
         }
-        geometryByPage.set(pageNumber, createPageGeometry({
-          pageNumber,
-          docWidth: dims.width,
-          docHeight: dims.height,
-        }));
+        geometryByPage.set(pageNumber, displayDimsToPageGeometry(pageNumber, dims));
       } catch {
         failedPages.add(pageNumber);
       }
@@ -76,11 +99,7 @@ export async function loadPageGeometries(options: {
       && fallback.height > 0;
 
     if (onlyFallbackPage && fallback) {
-      geometryByPage.set(pageNumber, createPageGeometry({
-        pageNumber,
-        docWidth: fallback.width,
-        docHeight: fallback.height,
-      }));
+      geometryByPage.set(pageNumber, displayDimsToPageGeometry(pageNumber, fallback));
       return;
     }
 

@@ -6,6 +6,13 @@ import { useEditorStore } from './editorStore';
 import { useProductStore } from './productStore';
 import type { TextItemWithBounds, TextWord } from '@/lib/pdfLoader';
 import type { LinkedMeasurement } from '@/types/product';
+import type { PageCalibration } from '@/services/ai/placement/types';
+import {
+  pageCalibrationFromManualMeasure,
+  pageCalibrationToRenderPixelsPerUnit,
+  renderPointToDocPoint,
+  resolvePageCalibration,
+} from '@/services/ai/placement/pageCalibration';
 
 const buildMeasurementFromMarkup = (
   markup: CanvasMarkup,
@@ -91,8 +98,14 @@ interface CanvasState {
   
   // Calibration
   calibration: CalibrationState;
-  scale: number; // pixels per unit
+  scale: number; // render-space pixels per unit (legacy document-wide)
   scaleUnit: string;
+  /**
+   * Per-document, per-page PageCalibration (DocPoint pixelsPerUnit).
+   * Uncalibrated pages resolve to method:'none' — never inherit another page's measure
+   * via the legacy document-wide scale/scaleUnit fields.
+   */
+  pageCalibrationsByDoc: Record<string, Record<number, PageCalibration>>;
   
   // Grid and snap
   gridSize: number;
@@ -172,6 +185,10 @@ interface CanvasActions {
   setCalibrationPoint: (point: Point, isFirst: boolean) => void;
   completeCalibration: (knownDistance: number, unit: string) => void;
   cancelCalibration: () => void;
+  setPageCalibration: (pageNumber: number, calibration: PageCalibration) => void;
+  getPageCalibration: (pageNumber: number) => PageCalibration;
+  /** Render-space px/unit + unit for measurement tools on a page (page-specific or legacy). */
+  getScaleForPage: (pageNumber: number) => { scale: number; unit: string };
   
   // Grid/snap actions
   setGridSize: (size: number) => void;
@@ -253,6 +270,7 @@ const initialState: CanvasState = {
   },
   scale: 1,
   scaleUnit: 'ft',
+  pageCalibrationsByDoc: {},
   
   gridSize: 20,
   snapToGrid: false,
@@ -461,9 +479,17 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   }),
   
   removeDocument: (docId) => set((state) => {
-    const { [docId]: removed, ...rest } = state.pdfDocuments;
-    return { 
-      pdfDocuments: rest,
+    const { [docId]: _removedDoc, ...restDocs } = state.pdfDocuments;
+    const { [docId]: _removedCals, ...restCals } = state.pageCalibrationsByDoc;
+    const { [docId]: _removedSnap, ...restSnap } = state.documentSnapDataByPage;
+    const { [docId]: _removedAiCal, ...restAiCal } = state.aiCalibrationSamples;
+    const { [docId]: _removedAiSym, ...restAiSym } = state.aiSymbolMap;
+    return {
+      pdfDocuments: restDocs,
+      pageCalibrationsByDoc: restCals,
+      documentSnapDataByPage: restSnap,
+      aiCalibrationSamples: restAiCal,
+      aiSymbolMap: restAiSym,
       activeDocId: state.activeDocId === docId ? null : state.activeDocId,
     };
   }),
@@ -471,6 +497,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   clearAllDocuments: () => set({
     pdfDocuments: {},
     activeDocId: null,
+    pageCalibrationsByDoc: {},
   }),
   
   setCurrentPage: (page) => set((state) => {
@@ -852,15 +879,42 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     
     if (!point1 || !point2) return;
     
-    const pixelDistance = Math.sqrt(
-      Math.pow(point2.x - point1.x, 2) + Math.pow(point2.y - point1.y, 2)
-    );
-    
-    const scale = pixelDistance / knownDistance;
-    
+    const pageNumber = state.getCurrentPage() || 1;
+    const docId = state.activeDocId;
+
+    // Page calibration is inherently page-specific. Do NOT overwrite document-wide
+    // scale/scaleUnit here — that would leak this page's measure to uncalibrated pages
+    // via getPageCalibration's former legacy fallback.
+    const pageCal = pageCalibrationFromManualMeasure({
+      pageNumber,
+      pointA: renderPointToDocPoint(point1),
+      pointB: renderPointToDocPoint(point2),
+      knownDistance,
+      unit,
+      confidence: 1,
+    });
+
+    if (!docId || pageCal.method === 'none') {
+      set({
+        calibration: {
+          isCalibrating: false,
+          point1: null,
+          point2: null,
+          knownDistance,
+          unit,
+        },
+      });
+      return;
+    }
+
     set({
-      scale,
-      scaleUnit: unit,
+      pageCalibrationsByDoc: {
+        ...state.pageCalibrationsByDoc,
+        [docId]: {
+          ...(state.pageCalibrationsByDoc[docId] || {}),
+          [pageNumber]: pageCal,
+        },
+      },
       calibration: {
         isCalibrating: false,
         point1: null,
@@ -869,6 +923,46 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
         unit,
       },
     });
+  },
+
+  setPageCalibration: (pageNumber, calibration) => {
+    const state = get();
+    const docId = state.activeDocId;
+    if (!docId) return;
+    set({
+      pageCalibrationsByDoc: {
+        ...state.pageCalibrationsByDoc,
+        [docId]: {
+          ...(state.pageCalibrationsByDoc[docId] || {}),
+          [pageNumber]: { ...calibration, pageNumber },
+        },
+      },
+    });
+  },
+
+  getPageCalibration: (pageNumber) => {
+    const state = get();
+    const docId = state.activeDocId;
+    const pageSpecific = docId
+      ? state.pageCalibrationsByDoc[docId]?.[pageNumber]
+      : undefined;
+    // No legacy fallback: another page's manual measure must not become a document default.
+    return resolvePageCalibration({
+      pageNumber,
+      pageSpecific,
+      legacy: null,
+    });
+  },
+
+  getScaleForPage: (pageNumber) => {
+    const state = get();
+    const cal = state.getPageCalibration(pageNumber);
+    const renderScale = pageCalibrationToRenderPixelsPerUnit(cal);
+    if (renderScale != null) {
+      return { scale: renderScale, unit: cal.unit || 'ft' };
+    }
+    // Uncalibrated page — do not inherit last-measure / other-page scale.
+    return { scale: 1, unit: state.scaleUnit };
   },
   
   cancelCalibration: () => set((state) => ({
