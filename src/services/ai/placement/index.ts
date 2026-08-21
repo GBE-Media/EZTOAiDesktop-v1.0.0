@@ -37,6 +37,7 @@ export {
   convertPlacementsToMarkups,
   isUsableVerifiedBox,
   reattachLeaderToVerifiedBox,
+  resolveConvertPageGeometry,
   type PlacementVerificationMeta,
 } from './convertPlacements';
 export {

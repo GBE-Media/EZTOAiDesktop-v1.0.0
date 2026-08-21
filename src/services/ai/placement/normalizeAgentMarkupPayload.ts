@@ -115,6 +115,7 @@ function convertVerifiedBatch(options: {
     BASE_RENDER_SCALE,
     BASE_RENDER_SCALE,
     verificationMetaFromResults(verified),
+    options.geometryByPage,
   );
 }
 
@@ -175,17 +176,7 @@ export async function normalizeAgentMarkupPayload(
       return !!row?.markup;
     });
     if (legacy.length > 0) {
-      const placementMarkups = legacy
-        .map((item) => {
-          const page = item.page || item.markup.page || options.page;
-          return canvasMarkupToPlacementMarkup(page, {
-            ...item.markup,
-            page,
-          } as CanvasMarkup);
-        })
-        .filter((item): item is PlacementMarkup => !!item);
-
-      const pageNumbers = placementMarkups.map(markup => markup.page || options.page);
+      const pageNumbers = legacy.map(item => item.page || item.markup.page || options.page);
       const { geometryByPage, failedPages } = await loadPageGeometries({
         pageNumbers,
         pdfDocument: options.pdfDocument,
@@ -196,6 +187,21 @@ export async function normalizeAgentMarkupPayload(
         },
         getPageDimensions: options.getPageDimensions,
       });
+
+      const placementMarkups = legacy
+        .map((item) => {
+          const page = item.page || item.markup.page || options.page;
+          return canvasMarkupToPlacementMarkup(
+            page,
+            {
+              ...item.markup,
+              page,
+            } as CanvasMarkup,
+            BASE_RENDER_SCALE,
+            geometryByPage.get(page) || null,
+          );
+        })
+        .filter((item): item is PlacementMarkup => !!item);
 
       const verifiable = placementMarkups.filter(
         markup => !failedPages.has(markup.page || options.page),
@@ -425,6 +431,7 @@ export async function verifyPlacementMarkupsWithGeometryGate(options: {
     BASE_RENDER_SCALE,
     BASE_RENDER_SCALE,
     verificationMetaFromResults(verifiedResults),
+    geometryByPage,
   );
 
   const reviewOnly = convertUnverifiableBatch({
