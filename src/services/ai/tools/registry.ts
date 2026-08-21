@@ -6,6 +6,19 @@ import type {
   AssistantToolResult,
 } from './types';
 import { toolRequiresApproval } from './types';
+import {
+  activateEditorToolSchema,
+  approvalPayloadFromDeleteMarkups,
+  approvalPayloadFromLinkCatalog,
+  approvalPayloadFromPlaceMarkups,
+  approvalPayloadFromProposeCallouts,
+  approvalPayloadFromUpdateMarkups,
+  deleteMarkupsSchema,
+  linkCatalogSchema,
+  placeMarkupsSchema,
+  proposeCalloutsSchema,
+  updateMarkupsSchema,
+} from './mutationSchemas';
 
 const boundsSchema = z.object({
   x: z.number(),
@@ -14,43 +27,8 @@ const boundsSchema = z.object({
   height: z.number().positive(),
 }).optional();
 
-const mutationPayloadSchema = z.object({
-  payload: z.unknown(),
-  description: z.string().min(1),
-  preview: z.unknown().optional(),
-});
-type MutationPayload = {
-  payload: unknown;
-  description: string;
-  preview?: unknown;
-};
-
-function coerceMutationInput(raw: unknown): unknown {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    const obj = raw as Record<string, unknown>;
-    if ('payload' in obj) {
-      return {
-        payload: obj.payload,
-        description: String(obj.description || 'Apply proposed document changes'),
-        preview: obj.preview,
-      };
-    }
-    if (obj.markups || obj.callouts || obj.pointers) {
-      return {
-        payload: obj.markups || obj.callouts || obj.pointers,
-        description: String(obj.description || 'Place proposed callouts on the document'),
-        preview: obj.preview,
-      };
-    }
-  }
-  if (Array.isArray(raw)) {
-    return { payload: raw, description: 'Apply proposed document changes' };
-  }
-  return { payload: raw, description: 'Apply proposed document changes' };
-}
-
 export const createApproval = (
-  definition: AssistantToolDefinition,
+  definition: Pick<AssistantToolDefinition, 'id' | 'title' | 'undoable'>,
   context: Pick<AssistantToolContext, 'runId' | 'messageId'>,
   input: { payload: unknown; description: string; preview?: unknown }
 ): ApprovalRequest => ({
@@ -67,29 +45,40 @@ export const createApproval = (
   createdAt: new Date().toISOString(),
 });
 
-function createMutationTool(
-  id: string,
-  title: string,
-  undoable: boolean,
-  risk: AssistantToolDefinition['risk'] = 'write',
-  verifyWith?: string[]
-): AssistantToolDefinition {
-  const definition: AssistantToolDefinition = {
-    id,
-    title,
-    description: `${title} after user approval.`,
-    risk,
+function createTypedMutationTool<TSchema extends z.ZodTypeAny>(options: {
+  id: string;
+  title: string;
+  description: string;
+  undoable: boolean;
+  risk: AssistantToolDefinition['risk'];
+  verifyWith?: string[];
+  schema: TSchema;
+  toApprovalPayload: (input: z.infer<TSchema>) => unknown;
+  defaultDescription: string;
+}): AssistantToolDefinition<TSchema> {
+  const definition: AssistantToolDefinition<TSchema> = {
+    id: options.id,
+    title: options.title,
+    description: options.description,
+    risk: options.risk,
     requiresConfirmation: true,
-    undoable,
-    verifyWith,
-    schema: mutationPayloadSchema,
+    undoable: options.undoable,
+    verifyWith: options.verifyWith,
+    schema: options.schema,
     execute: async (context, rawInput) => {
-      const input = mutationPayloadSchema.parse(coerceMutationInput(rawInput)) as MutationPayload;
-      const approval = createApproval(definition, context, input);
+      const input = options.schema.parse(rawInput) as z.infer<TSchema>;
+      const record = (input && typeof input === 'object')
+        ? input as { description?: string; preview?: unknown }
+        : {};
+      const approval = createApproval(definition, context, {
+        payload: options.toApprovalPayload(input),
+        description: String(record.description || options.defaultDescription),
+        preview: record.preview,
+      });
       context.addApproval(approval);
       return {
         status: 'approval-required',
-        summary: `Waiting for approval: ${input.description}`,
+        summary: `Waiting for approval: ${approval.description}`,
         approval,
       };
     },
@@ -201,12 +190,71 @@ const coreTools: AssistantToolDefinition[] = [
       return { status: 'completed', summary: `Opened page ${input.page}.` };
     },
   },
-  createMutationTool('place_markups', 'Place document markups', true, 'write', ['inspect_markups']),
-  createMutationTool('propose_callouts', 'Propose green callouts', true, 'write', ['inspect_markups']),
-  createMutationTool('update_markups', 'Update document markups', true, 'write', ['inspect_markups']),
-  createMutationTool('delete_markups', 'Delete document markups', true, 'destructive', ['inspect_markups']),
-  createMutationTool('link_catalog', 'Link catalog items', true, 'write', ['inspect_catalog', 'getMaterialCounts']),
-  createMutationTool('activate_editor_tool', 'Activate editor tool', false, 'write'),
+  createTypedMutationTool({
+    id: 'place_markups',
+    title: 'Place document markups',
+    description: 'Place verified document markups (DocPoint coordinates) after user approval.',
+    undoable: true,
+    risk: 'write',
+    verifyWith: ['inspect_markups'],
+    schema: placeMarkupsSchema,
+    defaultDescription: 'Place proposed markups on the document',
+    toApprovalPayload: approvalPayloadFromPlaceMarkups,
+  }),
+  createTypedMutationTool({
+    id: 'propose_callouts',
+    title: 'Propose green callouts',
+    description: 'Propose numbered green callouts (ChatMarkupPointer DocPoints) after user approval.',
+    undoable: true,
+    risk: 'write',
+    verifyWith: ['inspect_markups'],
+    schema: proposeCalloutsSchema,
+    defaultDescription: 'Propose green callouts on the document',
+    toApprovalPayload: approvalPayloadFromProposeCallouts,
+  }),
+  createTypedMutationTool({
+    id: 'update_markups',
+    title: 'Update document markups',
+    description: 'Update existing markups by id after user approval.',
+    undoable: true,
+    risk: 'write',
+    verifyWith: ['inspect_markups'],
+    schema: updateMarkupsSchema,
+    defaultDescription: 'Update document markups',
+    toApprovalPayload: approvalPayloadFromUpdateMarkups,
+  }),
+  createTypedMutationTool({
+    id: 'delete_markups',
+    title: 'Delete document markups',
+    description: 'Delete markups by id after user approval.',
+    undoable: true,
+    risk: 'destructive',
+    verifyWith: ['inspect_markups'],
+    schema: deleteMarkupsSchema,
+    defaultDescription: 'Delete document markups',
+    toApprovalPayload: approvalPayloadFromDeleteMarkups,
+  }),
+  createTypedMutationTool({
+    id: 'link_catalog',
+    title: 'Link catalog items',
+    description: 'Link markups to catalog products after user approval.',
+    undoable: true,
+    risk: 'write',
+    verifyWith: ['inspect_catalog', 'getMaterialCounts'],
+    schema: linkCatalogSchema,
+    defaultDescription: 'Link catalog items to markups',
+    toApprovalPayload: approvalPayloadFromLinkCatalog,
+  }),
+  createTypedMutationTool({
+    id: 'activate_editor_tool',
+    title: 'Activate editor tool',
+    description: 'Activate a canvas editor tool after user approval.',
+    undoable: false,
+    risk: 'write',
+    schema: activateEditorToolSchema,
+    defaultDescription: 'Activate editor tool',
+    toApprovalPayload: (input) => input.tool,
+  }),
 ];
 
 export const assistantToolRegistry = new Map<string, AssistantToolDefinition>(
@@ -245,10 +293,7 @@ export async function executeAssistantTool(
     };
   }
   try {
-    const candidate = tool.requiresConfirmation
-      ? coerceMutationInput(rawInput)
-      : (rawInput ?? {});
-    const input = tool.schema.parse(candidate);
+    const input = tool.schema.parse(rawInput ?? {});
     return await tool.execute(context, input);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -269,8 +314,33 @@ export function proposeAssistantMutation(
   if (!tool || !toolRequiresApproval(tool)) {
     throw new Error(`Tool ${toolId} is not an approval-gated mutation.`);
   }
-  const input = mutationPayloadSchema.parse(coerceMutationInput(rawInput)) as MutationPayload;
-  return createApproval(tool, identity, input);
+  const input = tool.schema.parse(rawInput ?? {});
+  const record = (input && typeof input === 'object')
+    ? input as Record<string, unknown>
+    : {};
+
+  let payload: unknown = input;
+  if (toolId === 'place_markups') {
+    payload = approvalPayloadFromPlaceMarkups(input as z.infer<typeof placeMarkupsSchema>);
+  } else if (toolId === 'propose_callouts') {
+    payload = approvalPayloadFromProposeCallouts(input as z.infer<typeof proposeCalloutsSchema>);
+  } else if (toolId === 'update_markups') {
+    payload = approvalPayloadFromUpdateMarkups(input as z.infer<typeof updateMarkupsSchema>);
+  } else if (toolId === 'delete_markups') {
+    payload = approvalPayloadFromDeleteMarkups(input as z.infer<typeof deleteMarkupsSchema>);
+  } else if (toolId === 'link_catalog') {
+    payload = approvalPayloadFromLinkCatalog(input as z.infer<typeof linkCatalogSchema>);
+  } else if (toolId === 'activate_editor_tool') {
+    payload = (input as z.infer<typeof activateEditorToolSchema>).tool;
+  } else if ('payload' in record) {
+    payload = record.payload;
+  }
+
+  return createApproval(tool, identity, {
+    payload,
+    description: String(record.description || tool.title),
+    preview: record.preview,
+  });
 }
 
 export async function executeApprovedAssistantAction(

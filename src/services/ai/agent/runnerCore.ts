@@ -570,7 +570,11 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         isLoading: true,
       });
     }
-    session.messages.push({ role: 'assistant', content: JSON.stringify(decision) });
+    session.messages.push({
+      role: 'assistant',
+      content: decision.assistantText || '',
+      toolCalls: decision.toolCalls,
+    });
     onStatus?.('running_tools');
     store().upsertRunStep(session.runId, {
       id: `step_tools_${steps}`,

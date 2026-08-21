@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { AssistantToolDefinition } from '../../tools/types';
 import { createApproval } from '../../tools/registry';
+import { applyMaterialCountAdjustmentsSchema } from '../../tools/mutationSchemas';
 
 /**
  * Real takeoff / document tools that wrap live app adapters on AssistantToolContext.
@@ -119,18 +120,18 @@ export function createTakeoffDomainTools(): AssistantToolDefinition[] {
       requiresConfirmation: true,
       undoable: true,
       verifyWith: ['getMaterialCounts'],
-      schema: z.object({
-        payload: z.unknown(),
-        description: z.string().min(1),
-        preview: z.unknown().optional(),
-      }),
+      schema: applyMaterialCountAdjustmentsSchema,
       execute: async (context, input) => {
         const definition = {
           id: 'applyMaterialCountAdjustments',
           title: 'Apply material count adjustments',
           undoable: true,
         } as AssistantToolDefinition;
-        const approval = createApproval(definition, context, input);
+        const approval = createApproval(definition, context, {
+          payload: { adjustments: input.adjustments },
+          description: input.description,
+          preview: input.preview,
+        });
         context.addApproval(approval);
         return {
           status: 'approval-required',

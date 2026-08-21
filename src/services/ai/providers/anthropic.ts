@@ -12,6 +12,7 @@ import type {
   AIModelInfo,
   PipelineStage,
 } from './types';
+import { toAnthropicChatMessages } from './toolMessageAdapters';
 
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -88,15 +89,7 @@ export class AnthropicProvider implements AIProvider {
     }
 
     const model = request.model || 'claude-opus-4-5';
-    
-    // Extract system message if present
-    const systemMessage = request.messages.find(m => m.role === 'system')?.content;
-    const messages = request.messages
-      .filter(m => m.role !== 'system')
-      .map(msg => ({
-        role: msg.role as 'user' | 'assistant',
-        content: msg.content,
-      }));
+    const { system: systemMessage, messages } = toAnthropicChatMessages(request.messages);
 
     const body: Record<string, unknown> = {
       model,
@@ -107,6 +100,16 @@ export class AnthropicProvider implements AIProvider {
 
     if (systemMessage) {
       body.system = systemMessage;
+    }
+    if (request.tools?.length && request.toolChoice !== 'none') {
+      body.tools = request.tools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.inputSchema,
+      }));
+      body.tool_choice = typeof request.toolChoice === 'object'
+        ? { type: 'tool', name: request.toolChoice.name }
+        : { type: 'auto' };
     }
 
     const response = await fetch(ANTHROPIC_API_URL, {
@@ -125,9 +128,21 @@ export class AnthropicProvider implements AIProvider {
     }
 
     const data = await response.json();
+    const contentBlocks = data.content || [];
+    const content = contentBlocks
+      .filter((block: { type?: string }) => block.type === 'text')
+      .map((block: { text?: string }) => block.text || '')
+      .join('\n');
+    const toolCalls = contentBlocks
+      .filter((block: { type?: string }) => block.type === 'tool_use')
+      .map((block: { id: string; name: string; input: unknown }) => ({
+        id: block.id,
+        name: block.name,
+        input: block.input,
+      }));
 
     return {
-      content: data.content?.[0]?.text || '',
+      content,
       model: data.model,
       usage: data.usage ? {
         promptTokens: data.usage.input_tokens,
@@ -135,6 +150,7 @@ export class AnthropicProvider implements AIProvider {
         totalTokens: data.usage.input_tokens + data.usage.output_tokens,
       } : undefined,
       finishReason: data.stop_reason === 'end_turn' ? 'stop' : data.stop_reason,
+      toolCalls,
     };
   }
 
@@ -144,60 +160,7 @@ export class AnthropicProvider implements AIProvider {
     }
 
     const model = request.model || 'claude-opus-4-5';
-    
-    // Extract system message if present
-    const systemMessage = request.messages.find(m => m.role === 'system')?.content;
-    
-    // Build messages with images
-    const messages = request.messages
-      .filter(m => m.role !== 'system')
-      .map(msg => {
-        if (msg.role === 'user' && msg.images && msg.images.length > 0) {
-          // Create content array with images and text
-          const content: Array<{
-            type: string;
-            text?: string;
-            source?: {
-              type: string;
-              media_type: string;
-              data: string;
-            };
-          }> = [];
-          
-          // Add images first (Anthropic prefers images before text)
-          for (const image of msg.images) {
-            // Extract base64 data and media type
-            let mediaType = 'image/png';
-            let base64Data = image;
-            
-            if (image.startsWith('data:')) {
-              const match = image.match(/^data:([^;]+);base64,(.+)$/);
-              if (match) {
-                mediaType = match[1];
-                base64Data = match[2];
-              }
-            }
-            
-            content.push({
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: mediaType,
-                data: base64Data,
-              },
-            });
-          }
-          
-          // Add text content
-          if (msg.content) {
-            content.push({ type: 'text', text: msg.content });
-          }
-          
-          return { role: msg.role as 'user' | 'assistant', content };
-        }
-        
-        return { role: msg.role as 'user' | 'assistant', content: msg.content };
-      });
+    const { system: systemMessage, messages } = toAnthropicChatMessages(request.messages);
 
     const body: Record<string, unknown> = {
       model,
@@ -208,6 +171,16 @@ export class AnthropicProvider implements AIProvider {
 
     if (systemMessage) {
       body.system = systemMessage;
+    }
+    if (request.tools?.length && request.toolChoice !== 'none') {
+      body.tools = request.tools.map(tool => ({
+        name: tool.name,
+        description: tool.description,
+        input_schema: tool.inputSchema,
+      }));
+      body.tool_choice = typeof request.toolChoice === 'object'
+        ? { type: 'tool', name: request.toolChoice.name }
+        : { type: 'auto' };
     }
 
     const response = await fetch(ANTHROPIC_API_URL, {
@@ -226,9 +199,21 @@ export class AnthropicProvider implements AIProvider {
     }
 
     const data = await response.json();
+    const contentBlocks = data.content || [];
+    const content = contentBlocks
+      .filter((block: { type?: string }) => block.type === 'text')
+      .map((block: { text?: string }) => block.text || '')
+      .join('\n');
+    const toolCalls = contentBlocks
+      .filter((block: { type?: string }) => block.type === 'tool_use')
+      .map((block: { id: string; name: string; input: unknown }) => ({
+        id: block.id,
+        name: block.name,
+        input: block.input,
+      }));
 
     return {
-      content: data.content?.[0]?.text || '',
+      content,
       model: data.model,
       usage: data.usage ? {
         promptTokens: data.usage.input_tokens,
@@ -236,6 +221,7 @@ export class AnthropicProvider implements AIProvider {
         totalTokens: data.usage.input_tokens + data.usage.output_tokens,
       } : undefined,
       finishReason: data.stop_reason === 'end_turn' ? 'stop' : data.stop_reason,
+      toolCalls,
     };
   }
 }
