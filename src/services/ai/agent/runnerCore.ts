@@ -10,7 +10,7 @@ import { formatToolResultForPrompt, resolveToolSafety } from './safety';
 import { createJsonToolModelAdapter, type ModelAdapter } from './modelAdapter';
 import { emitAgentTrace } from './trace';
 import { runVerificationTools } from './verification';
-import { toolHistoryToActivity, type AgentActionTaken, type AgentModelMessage, type AgentToolHistoryEntry, type AgentTurnResult } from './types';
+import { toolHistoryToActivity, type AgentActionTaken, type AgentModelMessage, type AgentToolCallRequest, type AgentToolHistoryEntry, type AgentTurnResult } from './types';
 import {
   registerAssistantRunController,
   releaseAssistantRunController,
@@ -35,6 +35,22 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_IMAGE_CHARS = 1_000_000;
 
 const sessions = new Map<string, AgentSessionState>();
+
+/**
+ * Stabilize tool-call ids exactly once per decision so the assistant history
+ * entry and every tool-result message share the same id (blank/whitespace → generated).
+ */
+export function canonicalizeAgentToolCalls(
+  toolCalls: AgentToolCallRequest[],
+  step: number,
+): AgentToolCallRequest[] {
+  return toolCalls.map((call, index) => ({
+    ...call,
+    id: (typeof call.id === 'string' && call.id.trim())
+      ? call.id.trim()
+      : `call_${call.name || 'tool'}_${step}_${index + 1}`,
+  }));
+}
 
 export function getAgentSession(runId: string): AgentSessionState | undefined {
   return sessions.get(runId);
@@ -555,22 +571,18 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       return result;
     }
 
-    // tool_calls
+    // tool_calls — canonicalize ids ONCE; reuse the same list for history + execution.
     if (decision.assistantText) {
       store().updateMessage(session.messageId, {
         content: decision.assistantText,
         isLoading: true,
       });
     }
+    const toolCalls = canonicalizeAgentToolCalls(decision.toolCalls, steps);
     session.messages.push({
       role: 'assistant',
       content: decision.assistantText || '',
-      toolCalls: decision.toolCalls.map((call, index) => ({
-        ...call,
-        id: (typeof call.id === 'string' && call.id.trim())
-          ? call.id.trim()
-          : `call_${call.name || 'tool'}_${steps}_${index + 1}`,
-      })),
+      toolCalls,
     });
     onStatus?.('running_tools');
     store().upsertRunStep(session.runId, {
@@ -582,7 +594,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       startedAt: new Date().toISOString(),
     });
 
-    for (const call of decision.toolCalls) {
+    for (const call of toolCalls) {
       onStatus?.('running_tool', call.name);
       const safety = resolveToolSafety(call.name);
       emitAgentTrace(session.runId, 'tool_selected', { toolId: call.name, mode: safety.mode });

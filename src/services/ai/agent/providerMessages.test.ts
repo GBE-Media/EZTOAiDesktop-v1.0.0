@@ -3,6 +3,7 @@ import type { AgentModelMessage } from './types';
 import type { AIMessage } from '../providers/types';
 import {
   agentMessagesToProviderMessages,
+  assertOpenAIToolBijection,
   assertOpenAIToolPairing,
   repairToolCallPairing,
 } from './providerMessages';
@@ -45,33 +46,10 @@ function historyAfterTwoDifferentTools(): AgentModelMessage[] {
   ];
 }
 
-function assertOpenAIOutboundPairing(messages: AIMessage[]) {
-  const openai = toOpenAIChatMessages(messages);
-  for (let i = 0; i < openai.length; i += 1) {
-    const msg = openai[i];
-    if (msg.role !== 'tool') continue;
-    let found = false;
-    for (let j = i - 1; j >= 0; j -= 1) {
-      const prev = openai[j];
-      if (prev.role === 'tool') continue;
-      if (prev.role === 'assistant' && Array.isArray(prev.tool_calls)) {
-        found = prev.tool_calls.some(call => call.id === msg.tool_call_id);
-      }
-      break;
-    }
-    expect(found, `tool at messages[${i}] missing preceding tool_calls`).toBe(true);
-  }
-  return openai;
-}
-
 describe('providerMessages multi-round tool continuity', () => {
   it('keeps OpenAI + Anthropic pairing valid after analyze_page then getTakeoffSummary', () => {
     const providerMessages = agentMessagesToProviderMessages(historyAfterTwoDifferentTools());
-    expect(assertOpenAIToolPairing(providerMessages).ok).toBe(true);
-    assertOpenAIOutboundPairing([
-      { role: 'system', content: 'sys' },
-      ...providerMessages,
-    ]);
+    expect(assertOpenAIToolBijection(providerMessages).ok).toBe(true);
 
     const anthropic = toAnthropicChatMessages([
       { role: 'system', content: 'sys' },
@@ -83,6 +61,7 @@ describe('providerMessages multi-round tool continuity', () => {
     const useIds = new Set(blocks.filter(b => b.type === 'tool_use').map(b => String(b.id)));
     const resultIds = blocks.filter(b => b.type === 'tool_result').map(b => String(b.tool_use_id));
     expect(resultIds.every(id => useIds.has(id))).toBe(true);
+    expect(useIds.size).toBe(resultIds.length);
   });
 
   it('keeps pairing valid across three sequential tool rounds', () => {
@@ -109,24 +88,65 @@ describe('providerMessages multi-round tool continuity', () => {
     ];
 
     const providerMessages = agentMessagesToProviderMessages(messages);
-    expect(assertOpenAIToolPairing(providerMessages).ok).toBe(true);
-    assertOpenAIOutboundPairing(providerMessages);
+    expect(assertOpenAIToolBijection(providerMessages).ok).toBe(true);
   });
 
-  it('repairs assistant toolCalls when they were dropped before tool results', () => {
+  it('bijection: unmatched call_A on assistant + tool result for call_B synthesizes placeholder for call_A', () => {
+    // Assistant already has call_A (no result). Tool result arrives for different call_B.
+    // Forward-only repair would append call_B and leave call_A unmatched — invalid for OpenAI.
     const broken: AIMessage[] = [
       { role: 'user', content: 'How many?' },
-      { role: 'assistant', content: '' },
-      { role: 'tool', name: 'analyze_page', toolCallId: 'call_analyze_1', content: '{}' },
-      { role: 'assistant', content: '' },
-      { role: 'tool', name: 'getTakeoffSummary', toolCallId: 'call_summary_2', content: '{}' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_A', name: 'analyze_page', input: { page: 1 } }],
+      },
+      { role: 'tool', name: 'getTakeoffSummary', toolCallId: 'call_B', content: '{"ok":true}' },
     ];
 
-    expect(assertOpenAIToolPairing(broken).ok).toBe(false);
+    expect(assertOpenAIToolBijection(broken).ok).toBe(false);
     const repaired = repairToolCallPairing(broken);
+    expect(assertOpenAIToolBijection(repaired).ok).toBe(true);
     expect(assertOpenAIToolPairing(repaired).ok).toBe(true);
-    expect(repaired[1].toolCalls?.[0]?.id).toBe('call_analyze_1');
-    expect(repaired[3].toolCalls?.[0]?.id).toBe('call_summary_2');
+
+    const assistant = repaired.find(m => m.role === 'assistant' && m.toolCalls?.length);
+    const callIds = (assistant?.toolCalls || []).map(c => c.id).sort();
+    expect(callIds).toEqual(['call_A', 'call_B']);
+
+    const toolIds = repaired.filter(m => m.role === 'tool').map(m => m.toolCallId).sort();
+    expect(toolIds).toEqual(['call_A', 'call_B']);
+
+    const placeholder = repaired.find(m => m.role === 'tool' && m.toolCallId === 'call_A');
+    expect(placeholder?.content).toContain('synthesized');
+  });
+
+  it('same tool twice with blank ids gets distinct paired ids (no call_<name>_1 collision)', () => {
+    const messages: AgentModelMessage[] = [
+      { role: 'user', content: 'Analyze two pages' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: '   ', name: 'analyze_page', arguments: { page: 1, scope: 'full' } }],
+      },
+      { role: 'tool', name: 'analyze_page', toolCallId: '', content: '{"page":1}' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: '\t', name: 'analyze_page', arguments: { page: 2, scope: 'full' } }],
+      },
+      { role: 'tool', name: 'analyze_page', toolCallId: '  ', content: '{"page":2}' },
+    ];
+
+    const providerMessages = agentMessagesToProviderMessages(messages);
+    expect(assertOpenAIToolBijection(providerMessages).ok).toBe(true);
+
+    const assistants = providerMessages.filter(m => m.role === 'assistant' && m.toolCalls?.length);
+    const ids = assistants.flatMap(m => (m.toolCalls || []).map(c => c.id));
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+
+    const toolIds = providerMessages.filter(m => m.role === 'tool').map(m => m.toolCallId);
+    expect(toolIds).toEqual(ids);
   });
 
   it('normalizes AgentToolCallRequest.arguments into AIToolCall.input', () => {

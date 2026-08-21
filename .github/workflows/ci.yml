@@ -34,3 +34,6 @@ jobs:
 
       - name: Run full Vitest suite
         run: npm test
+
+      - name: Remind if ai-proxy Edge Function changed
+        run: npm run check:ai-proxy-deploy

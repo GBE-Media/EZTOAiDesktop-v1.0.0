@@ -89,10 +89,12 @@ describe('non-vision multi-round continue (Continue step N)', () => {
     expect(assertOpenAIToolPairing(withoutSystem).ok).toBe(true);
 
     const openai = toOpenAIChatMessages(request.messages);
-    const toolIndexes = openai.map((m, i) => (m.role === 'tool' ? i : -1)).filter(i => i >= 0);
-    expect(toolIndexes).toHaveLength(2);
-    for (const index of toolIndexes) {
-      const tool = openai[index] as { tool_call_id: string };
+    const toolMsgs = openai.filter(m => m.role === 'tool');
+    expect(toolMsgs).toHaveLength(2);
+    for (let index = 0; index < openai.length; index += 1) {
+      const msg = openai[index];
+      if (msg.role !== 'tool') continue;
+      const tool = msg as { tool_call_id: string };
       let found = false;
       for (let j = index - 1; j >= 0; j -= 1) {
         const prev = openai[j];

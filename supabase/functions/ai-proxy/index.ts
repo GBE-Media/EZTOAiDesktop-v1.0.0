@@ -2,6 +2,11 @@
  * AI Proxy Edge Function
  * Proxies AI requests to OpenAI/Anthropic with company API keys
  * Handles authentication, rate limiting, and usage tracking
+ *
+ * IMPORTANT: Changes to this file require running `npm run deploy:ai-proxy`
+ * (or equivalent) to take effect in production. Committing/merging alone
+ * does NOT deploy this Edge Function — the desktop app calls a fixed
+ * already-deployed Supabase Function URL (see src/services/ai/proxyClient.ts).
  */
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
@@ -135,9 +140,12 @@ function toAnthropicMessages(messages: ProxyMessage[]): {
       const blocks: Array<Record<string, unknown>> = [];
       if (msg.content?.trim()) blocks.push({ type: 'text', text: msg.content });
       for (const call of msg.toolCalls) {
-        let input: unknown = call.input ?? {};
-        if (typeof call.input === 'string') {
-          try { input = JSON.parse(call.input); } catch { input = {}; }
+        const rawInput = (call as { input?: unknown; arguments?: unknown }).input
+          ?? (call as { arguments?: unknown }).arguments
+          ?? {};
+        let input: unknown = rawInput;
+        if (typeof rawInput === 'string') {
+          try { input = JSON.parse(rawInput); } catch { input = {}; }
         }
         blocks.push({ type: 'tool_use', id: call.id, name: call.name, input });
       }
