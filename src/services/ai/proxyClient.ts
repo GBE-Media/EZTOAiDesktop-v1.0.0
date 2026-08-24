@@ -52,6 +52,8 @@ export interface RateLimitError {
     currentRequests: number;
     requestLimit: number;
     tier: string;
+    /** e.g. "in the last 24 hours" — optional for older proxies */
+    windowLabel?: string;
   };
 }
 
@@ -126,8 +128,10 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
     // Check for rate limit error
     if (response.status === 429) {
       const rateLimitError = data as RateLimitError;
+      const windowLabel = rateLimitError.details?.windowLabel || 'in the last 24 hours';
+      const tier = rateLimitError.details?.tier ? ` (${rateLimitError.details.tier} tier)` : '';
       throw new ProxyRequestError(
-        `Rate limit exceeded. You've used ${rateLimitError.details?.currentTokens?.toLocaleString() || '?'} of ${rateLimitError.details?.tokenLimit?.toLocaleString() || '?'} tokens this month.`,
+        `Rate limit exceeded${tier}. You've used ${rateLimitError.details?.currentTokens?.toLocaleString() || '?'} of ${rateLimitError.details?.tokenLimit?.toLocaleString() || '?'} tokens ${windowLabel}.`,
         response.status
       );
     }

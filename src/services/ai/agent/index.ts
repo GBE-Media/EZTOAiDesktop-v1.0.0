@@ -61,3 +61,4 @@ export { runVerificationTools } from './verification';
 export { decideRoutingPolicy } from './routing/policy';
 export { runIntake } from './phases/intake';
 export { finalizeAgentTurn } from './phases/finalize';
+export { shouldAttachDocumentEvidence } from './documentEvidence';
