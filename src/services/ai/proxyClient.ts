@@ -10,6 +10,9 @@ import type {
   AIToolCall,
   AIToolDefinition,
 } from './providers/types';
+import { formatRateLimitExceededMessage } from './rateLimitMessage';
+
+export { formatRateLimitExceededMessage } from './rateLimitMessage';
 
 const AI_PROXY_URL = 'https://einpdmanlpadqyqnvccb.supabase.co/functions/v1/ai-proxy';
 
@@ -52,6 +55,8 @@ export interface RateLimitError {
     currentRequests: number;
     requestLimit: number;
     tier: string;
+    /** e.g. "in the last 24 hours" — optional for older proxies */
+    windowLabel?: string;
   };
 }
 
@@ -127,7 +132,7 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
     if (response.status === 429) {
       const rateLimitError = data as RateLimitError;
       throw new ProxyRequestError(
-        `Rate limit exceeded. You've used ${rateLimitError.details?.currentTokens?.toLocaleString() || '?'} of ${rateLimitError.details?.tokenLimit?.toLocaleString() || '?'} tokens this month.`,
+        formatRateLimitExceededMessage(rateLimitError.details),
         response.status
       );
     }

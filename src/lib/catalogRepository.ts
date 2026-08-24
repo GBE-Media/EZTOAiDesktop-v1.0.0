@@ -21,8 +21,9 @@ import type {
 } from '@/types/catalog';
 
 const SUPABASE_URL =
+  // Catalog lives on the same project as external auth / ai-proxy — never fall
+  // back to VITE_SUPABASE_URL (that may point at a different Lovable project).
   import.meta.env.VITE_EXTERNAL_SUPABASE_URL ||
-  import.meta.env.VITE_SUPABASE_URL ||
   'https://einpdmanlpadqyqnvccb.supabase.co';
 const CATALOG_SYNC_URL = `${SUPABASE_URL}/functions/v1/catalog-sync`;
 
@@ -39,18 +40,29 @@ export async function fetchCatalogDelta(
   accessToken: string,
   since: string | null,
 ): Promise<CatalogSyncResponse> {
-  const response = await fetch(CATALOG_SYNC_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(since ? { since } : {}),
-  });
+  let response: Response;
+  try {
+    response = await fetch(CATALOG_SYNC_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(since ? { since } : {}),
+    });
+  } catch (networkError) {
+    const detail = networkError instanceof Error ? networkError.message : String(networkError);
+    throw new Error(
+      `Catalog sync network error (${CATALOG_SYNC_URL}): ${detail}. ` +
+      'Confirm the catalog-sync edge function is deployed on the auth project (einpdmanlpadqyqnvccb).',
+    );
+  }
 
   if (!response.ok) {
     const details = await response.text();
-    throw new Error(`Catalog sync failed (${response.status}): ${details || response.statusText}`);
+    throw new Error(
+      `Catalog sync failed (HTTP ${response.status}) at ${CATALOG_SYNC_URL}: ${details || response.statusText}`,
+    );
   }
 
   return response.json() as Promise<CatalogSyncResponse>;

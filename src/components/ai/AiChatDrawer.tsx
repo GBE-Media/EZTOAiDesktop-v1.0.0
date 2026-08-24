@@ -71,6 +71,7 @@ import {
   resumeTaskAfterClarification,
   startAgentTask,
   startPipelineTask,
+  shouldAttachDocumentEvidence,
 } from '@/services/ai/agent';
 import type { ClarificationAnswerDetail } from './QuestionCard';
 import { AssistantHeader } from './AssistantHeader';
@@ -343,12 +344,16 @@ export function AgentAssistantDrawer() {
       isLoading: false,
       metadata: { trade: store.selectedTrade },
     });
-    addDocumentEvidenceBlock(
-      options.assistantMsgId,
-      activeDocumentRecord?.name,
-      options.pages,
-      options.result.evidence,
-    );
+    if (shouldAttachDocumentEvidence({
+      evidenceSnippets: options.result.evidence,
+    })) {
+      addDocumentEvidenceBlock(
+        options.assistantMsgId,
+        activeDocumentRecord?.name,
+        options.pages,
+        options.result.evidence,
+      );
+    }
 
     if (options.result.placements?.markups.length) {
       const placementMarkups = options.result.placements.markups;
@@ -695,7 +700,9 @@ export function AgentAssistantDrawer() {
         },
       });
 
-      if (activeDocId) {
+      if (activeDocId && shouldAttachDocumentEvidence({
+        toolHistory: agentResult.toolHistory,
+      })) {
         addDocumentEvidenceBlock(assistantMsgId, activeDocumentRecord?.name, [currentPage || 1]);
       }
 

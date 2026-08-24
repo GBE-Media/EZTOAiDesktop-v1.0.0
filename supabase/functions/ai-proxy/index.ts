@@ -186,6 +186,7 @@ interface RateLimitResult {
   token_limit: number;
   request_limit: number;
   tier: string;
+  window_label?: string;
 }
 
 serve(async (req: Request) => {
@@ -259,6 +260,7 @@ serve(async (req: Request) => {
               currentRequests: rateLimit.current_requests,
               requestLimit: rateLimit.request_limit,
               tier: rateLimit.tier,
+              windowLabel: rateLimit.window_label || 'in the last 24 hours',
             },
           }),
           { status: 429, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
