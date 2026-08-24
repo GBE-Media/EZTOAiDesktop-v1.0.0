@@ -1,27 +1,29 @@
 import { describe, expect, it } from 'vitest';
+import { formatRateLimitExceededMessage } from './rateLimitMessage';
 
-/** Mirrors proxyClient rate-limit message formatting for regression coverage. */
-function formatRateLimitMessage(details: {
-  currentTokens?: number;
-  tokenLimit?: number;
-  tier?: string;
-  windowLabel?: string;
-}): string {
-  const windowLabel = details.windowLabel || 'in the last 24 hours';
-  const tier = details.tier ? ` (${details.tier} tier)` : '';
-  return `Rate limit exceeded${tier}. You've used ${details.currentTokens?.toLocaleString() || '?'} of ${details.tokenLimit?.toLocaleString() || '?'} tokens ${windowLabel}.`;
-}
-
-describe('rate limit user-facing message', () => {
+describe('formatRateLimitExceededMessage', () => {
   it('describes a 24-hour window, not a month', () => {
-    const message = formatRateLimitMessage({
+    const message = formatRateLimitExceededMessage({
       currentTokens: 101770,
       tokenLimit: 1000000,
+      currentRequests: 10,
+      requestLimit: 500,
       tier: 'free',
       windowLabel: 'in the last 24 hours',
     });
     expect(message).toContain('in the last 24 hours');
     expect(message).not.toContain('this month');
     expect(message).toContain('free tier');
+  });
+
+  it('defaults window label when proxy omits it', () => {
+    const message = formatRateLimitExceededMessage({
+      currentTokens: 1,
+      tokenLimit: 100,
+      currentRequests: 1,
+      requestLimit: 50,
+      tier: 'pro',
+    });
+    expect(message).toContain('in the last 24 hours');
   });
 });

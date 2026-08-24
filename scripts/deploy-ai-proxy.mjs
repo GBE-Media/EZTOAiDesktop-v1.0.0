@@ -58,7 +58,18 @@ function resolveProjectRef() {
   );
 }
 
+const EXPECTED_PROJECT_REF = 'einpdmanlpadqyqnvccb';
+
 const projectRef = resolveProjectRef();
+if (projectRef !== EXPECTED_PROJECT_REF) {
+  console.error(
+    `[deploy:ai-proxy] Refusing to deploy: resolved project ref "${projectRef}" ` +
+    `does not match the live app project "${EXPECTED_PROJECT_REF}". ` +
+    'Check SUPABASE_PROJECT_REF / proxyClient.ts / supabase/config.toml.',
+  );
+  process.exit(1);
+}
+
 console.log(`[deploy:ai-proxy] Deploying function "ai-proxy" to project "${projectRef}"…`);
 console.log('[deploy:ai-proxy] Reminder: merge alone does NOT update production — this deploy step is required.');
 

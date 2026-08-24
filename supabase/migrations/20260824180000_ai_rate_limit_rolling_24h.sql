@@ -1,9 +1,57 @@
 -- Rolling 24-hour AI rate limits (replaces monthly window from 20260128000001).
--- Limits are applied by summing ai_usage rows with created_at in the last 24 hours.
+-- Limits are applied by summing ai_usage EVENT rows with created_at in the last 24 hours.
 --
--- NOTE: Applying this migration on the live Lovable-managed Supabase project is
--- required for production — merging this file alone does not change the live DB.
+-- NOTE: Applying this migration on the live Lovable-managed Supabase project
+-- (einpdmanlpadqyqnvccb) is required for production — merging this file alone
+-- does not change the live DB.
+--
+-- ============================================================================OVER POLICY (approach A — archive + delete):
+-- The prior schema stored ONE monthly aggregate row per (user, provider, model,
+-- period_start), bumping updated_at on each call while leaving created_at as the
+-- first insert of the month. If we naively SUM(created_at >= now()-24h) against
+-- those rows we would either:
+--   • over-count (a fresh monthly aggregate created today carries a full month
+--     of tokens into the 24h window), or
+--   • under-count (an older aggregate's created_at is >24h ago so recent usage
+--     inside that aggregate is invisible).
+-- Rate limits are not a billing ledger. At cutover we ARCHIVE every existing
+-- ai_usage row into ai_usage_legacy_monthly_archive and DELETE them from
+-- ai_usage so the rolling-24h SUM starts from a clean slate (fresh window for
+-- every user). New upserts append one event row per request.
+--
+-- Verification after apply (should return 0):
+--   SELECT COUNT(*) FROM ai_usage;
+--   SELECT COUNT(*) AS would_leak_into_24h
+--   FROM ai_usage
+--   WHERE created_at >= NOW() - INTERVAL '24 hours';
+-- Archive preserved for audit:
+--   SELECT COUNT(*), SUM(tokens_input + tokens_output)
+--   FROM ai_usage_legacy_monthly_archive;
 
+-- ---------------------------------------------------------------------------
+-- 1) Archive legacy monthly aggregates BEFORE changing functions / constraints
+-- ---------------------------------------------------------------------------
+-- LIKE ... INCLUDING DEFAULTS only (no CONSTRAINTS/INDEXES) so we do not collide
+-- with live ai_usage constraint names on the same database.
+CREATE TABLE IF NOT EXISTS ai_usage_legacy_monthly_archive (
+  LIKE ai_usage INCLUDING DEFAULTS
+);
+
+COMMENT ON TABLE ai_usage_legacy_monthly_archive IS
+  'Frozen copy of pre-rolling-24h monthly aggregate ai_usage rows. Not used by check_ai_rate_limit. Populated once at cutover then left untouched.';
+
+INSERT INTO ai_usage_legacy_monthly_archive
+SELECT * FROM ai_usage
+WHERE NOT EXISTS (
+  SELECT 1 FROM ai_usage_legacy_monthly_archive a WHERE a.id = ai_usage.id
+);
+
+-- Clear live table so rolling SUM cannot see legacy aggregates.
+DELETE FROM ai_usage;
+
+-- ---------------------------------------------------------------------------
+-- 2) Provider + uniqueness changes for event-style rows
+-- ---------------------------------------------------------------------------
 -- Allow lovable gateway as a tracked provider (ai-proxy uses provider='lovable').
 ALTER TABLE ai_usage DROP CONSTRAINT IF EXISTS ai_usage_provider_check;
 ALTER TABLE ai_usage ADD CONSTRAINT ai_usage_provider_check
@@ -17,13 +65,13 @@ DO $$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'ai_rate_limits' AND column_name = 'monthly_token_limit'
+    WHERE table_schema = 'public' AND table_name = 'ai_rate_limits' AND column_name = 'monthly_token_limit'
   ) THEN
     ALTER TABLE ai_rate_limits RENAME COLUMN monthly_token_limit TO token_limit_24h;
   END IF;
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'ai_rate_limits' AND column_name = 'monthly_request_limit'
+    WHERE table_schema = 'public' AND table_name = 'ai_rate_limits' AND column_name = 'monthly_request_limit'
   ) THEN
     ALTER TABLE ai_rate_limits RENAME COLUMN monthly_request_limit TO request_limit_24h;
   END IF;
@@ -44,7 +92,8 @@ CREATE OR REPLACE FUNCTION upsert_ai_usage(
 )
 RETURNS void AS $$
 BEGIN
-  -- Append a usage event; rate limits sum events in the rolling 24h window.
+  -- Append a usage EVENT; rate limits sum events in the rolling 24h window.
+  -- Never update legacy monthly aggregates (those were archived at cutover).
   INSERT INTO ai_usage (user_id, provider, model, tokens_input, tokens_output, request_count, period_start)
   VALUES (p_user_id, p_provider, p_model, p_tokens_input, p_tokens_output, 1, CURRENT_DATE);
 END;
@@ -85,6 +134,8 @@ BEGIN
     v_request_limit := 500;
   END IF;
 
+  -- Only event rows in ai_usage participate. Legacy monthly aggregates live in
+  -- ai_usage_legacy_monthly_archive and are intentionally excluded.
   SELECT
     COALESCE(SUM(u.tokens_input + u.tokens_output), 0),
     COALESCE(SUM(u.request_count), 0)
