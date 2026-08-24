@@ -143,7 +143,7 @@ const coreTools: AssistantToolDefinition[] = [
     title: 'Count page items',
     description:
       'Count or filter fixtures/symbols already detected on a page (by type/name query such as "light", "Type A", "receptacle"). '
-      + 'Uses cached analyze_page results when available; otherwise runs one full-page analysis then counts. '
+      + 'Uses a cached broad (unprompted) full-page analysis when available; otherwise runs one broad analyze_page then filters client-side. '
       + 'Prefer this over repeatedly calling analyze_page for counting questions.',
     risk: 'read',
     requiresConfirmation: false,
@@ -161,6 +161,19 @@ const coreTools: AssistantToolDefinition[] = [
         };
       }
       const output = await context.countPageItems(input);
+      const adapterStatus = (output && typeof output === 'object' && 'status' in output)
+        ? String((output as { status?: unknown }).status)
+        : undefined;
+      if (adapterStatus === 'unavailable' || adapterStatus === 'failed') {
+        const message = (output && typeof output === 'object' && 'message' in output)
+          ? String((output as { message?: unknown }).message || '')
+          : '';
+        return {
+          status: 'failed',
+          summary: message || `count_page_items could not count items on page ${input.page}.`,
+          output,
+        };
+      }
       const total = (output && typeof output === 'object' && 'total' in output)
         ? Number((output as { total?: number }).total) || 0
         : 0;

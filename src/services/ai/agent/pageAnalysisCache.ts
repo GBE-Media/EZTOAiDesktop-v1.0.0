@@ -32,8 +32,13 @@ const CACHE_TTL_MS = 30 * 60 * 1000;
 
 const analyzeByKey = new Map<string, { at: number; value: CachedAnalyzePageResult }>();
 const extractByKey = new Map<string, { at: number; value: CachedExtractPageTextResult }>();
-/** Latest full-page analysis per document+page (for count_page_items / context). */
-const latestFullByDocPage = new Map<string, { at: number; value: CachedAnalyzePageResult; docId: string }>();
+/** Latest broad (unprompted) full-page analysis per document+page+revision. */
+const latestFullByDocPage = new Map<string, {
+  at: number;
+  value: CachedAnalyzePageResult;
+  docId: string;
+  contentRevision: number;
+}>();
 
 function stillFresh(at: number): boolean {
   return Date.now() - at < CACHE_TTL_MS;
@@ -44,6 +49,7 @@ export function buildAnalyzeCacheKey(options: {
   page: number;
   scope: string;
   trade: string;
+  contentRevision: number;
   prompt?: string;
   pageWidth: number;
   pageHeight: number;
@@ -53,6 +59,7 @@ export function buildAnalyzeCacheKey(options: {
   const region = options.regionKey || '';
   return [
     options.docId,
+    `rev${options.contentRevision}`,
     options.page,
     options.scope,
     options.trade,
@@ -66,16 +73,22 @@ export function buildAnalyzeCacheKey(options: {
 export function buildExtractCacheKey(options: {
   docId: string;
   page: number;
+  contentRevision: number;
   pageWidth: number;
   pageHeight: number;
 }): string {
   return [
     options.docId,
+    `rev${options.contentRevision}`,
     'extract',
     options.page,
     Math.round(options.pageWidth),
     Math.round(options.pageHeight),
   ].join('|');
+}
+
+export function latestFullCacheKey(docId: string, page: number, contentRevision: number): string {
+  return `${docId}|rev${contentRevision}|${page}`;
 }
 
 export function regionKeyFromRect(
@@ -104,7 +117,14 @@ export function getCachedAnalyze(key: string): CachedAnalyzePageResult | null {
 export function setCachedAnalyze(
   key: string,
   value: CachedAnalyzePageResult,
-  options: { docId: string; page: number; scope: string },
+  options: {
+    docId: string;
+    page: number;
+    scope: string;
+    contentRevision: number;
+    /** Only broad/unprompted full-page analyses may become the canonical count source. */
+    promoteToLatestFull?: boolean;
+  },
 ): void {
   const stored: CachedAnalyzePageResult = {
     ...value,
@@ -112,12 +132,16 @@ export function setCachedAnalyze(
     cacheNote: undefined,
   };
   analyzeByKey.set(key, { at: Date.now(), value: stored });
-  if (options.scope === 'full') {
-    latestFullByDocPage.set(`${options.docId}|${options.page}`, {
-      at: Date.now(),
-      value: stored,
-      docId: options.docId,
-    });
+  if (options.scope === 'full' && options.promoteToLatestFull) {
+    latestFullByDocPage.set(
+      latestFullCacheKey(options.docId, options.page, options.contentRevision),
+      {
+        at: Date.now(),
+        value: stored,
+        docId: options.docId,
+        contentRevision: options.contentRevision,
+      },
+    );
   }
 }
 
@@ -150,10 +174,11 @@ export function setCachedExtract(key: string, value: CachedExtractPageTextResult
 export function getLatestFullPageAnalysis(
   docId: string,
   page: number,
+  contentRevision: number,
 ): CachedAnalyzePageResult | null {
-  const entry = latestFullByDocPage.get(`${docId}|${page}`);
-  if (!entry || !stillFresh(entry.at)) {
-    if (entry) latestFullByDocPage.delete(`${docId}|${page}`);
+  const entry = latestFullByDocPage.get(latestFullCacheKey(docId, page, contentRevision));
+  if (!entry || !stillFresh(entry.at) || entry.contentRevision !== contentRevision) {
+    if (entry) latestFullByDocPage.delete(latestFullCacheKey(docId, page, contentRevision));
     return null;
   }
   return entry.value;
@@ -222,16 +247,20 @@ export interface PageItemCountResult {
 function itemMatchesQuery(item: DetectedItem, query: string): boolean {
   if (!query) return true;
   const hay = `${item.type || ''} ${item.name || ''}`.toLowerCase();
-  const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const q = query.toLowerCase().trim();
+  if (hay.includes(q)) return true;
+  const tokens = q.split(/\s+/).filter(token => token.length >= 2);
+  if (tokens.length === 0) return hay.includes(q);
   return tokens.every(token => hay.includes(token));
 }
 
 function typeKeyMatchesQuery(typeKey: string, query: string): boolean {
   if (!query) return true;
   const key = typeKey.toLowerCase();
-  const q = query.toLowerCase();
+  const q = query.toLowerCase().trim();
   if (key.includes(q) || q.includes(key)) return true;
-  return q.split(/\s+/).filter(Boolean).some(token => key.includes(token));
+  const tokens = q.split(/\s+/).filter(token => token.length >= 2);
+  return tokens.some(token => key.includes(token));
 }
 
 export function countItemsFromAnalysis(

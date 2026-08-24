@@ -530,14 +530,16 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
     steps += 1;
     onStatus?.('thinking');
 
-    // Near-limit nudge: once each at maxSteps-2 and maxSteps-1 (no spam every step).
-    if (steps === maxSteps - 2 || steps === maxSteps - 1) {
-      const remaining = maxSteps - steps + 1;
+    // Near-limit nudge: soft warning on penultimate step, strong "final now" on last step.
+    if (steps === maxSteps) {
       session.messages.push({
         role: 'user',
-        content: remaining <= 1
-          ? `ROUTER_HINT: This is your last allowed step (${steps}/${maxSteps}). Respond with type "final" summarizing tool results so far. Do NOT call analyze_page again for a page you already analyzed — use typeCounts, items, or count_page_items.`
-          : `ROUTER_HINT: Step budget nearly exhausted (${steps}/${maxSteps}). Prefer finalizing with available tool results. For counting use count_page_items or prior typeCounts — do not re-analyze the same page.`,
+        content: `ROUTER_HINT: This is your last allowed step (${steps}/${maxSteps}). Respond with type "final" summarizing tool results so far. Do NOT call analyze_page again for a page you already analyzed — use typeCounts, items, or count_page_items.`,
+      });
+    } else if (steps === maxSteps - 1) {
+      session.messages.push({
+        role: 'user',
+        content: `ROUTER_HINT: Step budget nearly exhausted (${steps}/${maxSteps}). Prefer finalizing with available tool results. For counting use count_page_items or prior typeCounts — do not re-analyze the same page.`,
       });
     }
 

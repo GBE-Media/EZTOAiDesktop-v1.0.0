@@ -198,6 +198,165 @@ describe('page analysis cache + count_page_items', () => {
     expect(counted.source).toBe('fresh_analysis');
     expect(counted.total).toBeGreaterThan(0);
     expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(1);
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledWith(
+      expect.objectContaining({ userPrompt: undefined }),
+    );
+  });
+
+  it('replacing PDF under the same docId invalidates analyze cache (insert/delete/rotate)', async () => {
+    seedOpenPdf();
+    const context = createAgentToolContext({
+      runId: 'run-invalidate',
+      messageId: 'msg-invalidate',
+      trade: 'electrical',
+      placeMarkups: () => ({ placed: 0 }),
+    });
+
+    await context.analyzePage({ page: 1, scope: 'full' });
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(1);
+    const revAfterLoad = useCanvasStore.getState().pdfDocuments['doc-vision']?.contentRevision;
+    expect(revAfterLoad).toBeGreaterThan(0);
+
+    // Simulate page insert/delete/rotate: updatePdfDocument keeps docId, bumps revision.
+    useCanvasStore.getState().updatePdfDocument(
+      'doc-vision',
+      { _isFakePdf: true, afterMutation: true },
+      3,
+      612,
+      792,
+      new ArrayBuffer(8),
+    );
+    expect(useCanvasStore.getState().pdfDocuments['doc-vision']?.contentRevision).toBe(
+      (revAfterLoad || 0) + 1,
+    );
+    expect(summarizeCachedPageAnalyses('doc-vision')).toBeUndefined();
+
+    await context.analyzePage({ page: 1, scope: 'full' });
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('same docId + unchanged content still hits cache after a successful analyze', async () => {
+    seedOpenPdf();
+    const context = createAgentToolContext({
+      runId: 'run-stable-cache',
+      messageId: 'msg-stable-cache',
+      trade: 'electrical',
+      placeMarkups: () => ({ placed: 0 }),
+    });
+    await context.analyzePage({ page: 1, scope: 'full' });
+    await context.analyzePage({ page: 1, scope: 'full' });
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('second count_page_items for a different type reuses broad cache, not a query-biased manifest', async () => {
+    seedOpenPdf();
+    const context = createAgentToolContext({
+      runId: 'run-count-broad',
+      messageId: 'msg-count-broad',
+      trade: 'electrical',
+      placeMarkups: () => ({ placed: 0 }),
+    });
+
+    const first = await context.countPageItems!({ page: 1, query: 'Type A' }) as {
+      source: string;
+      total: number;
+      allTypeCounts: Record<string, number>;
+    };
+    expect(first.source).toBe('fresh_analysis');
+    expect(first.total).toBe(2);
+    expect(first.allTypeCounts).toMatchObject({ light: 2, receptacle: 1 });
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(1);
+    expect(analyzePageMaximumAccuracyMock.mock.calls[0][0].userPrompt).toBeUndefined();
+
+    // If a second count wrongly re-ran vision (or used a fixtures-only biased cache),
+    // swapping the mock to receptacles-only would change the answer. Cache must ignore this.
+    analyzePageMaximumAccuracyMock.mockResolvedValue({
+      overviewImage: 'data:image/jpeg;base64,IGNORED',
+      textEvidence: {
+        source: 'native',
+        confidence: 1,
+        context: 'SHOULD NOT BE USED',
+        items: [],
+      },
+      analysis: analysisFixture({
+        items: [{
+          id: 'r-only',
+          type: 'receptacle',
+          trade: 'electrical',
+          name: 'Duplex',
+          quantity: 1,
+          location: { x: 1, y: 1 },
+          confidence: 0.9,
+        }],
+        typeCounts: { receptacle: 99 },
+      }),
+    });
+
+    const second = await context.countPageItems!({ page: 1, query: 'receptacle' }) as {
+      source: string;
+      total: number;
+    };
+    expect(second.source).toBe('cache');
+    expect(second.total).toBe(1);
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('prompt-targeted analyze_page is not promoted to latestFull for later counts', async () => {
+    seedOpenPdf();
+    const context = createAgentToolContext({
+      runId: 'run-no-promote',
+      messageId: 'msg-no-promote',
+      trade: 'electrical',
+      placeMarkups: () => ({ placed: 0 }),
+    });
+
+    analyzePageMaximumAccuracyMock.mockResolvedValueOnce({
+      overviewImage: 'ignored',
+      textEvidence: { source: 'native', confidence: 1, context: 'biased', items: [] },
+      analysis: analysisFixture({
+        items: analysisFixture().items.filter(i => i.type === 'light'),
+        typeCounts: { light: 2 },
+      }),
+    });
+
+    await context.analyzePage({
+      page: 1,
+      scope: 'full',
+      prompt: 'find Type A fixtures only',
+    });
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(1);
+
+    analyzePageMaximumAccuracyMock.mockResolvedValueOnce({
+      overviewImage: 'ignored',
+      textEvidence: { source: 'native', confidence: 1, context: 'broad', items: [] },
+      analysis: analysisFixture(),
+    });
+
+    const counted = await context.countPageItems!({ page: 1, query: 'receptacle' }) as {
+      source: string;
+      total: number;
+    };
+    expect(counted.source).toBe('fresh_analysis');
+    expect(counted.total).toBe(1);
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(2);
+    expect(analyzePageMaximumAccuracyMock.mock.calls[1][0].userPrompt).toBeUndefined();
+  });
+
+  it('count_page_items registry propagates unavailable adapter status', async () => {
+    clearPdfDocumentsSafe();
+    const context = createAgentToolContext({
+      runId: 'run-unavailable',
+      messageId: 'msg-unavailable',
+      trade: 'electrical',
+      placeMarkups: () => ({ placed: 0 }),
+    });
+    const result = await executeAssistantTool(
+      'count_page_items',
+      { page: 1, query: 'light' },
+      context,
+    );
+    expect(result.status).toBe('failed');
+    expect(result.output).toMatchObject({ status: 'unavailable' });
   });
 
   it('countItemsFromAnalysis matches fixture-style queries', () => {
@@ -206,7 +365,7 @@ describe('page analysis cache + count_page_items', () => {
     expect(result.matchingTypeCounts).toEqual({ light: 2 });
   });
 
-  it('routing prefers count_page_items for counting requests', () => {
+  it('routing puts count_page_items first for counting requests', () => {
     const intake = runIntake({
       userMessage: 'Yes, please help with counting the lights on the lighting plan',
       userIntent: 'Yes, please help with counting the lights on the lighting plan',
@@ -214,9 +373,73 @@ describe('page analysis cache + count_page_items', () => {
     });
     const decision = decideRoutingPolicy(intake);
     expect(decision.path).toBe('invoke_primary');
+    expect(decision.preferTools).toBe(true);
+    expect(decision.suggestedTools[0]).toBe('count_page_items');
     expect(decision.suggestedTools).toEqual(
       expect.arrayContaining(['count_page_items', 'analyze_page']),
     );
+  });
+
+  it('primary loop ROUTER_HINT for counting leads the model to invoke count_page_items first', async () => {
+    const { runPrimaryAgentLoop, clearAgentSessionMemoryForTests, setAgentSession } = await import('./runnerCore');
+    clearAgentSessionMemoryForTests();
+    seedOpenPdf();
+    const context = createAgentToolContext({
+      runId: 'run-hint-count',
+      messageId: 'msg-hint-count',
+      trade: 'electrical',
+      placeMarkups: () => ({ placed: 0 }),
+    });
+
+    let sawCountTool = false;
+    const model = {
+      complete: vi.fn(async ({ messages }: { messages: Array<{ role: string; content?: string; toolCalls?: unknown[] }> }) => {
+        const hint = [...messages].reverse().find(m =>
+          m.role === 'user' && typeof m.content === 'string' && m.content.includes('ROUTER_HINT'),
+        );
+        if (hint && typeof hint.content === 'string' && hint.content.includes('count_page_items')) {
+          sawCountTool = true;
+          return {
+            type: 'tool_calls' as const,
+            toolCalls: [{
+              id: 'call_count_1',
+              name: 'count_page_items',
+              arguments: { page: 1, query: 'light' },
+            }],
+          };
+        }
+        return {
+          type: 'final' as const,
+          message: 'Counted from tools.',
+          clarifyingQuestions: [],
+        };
+      }),
+    };
+
+    const session = {
+      runId: 'run-hint-count',
+      messageId: 'msg-hint-count',
+      messages: [{ role: 'user' as const, content: 'Count the lights on the lighting plan' }],
+      toolHistory: [],
+      actionsTaken: [],
+      contextText: 'ctx',
+    };
+    setAgentSession(session);
+
+    const result = await runPrimaryAgentLoop({
+      session,
+      toolContext: context,
+      model: model as never,
+      maxSteps: 4,
+      preferTools: true,
+      suggestedTools: ['count_page_items', 'analyze_page', 'getTakeoffSummary'],
+    });
+
+    expect(sawCountTool).toBe(true);
+    expect(result.actionsTaken.some(a => a.toolId === 'count_page_items')).toBe(true);
+    expect(result.actionsTaken.some(a => a.toolId === 'analyze_page')).toBe(false);
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(1);
+    expect(analyzePageMaximumAccuracyMock.mock.calls[0][0].userPrompt).toBeUndefined();
   });
 
   it('max_steps message includes partial analyze findings when available', () => {
@@ -256,3 +479,7 @@ describe('page analysis cache + count_page_items', () => {
     expect(message).toMatch(/light:\s*2/i);
   });
 });
+
+function clearPdfDocumentsSafe() {
+  useCanvasStore.getState().clearAllDocuments();
+}

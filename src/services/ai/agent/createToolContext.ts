@@ -171,6 +171,7 @@ async function defaultAnalyzePage(
     page,
     scope,
     trade: options.trade,
+    contentRevision: pdfData.contentRevision ?? 0,
     prompt,
     pageWidth,
     pageHeight,
@@ -207,7 +208,15 @@ async function defaultAnalyzePage(
         itemCount: result.textEvidence.items.length,
       },
     };
-    setCachedAnalyze(cacheKey, payload, { docId, page, scope });
+    const contentRevision = pdfData.contentRevision ?? 0;
+    const isBroadFullPage = scope === 'full' && !(prompt && prompt.trim());
+    setCachedAnalyze(cacheKey, payload, {
+      docId,
+      page,
+      scope,
+      contentRevision,
+      promoteToLatestFull: isBroadFullPage,
+    });
     return payload;
   } catch (error) {
     if (options.signal?.aborted) {
@@ -272,7 +281,13 @@ async function defaultExtractPageText(
     throw new DOMException('Assistant run cancelled', 'AbortError');
   }
 
-  const cacheKey = buildExtractCacheKey({ docId, page, pageWidth, pageHeight });
+  const cacheKey = buildExtractCacheKey({
+    docId,
+    page,
+    contentRevision: pdfData.contentRevision ?? 0,
+    pageWidth,
+    pageHeight,
+  });
   const cached = getCachedExtract(cacheKey);
   if (cached) {
     return cached;
@@ -346,14 +361,18 @@ async function defaultCountPageItems(
     };
   }
 
-  const cached = getLatestFullPageAnalysis(docId, page);
+  const pdfData = canvas.pdfDocuments[docId];
+  const contentRevision = pdfData?.contentRevision ?? 0;
+  const cached = getLatestFullPageAnalysis(docId, page, contentRevision);
   if (cached?.analysis) {
     return countItemsFromAnalysis(cached.analysis, query, { source: 'cache' });
   }
 
-  // No prior full-page analysis — run once, then count (still one vision pass).
+  // Cache miss: ALWAYS run a broad, unprompted full-page analysis, then filter
+  // client-side. Never steer vision with the count query — that would bias the
+  // canonical latestFull cache toward one item type and undercount later queries.
   const analyzed = await defaultAnalyzePage(
-    { page, scope: 'full', prompt: query || undefined },
+    { page, scope: 'full' },
     options,
   ) as CachedAnalyzePageResult | { status: string; message?: string };
 
