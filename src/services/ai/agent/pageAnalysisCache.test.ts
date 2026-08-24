@@ -7,6 +7,7 @@ import { registerAllAgentTools, resetAgentToolRegistrationForTests } from './too
 import {
   clearPageAnalysisCache,
   countItemsFromAnalysis,
+  hasLatestFullPageAnalysis,
   summarizeCachedPageAnalyses,
 } from './pageAnalysisCache';
 import { buildMaxStepsAssistantMessage } from './runnerCore';
@@ -178,7 +179,8 @@ describe('page analysis cache + count_page_items', () => {
       query: 'light',
     });
     expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(1);
-    expect(summarizeCachedPageAnalyses('doc-vision')).toMatch(/page 1/);
+    const rev = useCanvasStore.getState().pdfDocuments['doc-vision']?.contentRevision;
+    expect(summarizeCachedPageAnalyses('doc-vision', rev)).toMatch(/page 1/);
   });
 
   it('count_page_items runs one analyze when cache is empty then answers', async () => {
@@ -229,10 +231,85 @@ describe('page analysis cache + count_page_items', () => {
     expect(useCanvasStore.getState().pdfDocuments['doc-vision']?.contentRevision).toBe(
       (revAfterLoad || 0) + 1,
     );
-    expect(summarizeCachedPageAnalyses('doc-vision')).toBeUndefined();
+    const newRev = useCanvasStore.getState().pdfDocuments['doc-vision']?.contentRevision;
+    expect(summarizeCachedPageAnalyses('doc-vision', newRev)).toBeUndefined();
 
     await context.analyzePage({ page: 1, scope: 'full' });
     expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('discards in-flight analyze results when document is edited before vision resolves', async () => {
+    seedOpenPdf();
+    const context = createAgentToolContext({
+      runId: 'run-inflight-race',
+      messageId: 'msg-inflight-race',
+      trade: 'electrical',
+      placeMarkups: () => ({ placed: 0 }),
+    });
+
+    const startedRevision = useCanvasStore.getState().pdfDocuments['doc-vision']!.contentRevision;
+    let resolveVision!: (value: unknown) => void;
+    const deferred = new Promise(resolve => {
+      resolveVision = resolve;
+    });
+    analyzePageMaximumAccuracyMock.mockImplementationOnce(() => deferred);
+
+    const inFlight = context.analyzePage({ page: 1, scope: 'full' });
+
+    // Edit while vision is still pending — bumps revision and clears cache.
+    useCanvasStore.getState().updatePdfDocument(
+      'doc-vision',
+      { _isFakePdf: true, afterInFlightEdit: true },
+      3,
+      612,
+      792,
+      new ArrayBuffer(8),
+    );
+    const newRevision = useCanvasStore.getState().pdfDocuments['doc-vision']!.contentRevision;
+    expect(newRevision).toBe(startedRevision + 1);
+
+    resolveVision({
+      overviewImage: 'stale',
+      textEvidence: { source: 'native', confidence: 1, context: 'STALE PRE-EDIT', items: [] },
+      analysis: analysisFixture({
+        items: analysisFixture().items.filter(i => i.type === 'light'),
+        typeCounts: { light: 99 },
+      }),
+    });
+
+    const staleResult = await inFlight as {
+      status: string;
+      discarded?: boolean;
+      analysis?: { typeCounts?: Record<string, number> };
+    };
+    expect(staleResult.status).toBe('unavailable');
+    expect(staleResult.discarded).toBe(true);
+    expect(staleResult.analysis).toBeUndefined();
+
+    // (a) stale result must not become canonical for the NEW revision
+    expect(hasLatestFullPageAnalysis('doc-vision', 1, newRevision)).toBe(false);
+    // nor for the old revision after clear+discard (should not re-poison)
+    expect(hasLatestFullPageAnalysis('doc-vision', 1, startedRevision)).toBe(false);
+
+    // (b) cross-turn summary must not advertise the pre-edit analysis
+    expect(summarizeCachedPageAnalyses('doc-vision', newRevision)).toBeUndefined();
+    expect(summarizeCachedPageAnalyses('doc-vision', startedRevision)).toBeUndefined();
+
+    // (c) subsequent count must run a NEW vision call for the new revision
+    analyzePageMaximumAccuracyMock.mockResolvedValue({
+      overviewImage: 'fresh',
+      textEvidence: { source: 'native', confidence: 1, context: 'POST-EDIT', items: [] },
+      analysis: analysisFixture(),
+    });
+    const counted = await context.countPageItems!({ page: 1, query: 'light' }) as {
+      source: string;
+      total: number;
+    };
+    expect(counted.source).toBe('fresh_analysis');
+    expect(counted.total).toBe(2);
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalledTimes(2);
+    expect(hasLatestFullPageAnalysis('doc-vision', 1, newRevision)).toBe(true);
+    expect(summarizeCachedPageAnalyses('doc-vision', newRevision)).toMatch(/page 1/);
   });
 
   it('same docId + unchanged content still hits cache after a successful analyze', async () => {

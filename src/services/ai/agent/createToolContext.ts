@@ -166,12 +166,13 @@ async function defaultAnalyzePage(
     throw new DOMException('Assistant run cancelled', 'AbortError');
   }
 
+  const startedRevision = pdfData.contentRevision ?? 0;
   const cacheKey = buildAnalyzeCacheKey({
     docId,
     page,
     scope,
     trade: options.trade,
-    contentRevision: pdfData.contentRevision ?? 0,
+    contentRevision: startedRevision,
     prompt,
     pageWidth,
     pageHeight,
@@ -208,13 +209,30 @@ async function defaultAnalyzePage(
         itemCount: result.textEvidence.items.length,
       },
     };
-    const contentRevision = pdfData.contentRevision ?? 0;
+
+    // Post-await revision guard: document may have been edited (insert/delete/rotate)
+    // while vision was in flight. Never cache (or promote) results for a stale revision.
+    const liveRevision = useCanvasStore.getState().pdfDocuments[docId]?.contentRevision ?? 0;
+    if (liveRevision !== startedRevision) {
+      console.debug(
+        '[pageAnalysisCache] discarding analyze_page result: document revision changed during analysis',
+        { docId, page, startedRevision, liveRevision },
+      );
+      return {
+        status: 'unavailable',
+        message: 'Document content changed during analysis; results discarded. Retry analyze_page / count_page_items.',
+        page,
+        scope,
+        discarded: true,
+      };
+    }
+
     const isBroadFullPage = scope === 'full' && !(prompt && prompt.trim());
     setCachedAnalyze(cacheKey, payload, {
       docId,
       page,
       scope,
-      contentRevision,
+      contentRevision: startedRevision,
       promoteToLatestFull: isBroadFullPage,
     });
     return payload;
@@ -281,10 +299,11 @@ async function defaultExtractPageText(
     throw new DOMException('Assistant run cancelled', 'AbortError');
   }
 
+  const startedRevision = pdfData.contentRevision ?? 0;
   const cacheKey = buildExtractCacheKey({
     docId,
     page,
-    contentRevision: pdfData.contentRevision ?? 0,
+    contentRevision: startedRevision,
     pageWidth,
     pageHeight,
   });
@@ -313,6 +332,21 @@ async function defaultExtractPageText(
       // Real bounded text items from native/OCR extraction (no fabricated content).
       items: evidence.items,
     };
+
+    const liveRevision = useCanvasStore.getState().pdfDocuments[docId]?.contentRevision ?? 0;
+    if (liveRevision !== startedRevision) {
+      console.debug(
+        '[pageAnalysisCache] discarding extract_page_text result: document revision changed during extraction',
+        { docId, page, startedRevision, liveRevision },
+      );
+      return {
+        status: 'unavailable',
+        message: 'Document content changed during text extraction; results discarded. Retry extract_page_text.',
+        page,
+        discarded: true,
+      };
+    }
+
     setCachedExtract(cacheKey, payload);
     return payload;
   } catch (error) {

@@ -643,7 +643,10 @@ export function AgentAssistantDrawer() {
         catalogSummary,
         materialCountsSummary,
         takeoffSummary: markupsSummary,
-        pageAnalysisSummary: summarizeCachedPageAnalyses(activeDocId),
+        pageAnalysisSummary: summarizeCachedPageAnalyses(
+          activeDocId,
+          activeDocId ? useCanvasStore.getState().pdfDocuments[activeDocId]?.contentRevision : undefined,
+        ),
       });
 
       const toolContext = createEditorToolContext(runId, assistantMsgId, runSignal);
@@ -665,7 +668,10 @@ export function AgentAssistantDrawer() {
         catalogSummary,
         materialCountsSummary,
         takeoffSummary: markupsSummary,
-        pageAnalysisSummary: summarizeCachedPageAnalyses(activeDocId),
+        pageAnalysisSummary: summarizeCachedPageAnalyses(
+          activeDocId,
+          activeDocId ? useCanvasStore.getState().pdfDocuments[activeDocId]?.contentRevision : undefined,
+        ),
         onStatus: (status, detail) => {
           if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
           const busy = status === 'thinking'

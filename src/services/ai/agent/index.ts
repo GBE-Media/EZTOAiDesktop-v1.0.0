@@ -65,5 +65,6 @@ export { shouldAttachDocumentEvidence } from './documentEvidence';
 export {
   clearPageAnalysisCache,
   summarizeCachedPageAnalyses,
+  hasLatestFullPageAnalysis,
 } from './pageAnalysisCache';
 export { DEFAULT_MAX_AGENT_STEPS, buildMaxStepsAssistantMessage } from './runnerCore';

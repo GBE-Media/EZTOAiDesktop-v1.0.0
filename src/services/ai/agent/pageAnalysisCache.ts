@@ -185,11 +185,17 @@ export function getLatestFullPageAnalysis(
 }
 
 /** Compact summary for agent context so follow-up turns know analysis already exists. */
-export function summarizeCachedPageAnalyses(docId: string | null | undefined): string | undefined {
+export function summarizeCachedPageAnalyses(
+  docId: string | null | undefined,
+  contentRevision?: number | null,
+): string | undefined {
   if (!docId) return undefined;
+  if (contentRevision == null || !Number.isFinite(contentRevision)) return undefined;
   const lines: string[] = [];
-  for (const [key, entry] of latestFullByDocPage) {
+  for (const [, entry] of latestFullByDocPage) {
     if (!stillFresh(entry.at) || entry.docId !== docId) continue;
+    // Never present older-revision analyses as "already analyzed" for the current doc.
+    if (entry.contentRevision !== contentRevision) continue;
     const page = entry.value.page;
     const counts = entry.value.analysis.typeCounts || {};
     const countParts = Object.entries(counts)
@@ -204,6 +210,15 @@ export function summarizeCachedPageAnalyses(docId: string | null | undefined): s
   }
   if (lines.length === 0) return undefined;
   return lines.sort().join('\n');
+}
+
+/** Test/debug helper: whether a canonical latestFull entry exists for doc+page+revision. */
+export function hasLatestFullPageAnalysis(
+  docId: string,
+  page: number,
+  contentRevision: number,
+): boolean {
+  return getLatestFullPageAnalysis(docId, page, contentRevision) != null;
 }
 
 export function clearPageAnalysisCache(docId?: string): void {

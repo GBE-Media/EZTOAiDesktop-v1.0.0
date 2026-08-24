@@ -1,4 +1,5 @@
 import { useAIChatStore } from '@/store/aiChatStore';
+import { useCanvasStore } from '@/store/canvasStore';
 import type { AssistantToolContext } from '../../tools/types';
 import type { TradeType } from '../../providers/types';
 import { createJsonToolModelAdapter, type ModelAdapter } from '../modelAdapter';
@@ -106,7 +107,12 @@ export async function runMultiModelTurn(options: MultiModelRunOptions): Promise<
       materialCountsSummary: options.materialCountsSummary,
       takeoffSummary: options.takeoffSummary,
       pageAnalysisSummary: options.pageAnalysisSummary
-        ?? summarizeCachedPageAnalyses(options.documentId),
+        ?? summarizeCachedPageAnalyses(
+          options.documentId,
+          options.documentId
+            ? useCanvasStore.getState().pdfDocuments[options.documentId]?.contentRevision
+            : undefined,
+        ),
       hasImage: Boolean(options.imageBase64),
     });
     // Prefer richer UI-supplied context text when provided
