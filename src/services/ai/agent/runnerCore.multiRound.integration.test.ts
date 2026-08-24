@@ -106,6 +106,16 @@ describe('canonicalizeAgentToolCalls', () => {
     expect(canonical[0].id).toBe('call_analyze_page_1_1');
     expect(canonical[0].id.trim().length).toBeGreaterThan(0);
   });
+
+  it('de-collides duplicate explicit ids within one decision (keeps first, renames rest)', () => {
+    const canonical = canonicalizeAgentToolCalls([
+      { id: 'call_abc', name: 'analyze_page', arguments: { page: 1, scope: 'full' } },
+      { id: 'call_abc', name: 'getTakeoffSummary', arguments: {} },
+    ], 1);
+    expect(canonical[0].id).toBe('call_abc');
+    expect(canonical[1].id).toBe('call_abc__2');
+    expect(canonical[0].id).not.toBe(canonical[1].id);
+  });
 });
 
 describe('runnerCore multi-round tool continuity (real loop)', () => {
@@ -285,5 +295,65 @@ describe('runnerCore multi-round tool continuity (real loop)', () => {
 
     const secondRequest = completeForRole.mock.calls[1][1] as { messages: AIMessage[] };
     assertOutboundBijection(secondRequest.messages);
+  });
+
+  it('duplicate explicit ids in one decision are de-collided so both tool results survive', async () => {
+    const runId = 'run-dup-ids';
+    const messageId = `msg-${runId}`;
+    seedStore(runId, messageId);
+    clearAgentSession(runId);
+
+    const session: AgentSessionState = {
+      runId,
+      messageId,
+      messages: [{ role: 'user', content: 'How many fixtures?' }],
+      toolHistory: [],
+      actionsTaken: [],
+      contextText: 'ctx',
+    };
+    setAgentSession(session);
+
+    // Simulate JSON/free-form fallback emitting two different tools with the same id.
+    completeForRole
+      .mockResolvedValueOnce({
+        content: '',
+        model: 'gpt-4o',
+        toolCalls: [
+          { id: 'call_abc', name: 'analyze_page', input: { page: 1, scope: 'full' } },
+          { id: 'call_abc', name: 'getTakeoffSummary', input: {} },
+        ],
+      })
+      .mockResolvedValueOnce({
+        content: JSON.stringify({ type: 'final', message: '12 fixtures.' }),
+        model: 'gpt-4o',
+        toolCalls: [],
+      });
+
+    const result = await runPrimaryAgentLoop({
+      session,
+      toolContext: toolContext(runId, messageId),
+      model: createJsonToolModelAdapter('primary'),
+      maxSteps: 8,
+    });
+
+    expect(result.finalStatus).toBe('completed');
+
+    const assistant = session.messages.find(m => m.role === 'assistant' && m.toolCalls?.length);
+    const callIds = (assistant?.toolCalls || []).map(c => c.id);
+    expect(callIds).toHaveLength(2);
+    expect(new Set(callIds).size).toBe(2);
+    expect(callIds[0]).toBe('call_abc');
+    expect(callIds[1]).toBe('call_abc__2');
+
+    const tools = session.messages.filter(m => m.role === 'tool');
+    expect(tools).toHaveLength(2);
+    expect(tools.map(t => t.toolCallId).sort()).toEqual([...callIds].sort());
+    expect(tools.map(t => t.name).sort()).toEqual(['analyze_page', 'getTakeoffSummary']);
+
+    const finalRequest = completeForRole.mock.calls[1][1] as { messages: AIMessage[] };
+    assertOutboundBijection(finalRequest.messages);
+    const outboundTools = finalRequest.messages.filter(m => m.role === 'tool');
+    expect(outboundTools).toHaveLength(2);
+    expect(new Set(outboundTools.map(t => t.toolCallId)).size).toBe(2);
   });
 });

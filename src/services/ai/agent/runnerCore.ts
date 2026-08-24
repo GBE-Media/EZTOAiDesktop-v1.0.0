@@ -38,18 +38,39 @@ const sessions = new Map<string, AgentSessionState>();
 
 /**
  * Stabilize tool-call ids exactly once per decision so the assistant history
- * entry and every tool-result message share the same id (blank/whitespace → generated).
+ * entry and every tool-result message share the same id.
+ * - Blank/whitespace → deterministic fallback
+ * - Duplicate non-blank ids within the same batch (common on JSON/free-form
+ *   fallback) → keep the first occurrence; reassign later collisions so both
+ *   tools execute and both results survive (dedupeToolResultsKeepLast must not
+ *   collapse two different executions into one).
+ *
+ * Scope is one decision/batch only. Across sequential rounds, the same id on
+ * different assistant messages is valid for OpenAI (pairing is to the nearest
+ * preceding assistant). Cross-round uniqueness is not required here; history
+ * mapping must preserve stored ids as-is.
  */
 export function canonicalizeAgentToolCalls(
   toolCalls: AgentToolCallRequest[],
   step: number,
 ): AgentToolCallRequest[] {
-  return toolCalls.map((call, index) => ({
-    ...call,
-    id: (typeof call.id === 'string' && call.id.trim())
-      ? call.id.trim()
-      : `call_${call.name || 'tool'}_${step}_${index + 1}`,
-  }));
+  const used = new Set<string>();
+  return toolCalls.map((call, index) => {
+    const trimmed = typeof call.id === 'string' ? call.id.trim() : '';
+    let id = trimmed || `call_${call.name || 'tool'}_${step}_${index + 1}`;
+    if (used.has(id)) {
+      // Collision with an earlier call in this batch — mint a unique id.
+      let suffix = 2;
+      let candidate = `${id}__${suffix}`;
+      while (used.has(candidate)) {
+        suffix += 1;
+        candidate = `${id}__${suffix}`;
+      }
+      id = candidate;
+    }
+    used.add(id);
+    return { ...call, id };
+  });
 }
 
 export function getAgentSession(runId: string): AgentSessionState | undefined {

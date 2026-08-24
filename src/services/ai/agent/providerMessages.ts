@@ -292,7 +292,11 @@ function normalizeToolCalls(
   return raw.map((call, index) => {
     const record = call as AgentToolCallRequest & AIToolCall & { arguments?: unknown; input?: unknown };
     const name = String(record.name || `tool_${index + 1}`);
-    const id = ids.allocateUnique(typeof record.id === 'string' ? record.id : undefined);
+    // Preserve non-blank ids already stored on the session (may repeat across
+    // sequential rounds). Only allocate for blank/missing — within-batch
+    // collisions are resolved earlier by canonicalizeAgentToolCalls.
+    const trimmed = typeof record.id === 'string' ? record.id.trim() : '';
+    const id = trimmed ? ids.keep(trimmed) : ids.allocate();
     const input = record.input != null
       ? record.input
       : (record.arguments != null ? record.arguments : {});
