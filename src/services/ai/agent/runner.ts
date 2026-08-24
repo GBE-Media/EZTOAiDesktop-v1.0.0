@@ -45,6 +45,7 @@ export interface RunAgentTurnOptions {
   catalogSummary?: string;
   materialCountsSummary?: string;
   takeoffSummary?: string;
+  pageAnalysisSummary?: string;
 }
 
 export async function runAgentTurn(options: RunAgentTurnOptions): Promise<AgentTurnResult> {
@@ -67,5 +68,6 @@ export async function runAgentTurn(options: RunAgentTurnOptions): Promise<AgentT
     catalogSummary: options.catalogSummary,
     materialCountsSummary: options.materialCountsSummary,
     takeoffSummary: options.takeoffSummary,
+    pageAnalysisSummary: options.pageAnalysisSummary,
   });
 }

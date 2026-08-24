@@ -39,6 +39,21 @@ export function decideRoutingPolicy(intake: IntakeResult): RoutingDecision & { n
     });
   }
 
+  // Counting / tally questions: prefer count_page_items over blind re-analysis.
+  if (/\b(count\w*|how many|tally|quantit(?:y|ies) of)\b/i.test(normalizedMessage)) {
+    return base({
+      path: 'invoke_primary',
+      taskType: 'read_context',
+      complexity: 'medium',
+      risk: 'low',
+      preferTools: true,
+      requireVerifier: false,
+      reason: 'Counting request; use count_page_items (and analyze_page only if needed once)',
+      suggestedTools: ['count_page_items', 'analyze_page', 'getTakeoffSummary'],
+      needsLlmRouter: false,
+    });
+  }
+
   if (taskType === 'simple_qa' && risk === 'low') {
     return base({
       path: 'answer_directly',

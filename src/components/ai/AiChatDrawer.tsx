@@ -72,6 +72,7 @@ import {
   startAgentTask,
   startPipelineTask,
   shouldAttachDocumentEvidence,
+  summarizeCachedPageAnalyses,
 } from '@/services/ai/agent';
 import type { ClarificationAnswerDetail } from './QuestionCard';
 import { AssistantHeader } from './AssistantHeader';
@@ -642,6 +643,7 @@ export function AgentAssistantDrawer() {
         catalogSummary,
         materialCountsSummary,
         takeoffSummary: markupsSummary,
+        pageAnalysisSummary: summarizeCachedPageAnalyses(activeDocId),
       });
 
       const toolContext = createEditorToolContext(runId, assistantMsgId, runSignal);
@@ -663,6 +665,7 @@ export function AgentAssistantDrawer() {
         catalogSummary,
         materialCountsSummary,
         takeoffSummary: markupsSummary,
+        pageAnalysisSummary: summarizeCachedPageAnalyses(activeDocId),
         onStatus: (status, detail) => {
           if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
           const busy = status === 'thinking'

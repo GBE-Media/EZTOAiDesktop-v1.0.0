@@ -15,6 +15,8 @@ export interface AgentContextInput {
   materialCountsSummary?: string;
   catalogSummary?: string;
   markupsSummary?: string;
+  /** Cached analyze_page typeCounts / detection summaries for open document. */
+  pageAnalysisSummary?: string;
   permissions?: string[];
 }
 
@@ -52,6 +54,7 @@ export function buildAgentContext(input: AgentContextInput): {
     materialCountsSummary: truncate(input.materialCountsSummary, 1_500),
     catalogSummary: truncate(input.catalogSummary, 2_000),
     markupsSummary: truncate(input.markupsSummary, 2_000),
+    pageAnalysisSummary: truncate(input.pageAnalysisSummary, 2_000),
     recentTurns: recent,
   };
 
@@ -69,6 +72,9 @@ export function buildAgentContext(input: AgentContextInput): {
     input.takeoffSummary ? `\n### Takeoff\n${truncate(input.takeoffSummary, 2_500)}` : null,
     input.materialCountsSummary ? `\n### Material counts\n${truncate(input.materialCountsSummary, 1_500)}` : null,
     input.catalogSummary ? `\n### Catalog (truncated)\n${truncate(input.catalogSummary, 2_000)}` : null,
+    input.pageAnalysisSummary
+      ? `\n### Cached page analysis (already run this session — do not re-analyze these pages)\n${truncate(input.pageAnalysisSummary, 2_000)}`
+      : null,
     recent.length
       ? `\n### Recent conversation\n${recent.map(t => `${t.role}: ${t.content}`).join('\n')}`
       : null,

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useCanvasStore } from '@/store/canvasStore';
 import { createAgentToolContext } from './createToolContext';
 import { executeAssistantTool } from '../tools/registry';
+import { clearPageAnalysisCache } from './pageAnalysisCache';
 
 const analyzePageMaximumAccuracyMock = vi.hoisted(() => vi.fn());
 const extractPageTextEvidenceMock = vi.hoisted(() => vi.fn());
@@ -56,6 +57,7 @@ describe('createAgentToolContext vision defaults (Phase 3)', () => {
   beforeEach(() => {
     analyzePageMaximumAccuracyMock.mockReset();
     extractPageTextEvidenceMock.mockReset();
+    clearPageAnalysisCache();
     clearPdf();
 
     analyzePageMaximumAccuracyMock.mockResolvedValue({
@@ -108,6 +110,7 @@ describe('createAgentToolContext vision defaults (Phase 3)', () => {
 
     for (const [index, context] of contexts.entries()) {
       analyzePageMaximumAccuracyMock.mockClear();
+      clearPageAnalysisCache();
       const output = await context.analyzePage({ page: 2, scope: 'full', prompt: 'count receptacles' }) as {
         status: string;
         analysis?: { page: number; typeCounts?: Record<string, number> };

@@ -50,7 +50,7 @@ export function runIntake(input: IntakeInput): IntakeResult {
     // Location / “show me where” needs tools + canvas focus — not answer_directly.
     preliminaryTaskType = 'read_context';
     preliminaryRisk = 'low';
-  } else if (/\b(count|material|takeoff|markup|page|document|project|summary)\b/.test(lower)) {
+  } else if (/\b(count\w*|material|takeoff|markup|page|document|project|summary)\b/.test(lower)) {
     preliminaryTaskType = 'read_context';
     preliminaryRisk = 'low';
   } else if (normalizedMessage.length < 80 && !/\b(estimate|takeoff|compliance)\b/.test(lower)) {
