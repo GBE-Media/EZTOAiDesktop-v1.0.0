@@ -1,4 +1,5 @@
 import { useAIChatStore } from '@/store/aiChatStore';
+import { useCanvasStore } from '@/store/canvasStore';
 import type { AssistantToolContext } from '../../tools/types';
 import type { TradeType } from '../../providers/types';
 import { createJsonToolModelAdapter, type ModelAdapter } from '../modelAdapter';
@@ -29,6 +30,8 @@ import {
   emitClarificationQuestion,
   labelForAgentStatus,
 } from '../clarification';
+import { summarizeCachedPageAnalyses } from '../pageAnalysisCache';
+import { DEFAULT_MAX_AGENT_STEPS } from '../runnerCore';
 
 // re-export session type for consumers
 export type { AgentSessionState };
@@ -50,6 +53,7 @@ export interface MultiModelRunOptions {
   catalogSummary?: string;
   materialCountsSummary?: string;
   takeoffSummary?: string;
+  pageAnalysisSummary?: string;
   maxSteps?: number;
   onStatus?: (status: AgentTurnResult['status'], detail?: string) => void;
 }
@@ -102,6 +106,13 @@ export async function runMultiModelTurn(options: MultiModelRunOptions): Promise<
       catalogSummary: options.catalogSummary,
       materialCountsSummary: options.materialCountsSummary,
       takeoffSummary: options.takeoffSummary,
+      pageAnalysisSummary: options.pageAnalysisSummary
+        ?? summarizeCachedPageAnalyses(
+          options.documentId,
+          options.documentId
+            ? useCanvasStore.getState().pdfDocuments[options.documentId]?.contentRevision
+            : undefined,
+        ),
       hasImage: Boolean(options.imageBase64),
     });
     // Prefer richer UI-supplied context text when provided
@@ -185,7 +196,7 @@ export async function runMultiModelTurn(options: MultiModelRunOptions): Promise<
         session,
         toolContext,
         model: createRoleAdapter('primary', modelsUsed),
-        maxSteps: Math.min(options.maxSteps ?? 8, 3),
+        maxSteps: Math.min(options.maxSteps ?? DEFAULT_MAX_AGENT_STEPS, 3),
         onStatus: options.onStatus,
         answerOnlyHint: true,
       });
@@ -207,9 +218,10 @@ export async function runMultiModelTurn(options: MultiModelRunOptions): Promise<
       session,
       toolContext,
       model: createRoleAdapter(primaryRole, modelsUsed),
-      maxSteps: options.maxSteps ?? 8,
+      maxSteps: options.maxSteps ?? DEFAULT_MAX_AGENT_STEPS,
       onStatus: options.onStatus,
       preferTools: decision.preferTools,
+      suggestedTools: decision.suggestedTools,
     });
 
     if (primaryResult.status === 'needs_approval' || primaryResult.status === 'needs_clarification') {

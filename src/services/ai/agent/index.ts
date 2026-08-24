@@ -62,3 +62,9 @@ export { decideRoutingPolicy } from './routing/policy';
 export { runIntake } from './phases/intake';
 export { finalizeAgentTurn } from './phases/finalize';
 export { shouldAttachDocumentEvidence } from './documentEvidence';
+export {
+  clearPageAnalysisCache,
+  summarizeCachedPageAnalyses,
+  hasLatestFullPageAnalysis,
+} from './pageAnalysisCache';
+export { DEFAULT_MAX_AGENT_STEPS, buildMaxStepsAssistantMessage } from './runnerCore';

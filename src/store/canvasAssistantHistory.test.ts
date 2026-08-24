@@ -46,6 +46,7 @@ describe('assistant batch history', () => {
           textWordsByPage: {},
           ocrStatus: 'none',
           ocrProgress: 0,
+          contentRevision: 1,
         },
       },
     }));

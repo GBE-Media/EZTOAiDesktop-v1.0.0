@@ -14,6 +14,8 @@ export interface AssistantToolContext {
   getDocumentContext: () => unknown;
   analyzePage: (input: unknown) => Promise<unknown>;
   extractPageText: (input: unknown) => Promise<unknown>;
+  /** Count/filter detections from cached (or fresh) page analysis. */
+  countPageItems?: (input: unknown) => Promise<unknown>;
   searchDocument: (query: string) => Promise<EvidenceCitation[]>;
   inspectCatalog: () => unknown;
   inspectMarkups: () => unknown;

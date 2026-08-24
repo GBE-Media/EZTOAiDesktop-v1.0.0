@@ -22,6 +22,7 @@ describe('canvasStore page calibration isolation', () => {
           textWordsByPage: {},
           ocrStatus: 'none',
           ocrProgress: 0,
+          contentRevision: 1,
         },
       },
       pageCalibrationsByDoc: {},

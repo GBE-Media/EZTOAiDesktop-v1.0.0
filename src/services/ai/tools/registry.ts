@@ -106,7 +106,10 @@ const coreTools: AssistantToolDefinition[] = [
     id: 'analyze_page',
     title: 'Analyze page',
     description:
-      "Run maximum-accuracy analysis on a document page. scope must be exactly one of: 'full', 'viewport', or 'selection' (use 'full' for the entire page — never 'full page').",
+      "Run maximum-accuracy vision analysis on a document page (detections, typeCounts, locations). "
+      + "scope must be exactly one of: 'full', 'viewport', or 'selection' (use 'full' for the entire page — never 'full page'). "
+      + 'Expensive — do not re-call for the same page/scope if you already have results (cached responses set cached:true). '
+      + 'For "how many / count X" questions prefer count_page_items after one analysis.',
     risk: 'read',
     requiresConfirmation: false,
     undoable: false,
@@ -120,7 +123,9 @@ const coreTools: AssistantToolDefinition[] = [
   {
     id: 'extract_page_text',
     title: 'Extract page text',
-    description: 'Extract native PDF text-layer content, falling back to OCR when the page is scanned.',
+    description:
+      'Extract native PDF text-layer content, falling back to OCR when the page is scanned. '
+      + 'Results are cached per page this session; re-calls return cached text (cached:true) — do not re-extract the same page unnecessarily.',
     risk: 'read',
     requiresConfirmation: false,
     undoable: false,
@@ -132,6 +137,52 @@ const coreTools: AssistantToolDefinition[] = [
       summary: `Extracted text from page ${input.page}.`,
       output: await context.extractPageText(input),
     }),
+  },
+  {
+    id: 'count_page_items',
+    title: 'Count page items',
+    description:
+      'Count or filter fixtures/symbols already detected on a page (by type/name query such as "light", "Type A", "receptacle"). '
+      + 'Uses a cached broad (unprompted) full-page analysis when available; otherwise runs one broad analyze_page then filters client-side. '
+      + 'Prefer this over repeatedly calling analyze_page for counting questions.',
+    risk: 'read',
+    requiresConfirmation: false,
+    undoable: false,
+    schema: z.object({
+      page: z.number().int().positive(),
+      query: z.string().min(1).describe('Fixture/symbol type or name to count, e.g. "light" or "Type A"'),
+    }),
+    execute: async (context, input) => {
+      if (!context.countPageItems) {
+        return {
+          status: 'failed',
+          summary: 'count_page_items adapter is not wired.',
+          output: { status: 'unavailable', message: 'count_page_items adapter missing' },
+        };
+      }
+      const output = await context.countPageItems(input);
+      const adapterStatus = (output && typeof output === 'object' && 'status' in output)
+        ? String((output as { status?: unknown }).status)
+        : undefined;
+      if (adapterStatus === 'unavailable' || adapterStatus === 'failed') {
+        const message = (output && typeof output === 'object' && 'message' in output)
+          ? String((output as { message?: unknown }).message || '')
+          : '';
+        return {
+          status: 'failed',
+          summary: message || `count_page_items could not count items on page ${input.page}.`,
+          output,
+        };
+      }
+      const total = (output && typeof output === 'object' && 'total' in output)
+        ? Number((output as { total?: number }).total) || 0
+        : 0;
+      return {
+        status: 'completed',
+        summary: `Counted ${total} item(s) matching “${input.query}” on page ${input.page}.`,
+        output,
+      };
+    },
   },
   {
     id: 'search_document',

@@ -48,6 +48,12 @@ const buildMeasurementFromMarkup = (
   return null;
 };
 import { extractVectorPaths, nearestPointOnLine, type DocumentSnapData, type DocumentLine } from '@/lib/pdfVectorExtractor';
+import { clearPageAnalysisCache } from '@/services/ai/agent/pageAnalysisCache';
+
+/** Bump content revision when PDF bytes for a docId are replaced. */
+function nextContentRevision(existing: DocumentPdfData | undefined): number {
+  return (existing?.contentRevision ?? 0) + 1;
+}
 interface CalibrationState {
   isCalibrating: boolean;
   point1: Point | null;
@@ -77,6 +83,12 @@ interface DocumentPdfData {
   textWordsByPage: Record<number, TextWord[]>; // Word-level text for professional highlighting
   ocrStatus: 'none' | 'running' | 'completed' | 'failed';
   ocrProgress: number; // 0-100
+  /**
+   * Monotonic content revision. Bumped whenever PDF bytes for this docId are
+   * replaced (load, insert/delete/rotate pages, re-upload). Used to invalidate
+   * agent page-analysis caches that key on docId+page.
+   */
+  contentRevision: number;
 }
 
 interface CanvasState {
@@ -420,55 +432,66 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     };
   }),
   
-  setPdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes) => set((state) => ({
-    pdfDocuments: {
-      ...state.pdfDocuments,
-      [docId]: {
-        pdfDocument: doc,
-        totalPages,
-        currentPage: 1,
+  setPdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes) => {
+    clearPageAnalysisCache(docId);
+    set((state) => {
+      const existing = state.pdfDocuments[docId];
+      return {
+        pdfDocuments: {
+          ...state.pdfDocuments,
+          [docId]: {
+            pdfDocument: doc,
+            totalPages,
+            currentPage: 1,
+            zoom: 100,
+            markupsByPage: {},
+            originalPageWidth: originalWidth,
+            originalPageHeight: originalHeight,
+            panOffset: { x: 0, y: 0 },
+            hasViewState: false,
+            originalPdfBytes: originalBytes || null,
+            textContentByPage: {},
+            textWordsByPage: {},
+            ocrStatus: 'none' as const,
+            ocrProgress: 0,
+            contentRevision: nextContentRevision(existing),
+          },
+        },
+        activeDocId: docId,
         zoom: 100,
-        markupsByPage: {},
-        originalPageWidth: originalWidth,
-        originalPageHeight: originalHeight,
-        panOffset: { x: 0, y: 0 },
-        hasViewState: false,
-        originalPdfBytes: originalBytes || null,
-        textContentByPage: {},
-        textWordsByPage: {},
-        ocrStatus: 'none',
-        ocrProgress: 0,
-      },
-    },
-    activeDocId: docId,
-    zoom: 100,
-  })),
+      };
+    });
+  },
   
   // Update PDF document while preserving existing markups
-  updatePdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes) => set((state) => {
-    const existingDocData = state.pdfDocuments[docId];
-    return {
-      pdfDocuments: {
-        ...state.pdfDocuments,
-        [docId]: {
-          pdfDocument: doc,
-          totalPages,
-          currentPage: Math.min(existingDocData?.currentPage || 1, totalPages),
-          zoom: existingDocData?.zoom ?? state.zoom,
-          markupsByPage: existingDocData?.markupsByPage || {},  // PRESERVE existing markups
-          originalPageWidth: originalWidth,
-          originalPageHeight: originalHeight,
-          panOffset: existingDocData?.panOffset || { x: 0, y: 0 },
-          hasViewState: existingDocData?.hasViewState ?? false,
-          originalPdfBytes: originalBytes,
-          textContentByPage: {},  // Clear text cache (page structure changed)
-          textWordsByPage: {},
-          ocrStatus: 'none',
-          ocrProgress: 0,
+  updatePdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes) => {
+    clearPageAnalysisCache(docId);
+    set((state) => {
+      const existingDocData = state.pdfDocuments[docId];
+      return {
+        pdfDocuments: {
+          ...state.pdfDocuments,
+          [docId]: {
+            pdfDocument: doc,
+            totalPages,
+            currentPage: Math.min(existingDocData?.currentPage || 1, totalPages),
+            zoom: existingDocData?.zoom ?? state.zoom,
+            markupsByPage: existingDocData?.markupsByPage || {},  // PRESERVE existing markups
+            originalPageWidth: originalWidth,
+            originalPageHeight: originalHeight,
+            panOffset: existingDocData?.panOffset || { x: 0, y: 0 },
+            hasViewState: existingDocData?.hasViewState ?? false,
+            originalPdfBytes: originalBytes,
+            textContentByPage: {},  // Clear text cache (page structure changed)
+            textWordsByPage: {},
+            ocrStatus: 'none' as const,
+            ocrProgress: 0,
+            contentRevision: nextContentRevision(existingDocData),
+          },
         },
-      },
-    };
-  }),
+      };
+    });
+  },
   
   setActiveDocId: (docId) => set((state) => {
     const docData = docId ? state.pdfDocuments[docId] : null;
@@ -478,27 +501,33 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     };
   }),
   
-  removeDocument: (docId) => set((state) => {
-    const { [docId]: _removedDoc, ...restDocs } = state.pdfDocuments;
-    const { [docId]: _removedCals, ...restCals } = state.pageCalibrationsByDoc;
-    const { [docId]: _removedSnap, ...restSnap } = state.documentSnapDataByPage;
-    const { [docId]: _removedAiCal, ...restAiCal } = state.aiCalibrationSamples;
-    const { [docId]: _removedAiSym, ...restAiSym } = state.aiSymbolMap;
-    return {
-      pdfDocuments: restDocs,
-      pageCalibrationsByDoc: restCals,
-      documentSnapDataByPage: restSnap,
-      aiCalibrationSamples: restAiCal,
-      aiSymbolMap: restAiSym,
-      activeDocId: state.activeDocId === docId ? null : state.activeDocId,
-    };
-  }),
+  removeDocument: (docId) => {
+    clearPageAnalysisCache(docId);
+    set((state) => {
+      const { [docId]: _removedDoc, ...restDocs } = state.pdfDocuments;
+      const { [docId]: _removedCals, ...restCals } = state.pageCalibrationsByDoc;
+      const { [docId]: _removedSnap, ...restSnap } = state.documentSnapDataByPage;
+      const { [docId]: _removedAiCal, ...restAiCal } = state.aiCalibrationSamples;
+      const { [docId]: _removedAiSym, ...restAiSym } = state.aiSymbolMap;
+      return {
+        pdfDocuments: restDocs,
+        pageCalibrationsByDoc: restCals,
+        documentSnapDataByPage: restSnap,
+        aiCalibrationSamples: restAiCal,
+        aiSymbolMap: restAiSym,
+        activeDocId: state.activeDocId === docId ? null : state.activeDocId,
+      };
+    });
+  },
   
-  clearAllDocuments: () => set({
-    pdfDocuments: {},
-    activeDocId: null,
-    pageCalibrationsByDoc: {},
-  }),
+  clearAllDocuments: () => {
+    clearPageAnalysisCache();
+    set({
+      pdfDocuments: {},
+      activeDocId: null,
+      pageCalibrationsByDoc: {},
+    });
+  },
   
   setCurrentPage: (page) => set((state) => {
     if (!state.activeDocId) return state;

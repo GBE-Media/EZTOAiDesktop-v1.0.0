@@ -11,6 +11,19 @@ import type { DetectedItem, TradeType } from '../providers/types';
 import type { AssistantToolContext } from '../tools/types';
 import type { CanvasMarkup } from '@/types/markup';
 import { searchTextItemsWithBounds } from './searchTextItems';
+import {
+  buildAnalyzeCacheKey,
+  buildExtractCacheKey,
+  countItemsFromAnalysis,
+  getCachedAnalyze,
+  getCachedExtract,
+  getLatestFullPageAnalysis,
+  regionKeyFromRect,
+  setCachedAnalyze,
+  setCachedExtract,
+  type CachedAnalyzePageResult,
+  type CachedExtractPageTextResult,
+} from './pageAnalysisCache';
 
 export interface CreateAgentToolContextOptions {
   runId: string;
@@ -22,6 +35,7 @@ export interface CreateAgentToolContextOptions {
   lastSaveStatus?: () => { saved: boolean; path?: string | null; at?: string };
   analyzePage?: (input: unknown) => Promise<unknown>;
   extractPageText?: (input: unknown) => Promise<unknown>;
+  countPageItems?: (input: unknown) => Promise<unknown>;
   searchDocument?: (query: string) => Promise<import('@/types/assistant').EvidenceCitation[]>;
   navigateToPage?: (page: number, bounds?: { x: number; y: number; width: number; height: number }) => void;
   activateEditorTool?: (tool: string) => void;
@@ -152,6 +166,23 @@ async function defaultAnalyzePage(
     throw new DOMException('Assistant run cancelled', 'AbortError');
   }
 
+  const startedRevision = pdfData.contentRevision ?? 0;
+  const cacheKey = buildAnalyzeCacheKey({
+    docId,
+    page,
+    scope,
+    trade: options.trade,
+    contentRevision: startedRevision,
+    prompt,
+    pageWidth,
+    pageHeight,
+    regionKey: regionKeyFromRect(analysisRegion),
+  });
+  const cached = getCachedAnalyze(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   try {
     const result = await analyzePageMaximumAccuracy({
       pdfDoc,
@@ -166,7 +197,7 @@ async function defaultAnalyzePage(
     });
 
     // Compact agent payload: omit overviewImage (large base64) to avoid token bloat.
-    return {
+    const payload: CachedAnalyzePageResult = {
       status: 'completed',
       page,
       scope,
@@ -178,6 +209,33 @@ async function defaultAnalyzePage(
         itemCount: result.textEvidence.items.length,
       },
     };
+
+    // Post-await revision guard: document may have been edited (insert/delete/rotate)
+    // while vision was in flight. Never cache (or promote) results for a stale revision.
+    const liveRevision = useCanvasStore.getState().pdfDocuments[docId]?.contentRevision ?? 0;
+    if (liveRevision !== startedRevision) {
+      console.debug(
+        '[pageAnalysisCache] discarding analyze_page result: document revision changed during analysis',
+        { docId, page, startedRevision, liveRevision },
+      );
+      return {
+        status: 'unavailable',
+        message: 'Document content changed during analysis; results discarded. Retry analyze_page / count_page_items.',
+        page,
+        scope,
+        discarded: true,
+      };
+    }
+
+    const isBroadFullPage = scope === 'full' && !(prompt && prompt.trim());
+    setCachedAnalyze(cacheKey, payload, {
+      docId,
+      page,
+      scope,
+      contentRevision: startedRevision,
+      promoteToLatestFull: isBroadFullPage,
+    });
+    return payload;
   } catch (error) {
     if (options.signal?.aborted) {
       throw error instanceof DOMException ? error : new DOMException('Assistant run cancelled', 'AbortError');
@@ -241,6 +299,19 @@ async function defaultExtractPageText(
     throw new DOMException('Assistant run cancelled', 'AbortError');
   }
 
+  const startedRevision = pdfData.contentRevision ?? 0;
+  const cacheKey = buildExtractCacheKey({
+    docId,
+    page,
+    contentRevision: startedRevision,
+    pageWidth,
+    pageHeight,
+  });
+  const cached = getCachedExtract(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   try {
     const evidence = await extractPageTextEvidence(
       pdfDoc,
@@ -251,7 +322,7 @@ async function defaultExtractPageText(
       canvas.setTextContent,
     );
 
-    return {
+    const payload: CachedExtractPageTextResult = {
       status: 'completed',
       page,
       source: evidence.source,
@@ -261,6 +332,23 @@ async function defaultExtractPageText(
       // Real bounded text items from native/OCR extraction (no fabricated content).
       items: evidence.items,
     };
+
+    const liveRevision = useCanvasStore.getState().pdfDocuments[docId]?.contentRevision ?? 0;
+    if (liveRevision !== startedRevision) {
+      console.debug(
+        '[pageAnalysisCache] discarding extract_page_text result: document revision changed during extraction',
+        { docId, page, startedRevision, liveRevision },
+      );
+      return {
+        status: 'unavailable',
+        message: 'Document content changed during text extraction; results discarded. Retry extract_page_text.',
+        page,
+        discarded: true,
+      };
+    }
+
+    setCachedExtract(cacheKey, payload);
+    return payload;
   } catch (error) {
     if (options.signal?.aborted) {
       throw error instanceof DOMException ? error : new DOMException('Assistant run cancelled', 'AbortError');
@@ -271,6 +359,69 @@ async function defaultExtractPageText(
       page,
     };
   }
+}
+
+/**
+ * Count / filter detections from a cached (or freshly run) full-page analysis.
+ * Prefer this over re-calling analyze_page for "how many lights / Type A" questions.
+ */
+async function defaultCountPageItems(
+  input: unknown,
+  options: { trade: TradeType; signal?: AbortSignal },
+): Promise<unknown> {
+  if (options.signal?.aborted) {
+    throw new DOMException('Assistant run cancelled', 'AbortError');
+  }
+
+  const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};
+  const page = typeof raw.page === 'number' && Number.isInteger(raw.page) && raw.page > 0
+    ? raw.page
+    : null;
+  const query = typeof raw.query === 'string' ? raw.query.trim() : '';
+
+  if (page == null) {
+    return {
+      status: 'unavailable',
+      message: 'count_page_items requires a positive page number.',
+    };
+  }
+
+  const canvas = useCanvasStore.getState();
+  const docId = canvas.activeDocId;
+  if (!docId) {
+    return {
+      status: 'unavailable',
+      message: 'No PDF document is open for counting page items.',
+    };
+  }
+
+  const pdfData = canvas.pdfDocuments[docId];
+  const contentRevision = pdfData?.contentRevision ?? 0;
+  const cached = getLatestFullPageAnalysis(docId, page, contentRevision);
+  if (cached?.analysis) {
+    return countItemsFromAnalysis(cached.analysis, query, { source: 'cache' });
+  }
+
+  // Cache miss: ALWAYS run a broad, unprompted full-page analysis, then filter
+  // client-side. Never steer vision with the count query — that would bias the
+  // canonical latestFull cache toward one item type and undercount later queries.
+  const analyzed = await defaultAnalyzePage(
+    { page, scope: 'full' },
+    options,
+  ) as CachedAnalyzePageResult | { status: string; message?: string };
+
+  if (analyzed.status !== 'completed' || !('analysis' in analyzed) || !analyzed.analysis) {
+    return {
+      status: 'unavailable',
+      page,
+      query,
+      source: 'none',
+      message: ('message' in analyzed && analyzed.message)
+        || 'Could not analyze the page before counting.',
+    };
+  }
+
+  return countItemsFromAnalysis(analyzed.analysis, query, { source: 'fresh_analysis' });
 }
 
 /**
@@ -327,6 +478,11 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
     })),
 
     extractPageText: options.extractPageText || (input => defaultExtractPageText(input, {
+      signal: options.signal,
+    })),
+
+    countPageItems: options.countPageItems || (input => defaultCountPageItems(input, {
+      trade: options.trade,
       signal: options.signal,
     })),
 

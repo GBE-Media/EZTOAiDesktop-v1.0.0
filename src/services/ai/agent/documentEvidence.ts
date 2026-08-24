@@ -7,6 +7,7 @@
 const DOCUMENT_GROUNDED_TOOL_IDS = new Set([
   'analyze_page',
   'extract_page_text',
+  'count_page_items',
   'search_document',
   'getTakeoffSummary',
   'getMaterialCounts',

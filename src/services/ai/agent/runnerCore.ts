@@ -30,7 +30,8 @@ import {
 } from '@/db/assistantDb';
 import type { AgentSessionState } from './types';
 
-const MAX_STEPS = 8;
+export const DEFAULT_MAX_AGENT_STEPS = 12;
+const MAX_STEPS = DEFAULT_MAX_AGENT_STEPS;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_IMAGE_CHARS = 1_000_000;
 
@@ -286,6 +287,8 @@ export interface RunPrimaryLoopOptions {
   maxSteps?: number;
   onStatus?: (status: AgentTurnResult['status'], detail?: string) => void;
   preferTools?: boolean;
+  /** Soft tool-selection hint from routing policy (not enforced). */
+  suggestedTools?: string[];
   answerOnlyHint?: boolean;
 }
 
@@ -509,9 +512,12 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       content: 'ROUTER_HINT: Prefer a concise final answer. Use tools only if facts are required.',
     });
   } else if (options.preferTools) {
+    const toolHint = options.suggestedTools?.length
+      ? ` Prefer these tools when relevant: ${options.suggestedTools.join(', ')}.`
+      : '';
     session.messages.push({
       role: 'user',
-      content: 'ROUTER_HINT: Prefer tools over guessing for takeoff/estimate facts.',
+      content: `ROUTER_HINT: Prefer tools over guessing for takeoff/estimate facts.${toolHint}`,
     });
   }
   const store = () => useAIChatStore.getState();
@@ -523,6 +529,19 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
     }
     steps += 1;
     onStatus?.('thinking');
+
+    // Near-limit nudge: soft warning on penultimate step, strong "final now" on last step.
+    if (steps === maxSteps) {
+      session.messages.push({
+        role: 'user',
+        content: `ROUTER_HINT: This is your last allowed step (${steps}/${maxSteps}). Respond with type "final" summarizing tool results so far. Do NOT call analyze_page again for a page you already analyzed — use typeCounts, items, or count_page_items.`,
+      });
+    } else if (steps === maxSteps - 1) {
+      session.messages.push({
+        role: 'user',
+        content: `ROUTER_HINT: Step budget nearly exhausted (${steps}/${maxSteps}). Prefer finalizing with available tool results. For counting use count_page_items or prior typeCounts — do not re-analyze the same page.`,
+      });
+    }
 
     store().upsertRunStep(session.runId, {
       id: `step_think_${steps}`,
@@ -727,11 +746,53 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
   const maxResult = finishWith(session, {
     status: 'completed',
     finalStatus: 'max_steps',
-    assistantMessage: 'I reached the maximum number of agent steps for this turn. Please refine your request or continue in a follow-up.',
+    assistantMessage: buildMaxStepsAssistantMessage(session),
   });
   store().finishRun(session.runId, 'completed');
   clearAgentSession(session.runId);
   return maxResult;
+}
+
+/** Prefer a useful partial summary over a bare dead-end when the step budget is hit. */
+export function buildMaxStepsAssistantMessage(session: AgentSessionState): string {
+  const base =
+    'I reached the maximum number of agent steps for this turn. Please refine your request or continue in a follow-up.';
+
+  const findings: string[] = [];
+  for (const action of session.actionsTaken) {
+    if (action.status !== 'completed' || !action.summary) continue;
+    findings.push(`- ${action.title}: ${action.summary}`);
+    if (findings.length >= 8) break;
+  }
+
+  // Surface typeCounts from the last successful analyze_page / count_page_items output when present.
+  for (let i = session.toolHistory.length - 1; i >= 0 && findings.length < 10; i -= 1) {
+    const entry = session.toolHistory[i];
+    if (entry.result.status !== 'completed') continue;
+    const output = entry.result.output;
+    if (!output || typeof output !== 'object') continue;
+    const record = output as Record<string, unknown>;
+    if (entry.toolId === 'count_page_items' && typeof record.total === 'number') {
+      const query = typeof record.query === 'string' ? record.query : 'items';
+      findings.push(`- Partial count for “${query}”: ${record.total}`);
+      break;
+    }
+    const analysis = record.analysis;
+    if (analysis && typeof analysis === 'object') {
+      const typeCounts = (analysis as { typeCounts?: Record<string, number> }).typeCounts;
+      if (typeCounts && Object.keys(typeCounts).length > 0) {
+        const parts = Object.entries(typeCounts)
+          .slice(0, 8)
+          .map(([type, count]) => `${type}: ${count}`)
+          .join(', ');
+        findings.push(`- Detected type counts so far: ${parts}`);
+        break;
+      }
+    }
+  }
+
+  if (findings.length === 0) return base;
+  return `${base}\n\nHere is what I gathered so far:\n${findings.join('\n')}`;
 }
 
 /**

@@ -50,6 +50,8 @@ Runtime constraints:
 - Use at most 3 tool calls per step.
 - Never invent tool results. If a tool returns status "stub", say that capability is not available yet and ask what the user can provide instead.
 - Read tools may auto-run. Write / destructive / external tools require user approval — never claim they succeeded until approved and verified.
+- Page analysis reuse: If analyze_page or extract_page_text returns cached:true, or Current app context lists cached page detections/typeCounts, do NOT re-call those tools for the same page. For counting questions ("how many…", "count the lights", fixture tallies) call count_page_items with a query — it uses cached analysis and only runs vision once if needed.
+- Do not call analyze_page repeatedly for the same page hoping for a different result; use typeCounts/items from the first result or count_page_items.
 - For location questions ("where is X?", "show me where…", "locate…"): search_document then navigate_page with the match bounds to highlight the region on the canvas (auto, no approval). Briefly tell the user what you highlighted.
 - Use propose_callouts or place_markups only when the user asks to mark, pin, or leave persistent numbered callouts. Mention those as [1], [2] in the final message after approval.
 - When proposing callouts/markups, coordinates MUST be PDF page points at scale 1 (DocPoint: {x,y} top-left origin), optionally with bounds {x,y,width,height} in the same space. Do not use coarse 0–100 xPct/yPct percentages.
