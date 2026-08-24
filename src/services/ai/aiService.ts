@@ -21,6 +21,7 @@ import {
 } from './providers';
 import { sendProxyRequest, isProxyAvailable, ProxyRequestError, type ProxyRequest } from './proxyClient';
 import { projectMessagesPreservingToolFields } from './providers/projectMessagesPreservingToolFields';
+import { resolveRequestTemperature } from './providers/modelRequestConstraints';
 import { ELECTRICAL_VISION_PROMPT } from './trades/electrical';
 import { PLUMBING_VISION_PROMPT } from './trades/plumbing';
 import { HVAC_VISION_PROMPT } from './trades/hvac';
@@ -340,7 +341,13 @@ class AIService {
     let lastError: unknown;
     for (const [index, attempt] of attempts.entries()) {
       try {
-        const response = await sendProxyRequest({ ...params, provider: attempt.provider, model: attempt.model });
+        const temperature = resolveRequestTemperature(attempt.model, params.temperature);
+        const response = await sendProxyRequest({
+          ...params,
+          provider: attempt.provider,
+          model: attempt.model,
+          temperature,
+        });
         if (index > 0) {
           console.warn(`[AIService] Fell back to ${attempt.provider}/"${attempt.model}" after "${params.model}" was inaccessible.`);
         }

@@ -10,7 +10,7 @@ import { formatToolResultForPrompt, resolveToolSafety } from './safety';
 import { createJsonToolModelAdapter, type ModelAdapter } from './modelAdapter';
 import { emitAgentTrace } from './trace';
 import { runVerificationTools } from './verification';
-import { toolHistoryToActivity, type AgentActionTaken, type AgentModelMessage, type AgentToolHistoryEntry, type AgentTurnResult } from './types';
+import { toolHistoryToActivity, type AgentActionTaken, type AgentModelMessage, type AgentToolCallRequest, type AgentToolHistoryEntry, type AgentTurnResult } from './types';
 import {
   registerAssistantRunController,
   releaseAssistantRunController,
@@ -35,6 +35,43 @@ const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_IMAGE_CHARS = 1_000_000;
 
 const sessions = new Map<string, AgentSessionState>();
+
+/**
+ * Stabilize tool-call ids exactly once per decision so the assistant history
+ * entry and every tool-result message share the same id.
+ * - Blank/whitespace → deterministic fallback
+ * - Duplicate non-blank ids within the same batch (common on JSON/free-form
+ *   fallback) → keep the first occurrence; reassign later collisions so both
+ *   tools execute and both results survive (dedupeToolResultsKeepLast must not
+ *   collapse two different executions into one).
+ *
+ * Scope is one decision/batch only. Across sequential rounds, the same id on
+ * different assistant messages is valid for OpenAI (pairing is to the nearest
+ * preceding assistant). Cross-round uniqueness is not required here; history
+ * mapping must preserve stored ids as-is.
+ */
+export function canonicalizeAgentToolCalls(
+  toolCalls: AgentToolCallRequest[],
+  step: number,
+): AgentToolCallRequest[] {
+  const used = new Set<string>();
+  return toolCalls.map((call, index) => {
+    const trimmed = typeof call.id === 'string' ? call.id.trim() : '';
+    let id = trimmed || `call_${call.name || 'tool'}_${step}_${index + 1}`;
+    if (used.has(id)) {
+      // Collision with an earlier call in this batch — mint a unique id.
+      let suffix = 2;
+      let candidate = `${id}__${suffix}`;
+      while (used.has(candidate)) {
+        suffix += 1;
+        candidate = `${id}__${suffix}`;
+      }
+      id = candidate;
+    }
+    used.add(id);
+    return { ...call, id };
+  });
+}
 
 export function getAgentSession(runId: string): AgentSessionState | undefined {
   return sessions.get(runId);
@@ -555,17 +592,18 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       return result;
     }
 
-    // tool_calls
+    // tool_calls — canonicalize ids ONCE; reuse the same list for history + execution.
     if (decision.assistantText) {
       store().updateMessage(session.messageId, {
         content: decision.assistantText,
         isLoading: true,
       });
     }
+    const toolCalls = canonicalizeAgentToolCalls(decision.toolCalls, steps);
     session.messages.push({
       role: 'assistant',
       content: decision.assistantText || '',
-      toolCalls: decision.toolCalls,
+      toolCalls,
     });
     onStatus?.('running_tools');
     store().upsertRunStep(session.runId, {
@@ -577,7 +615,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       startedAt: new Date().toISOString(),
     });
 
-    for (const call of decision.toolCalls) {
+    for (const call of toolCalls) {
       onStatus?.('running_tool', call.name);
       const safety = resolveToolSafety(call.name);
       emitAgentTrace(session.runId, 'tool_selected', { toolId: call.name, mode: safety.mode });

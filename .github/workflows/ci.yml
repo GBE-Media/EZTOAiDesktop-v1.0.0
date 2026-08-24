@@ -34,3 +34,8 @@ jobs:
 
       - name: Run full Vitest suite
         run: npm test
+
+      - name: Remind if ai-proxy Edge Function changed
+        # Non-blocking: posts a ::warning:: annotation when the edge function
+        # changed. Does not fail CI — deploy remains a human post-merge step.
+        run: npm run check:ai-proxy-deploy

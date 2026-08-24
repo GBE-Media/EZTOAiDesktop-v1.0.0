@@ -14,6 +14,8 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "test": "vitest run",
+    "deploy:ai-proxy": "node scripts/deploy-ai-proxy.mjs",
+    "check:ai-proxy-deploy": "node scripts/check-ai-proxy-deploy.mjs",
     "preview": "vite preview",
     "package": "npm run icons:generate && npm run build && npm run electron:build && electron-builder",
     "semantic-release": "semantic-release"
