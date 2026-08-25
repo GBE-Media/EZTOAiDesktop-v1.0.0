@@ -35,6 +35,7 @@ describe('deterministic assistant workflow', () => {
           extractPageText: async () => ({ status: 'completed', context: '', source: 'none', items: [] }),
           searchDocument: async () => [],
           inspectCatalog: () => [],
+          searchCatalog: () => ({ matches: [], noConfidentMatch: true, confidentMatches: [], message: '' }),
           inspectMarkups: () => [],
           navigateToPage: vi.fn(),
           activateEditorTool: vi.fn(),

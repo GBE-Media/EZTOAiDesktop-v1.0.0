@@ -63,6 +63,7 @@ function toolContext(runId: string, messageId: string): AssistantToolContext {
     extractPageText: vi.fn(async () => ({})),
     searchDocument: vi.fn(async () => []),
     inspectCatalog: vi.fn(() => []),
+    searchCatalog: vi.fn(() => ({ matches: [], noConfidentMatch: true, confidentMatches: [], message: '' })),
     inspectMarkups: vi.fn(() => []),
     getTakeoffSummary: vi.fn(() => ({ totals: { fixtures: 12 } })),
     navigateToPage: vi.fn(),

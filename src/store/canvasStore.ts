@@ -13,42 +13,36 @@ import {
   renderPointToDocPoint,
   resolvePageCalibration,
 } from '@/services/ai/placement/pageCalibration';
-
-const buildMeasurementFromMarkup = (
-  markup: CanvasMarkup,
-  documentId: string
-): Omit<LinkedMeasurement, 'id' | 'createdAt'> | null => {
-  if (!documentId) return null;
-
-  if (markup.type === 'count-marker') {
-    const countMarkup = markup as any;
-    return {
-      markupId: markup.id,
-      documentId,
-      page: markup.page,
-      type: 'count',
-      value: 1,
-      unit: 'ea',
-      groupId: countMarkup.groupId,
-    };
-  }
-
-  if (markup.type === 'measurement-length' || markup.type === 'measurement-area') {
-    const measurementMarkup = markup as any;
-    return {
-      markupId: markup.id,
-      documentId,
-      page: markup.page,
-      type: markup.type === 'measurement-length' ? 'length' : 'area',
-      value: measurementMarkup.scaledValue ?? measurementMarkup.value ?? 0,
-      unit: measurementMarkup.unit || 'ft',
-    };
-  }
-
-  return null;
-};
+import { buildMeasurementFromMarkup } from '@/services/ai/catalog/measurementFromMarkup';
+import { attachProductsForPlacedMarkups } from '@/services/ai/catalog/linkPlacedProducts';
 import { extractVectorPaths, nearestPointOnLine, type DocumentSnapData, type DocumentLine } from '@/lib/pdfVectorExtractor';
 import { clearPageAnalysisCache } from '@/services/ai/agent/pageAnalysisCache';
+
+/**
+ * When an update changes productId on an existing markup id (link_catalog),
+ * undo/redo must re-sync productStore links — add/delete diffs alone miss this.
+ */
+function reconcileProductLinksForUpdate(
+  fromMarkups: CanvasMarkup[],
+  toMarkups: CanvasMarkup[],
+  documentId: string,
+): void {
+  const productStore = useProductStore.getState();
+  const fromById = new Map(fromMarkups.map((m) => [m.id, m]));
+  for (const toMarkup of toMarkups) {
+    const fromMarkup = fromById.get(toMarkup.id);
+    if (!fromMarkup) continue;
+    const fromPid = (fromMarkup as CanvasMarkup & { productId?: string }).productId;
+    const toPid = (toMarkup as CanvasMarkup & { productId?: string }).productId;
+    if (fromPid === toPid) continue;
+    productStore.unlinkMeasurementByMarkupId(toMarkup.id);
+    if (!toPid) continue;
+    const measurement = buildMeasurementFromMarkup(toMarkup, documentId);
+    if (measurement) {
+      productStore.linkMeasurement(toPid, measurement);
+    }
+  }
+}
 
 /** Bump content revision when PDF bytes for a docId are replaced. */
 function nextContentRevision(existing: DocumentPdfData | undefined): number {
@@ -1439,6 +1433,19 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     });
     
     useEditorStore.getState().updateDocument(state.activeDocId, { modified: true });
+
+    // Mirror manual count/measure: productId on markup → productStore measurement link.
+    attachProductsForPlacedMarkups(
+      markups.map(({ page, markup }) => ({
+        page,
+        markup: {
+          ...markup,
+          aiGenerated: true,
+          aiPending: typeof markup.aiPending === 'boolean' ? markup.aiPending : pending,
+        } as CanvasMarkup,
+      })),
+      state.activeDocId,
+    );
   },
   
   confirmAIMarkup: (page, id) => {
@@ -1603,6 +1610,15 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
         });
       }
     }
+
+    // Same-id updates (e.g. link_catalog setting productId): sync product links to restored markups.
+    if (state.activeDocId && historyEntry.action === 'update') {
+      reconcileProductLinksForUpdate(
+        historyEntry.after || [],
+        historyEntry.before || [],
+        state.activeDocId,
+      );
+    }
   },
   
   redo: () => {
@@ -1678,6 +1694,14 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
           }
         });
       }
+    }
+
+    if (state.activeDocId && historyEntry.action === 'update') {
+      reconcileProductLinksForUpdate(
+        historyEntry.before || [],
+        historyEntry.after || [],
+        state.activeDocId,
+      );
     }
   },
 }));

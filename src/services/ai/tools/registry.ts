@@ -17,6 +17,7 @@ import {
   linkCatalogSchema,
   placeMarkupsSchema,
   proposeCalloutsSchema,
+  searchCatalogSchema,
   updateMarkupsSchema,
 } from './mutationSchemas';
 import { analyzePageInputSchema } from './analyzePageSchema';
@@ -215,7 +216,7 @@ const coreTools: AssistantToolDefinition[] = [
   {
     id: 'inspect_catalog',
     title: 'Inspect catalog',
-    description: 'Read products and assemblies available to the user.',
+    description: 'Read a text summary of products and assemblies available to the user.',
     risk: 'read',
     requiresConfirmation: false,
     undoable: false,
@@ -225,6 +226,30 @@ const coreTools: AssistantToolDefinition[] = [
       summary: 'Inspected products and assemblies.',
       output: context.inspectCatalog(),
     }),
+  },
+  {
+    id: 'search_catalog',
+    title: 'Search product catalog',
+    description:
+      'Search the real Products panel catalog by keyword, fixture code, SKU, or category. '
+      + 'Returns real productId values with names/paths/units. '
+      + 'When noConfidentMatch is true, do NOT invent a productId — place label-only markups '
+      + 'and clearly flag “no matching catalog product found” for that type, or ask the user to pick.',
+    risk: 'read',
+    requiresConfirmation: false,
+    undoable: false,
+    schema: searchCatalogSchema,
+    execute: async (context, input) => {
+      const output = context.searchCatalog(input);
+      const record = output && typeof output === 'object'
+        ? output as { message?: string; noConfidentMatch?: boolean }
+        : {};
+      return {
+        status: 'completed',
+        summary: record.message || 'Searched product catalog.',
+        output,
+      };
+    },
   },
   {
     id: 'navigate_page',
@@ -242,7 +267,11 @@ const coreTools: AssistantToolDefinition[] = [
   createTypedMutationTool({
     id: 'place_markups',
     title: 'Place document markups',
-    description: 'Place verified document markups (DocPoint coordinates) after user approval.',
+    description:
+      'Place verified document markups (DocPoint coordinates) after user approval. '
+      + 'Optional productId on count-marker/measurement rows binds the real catalog product '
+      + '(from search_catalog confidentMatches) the same way the Products panel count tool does. '
+      + 'Omit productId when search_catalog returns noConfidentMatch.',
     undoable: true,
     risk: 'write',
     verifyWith: ['inspect_markups'],
@@ -286,7 +315,10 @@ const coreTools: AssistantToolDefinition[] = [
   createTypedMutationTool({
     id: 'link_catalog',
     title: 'Link catalog items',
-    description: 'Link markups to catalog products after user approval.',
+    description:
+      'Attach real catalog productIds to existing markups after user approval '
+      + '(same productId + measurement link as the Products panel). '
+      + 'Prefer search_catalog first; use place_markups.productId at placement time when possible.',
     undoable: true,
     risk: 'write',
     verifyWith: ['inspect_catalog', 'getMaterialCounts'],

@@ -15,6 +15,7 @@ function makeContext(): AssistantToolContext {
     extractPageText: vi.fn(async input => ({})),
     searchDocument: vi.fn(async () => []),
     inspectCatalog: vi.fn(() => []),
+    searchCatalog: vi.fn(() => ({ matches: [], noConfidentMatch: true, confidentMatches: [], message: '' })),
     inspectMarkups: vi.fn(() => []),
     navigateToPage: vi.fn(),
     activateEditorTool: vi.fn(),
