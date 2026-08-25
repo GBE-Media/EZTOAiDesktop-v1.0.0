@@ -107,6 +107,8 @@ export interface MeasurementMarkup extends BaseMarkup {
   unit: string;
   scaledValue: number;
   productId?: string;
+  /** False when page has no PageCalibration — scaledValue is raw units only. */
+  calibrated?: boolean;
 }
 
 export type CanvasMarkup = 

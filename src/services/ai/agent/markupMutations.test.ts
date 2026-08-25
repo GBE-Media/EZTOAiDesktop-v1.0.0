@@ -11,7 +11,7 @@ import {
 } from './markupMutations';
 import { executeAssistantTool, executeApprovedAssistantAction } from '../tools/registry';
 import { registerAllAgentTools, resetAgentToolRegistrationForTests } from './tools/registerAll';
-import { BASE_RENDER_SCALE } from '../placement/coords';
+import { BASE_RENDER_SCALE, createPageGeometry, docToRender } from '../placement/coords';
 import type { CanvasMarkup } from '@/types/markup';
 
 function baseMarkup(overrides: Partial<CanvasMarkup> & Pick<CanvasMarkup, 'id' | 'type'>): CanvasMarkup {
@@ -258,4 +258,66 @@ describe('activate_editor_tool + update/delete markups', () => {
     expect(deleted.deleted).toBe(1);
     expect(deleted.message).not.toMatch(/unsupported/i);
   });
+
+  it('rejects activate_editor_tool while a drawing gesture is in progress', () => {
+    useCanvasStore.getState().startDrawing({ x: 10, y: 10 });
+    expect(useCanvasStore.getState().drawing.isDrawing).toBe(true);
+    expect(useEditorStore.getState().activeTool).toBe('select');
+
+    const blocked = activateEditorToolOnCanvas('measure-length');
+    expect(blocked.activated).toBe(false);
+    expect(blocked.message).toMatch(/mid-interaction/i);
+    expect(useEditorStore.getState().activeTool).toBe('select');
+
+    useCanvasStore.getState().cancelDrawing();
+    const ok = activateEditorToolOnCanvas('measure-length');
+    expect(ok.activated).toBe(true);
+    expect(useEditorStore.getState().activeTool).toBe('measure-length');
+  });
+
+  it('rejects activate_editor_tool while editorInteractionBusy (select-drag/resize)', () => {
+    useCanvasStore.getState().setEditorInteractionBusy(true);
+    const blocked = activateEditorToolOnCanvas('count');
+    expect(blocked.activated).toBe(false);
+    expect(useEditorStore.getState().activeTool).toBe('select');
+    useCanvasStore.getState().setEditorInteractionBusy(false);
+  });
+
+  it.each([90, 180, 270] as const)(
+    'update_markups DocPoint patch respects page rotationDeg=%s',
+    (rotationDeg) => {
+      const page = createPageGeometry({
+        pageNumber: 1,
+        docWidth: 612,
+        docHeight: 792,
+        renderScale: BASE_RENDER_SCALE,
+        rotationDeg,
+      });
+      useCanvasStore.getState().cachePageGeometries(new Map([[1, page]]));
+      useCanvasStore.getState().setMarkupsForPage(1, [
+        baseMarkup({
+          id: 'move-me',
+          type: 'count-marker',
+          x: 0,
+          y: 0,
+          number: 1,
+          groupId: 'g',
+        }),
+      ]);
+
+      const docPoint = { x: 100, y: 200 };
+      const expected = docToRender(docPoint, page);
+      const result = executeUpdateMarkups({
+        updates: [{ id: 'move-me', page: 1, patch: { x: docPoint.x, y: docPoint.y } }],
+      });
+      expect(result.updated).toBe(1);
+      const moved = useCanvasStore.getState().getMarkupsByPage()[1]
+        .find(m => m.id === 'move-me') as { x: number; y: number };
+      expect(moved.x).toBeCloseTo(expected.x, 5);
+      expect(moved.y).toBeCloseTo(expected.y, 5);
+      // Unrotated scale-only mapping would be (150, 300); rotated must differ.
+      expect(moved.x === docPoint.x * BASE_RENDER_SCALE
+        && moved.y === docPoint.y * BASE_RENDER_SCALE).toBe(false);
+    },
+  );
 });

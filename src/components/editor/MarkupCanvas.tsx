@@ -28,6 +28,11 @@ import type {
 } from '@/types/markup';
 import { TextEditOverlay } from './TextEditOverlay';
 import { resolveMarkupDrawAppearance } from './markupDrawAppearance';
+import {
+  computeAreaMeasurementFromBounds,
+  computeLengthMeasurement,
+} from '@/lib/measurementValues';
+import { pageCalibrationToRenderPixelsPerUnit } from '@/services/ai/placement/pageCalibration';
 
 const EMPTY_MARKUPS: CanvasMarkup[] = [];
 
@@ -1431,6 +1436,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
               startY: point.y,
               originalMarkup: JSON.parse(JSON.stringify(selectedMarkup)),
             });
+            useCanvasStore.getState().setEditorInteractionBusy(true);
             return;
           }
         }
@@ -1456,6 +1462,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           }));
         }
         setIsDragging(true);
+        useCanvasStore.getState().setEditorInteractionBusy(true);
         setDragStart(point);
         
         if ('x' in markup) {
@@ -1744,11 +1751,13 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     // End resizing
     if (resizing) {
       setResizing(null);
+      useCanvasStore.getState().setEditorInteractionBusy(false);
       return;
     }
     
     if (isDragging) {
       setIsDragging(false);
+      useCanvasStore.getState().setEditorInteractionBusy(false);
       setDragStart(null);
       return;
     }
@@ -1956,17 +1965,20 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         };
         
       case 'measure-length': {
-        const distance = Math.sqrt(
-          Math.pow(endPoint.x - startPoint.x, 2) +
-          Math.pow(endPoint.y - startPoint.y, 2)
-        );
+        const cal = useCanvasStore.getState().getPageCalibration(currentPage);
+        const fromCal = computeLengthMeasurement(startPoint, endPoint, {
+          renderPixelsPerUnit: pageCalibrationToRenderPixelsPerUnit(cal),
+          unit: cal.unit,
+        });
         return {
           ...baseMarkup,
           type: 'measurement-length',
           points: [startPoint, endPoint],
-          value: distance,
-          scaledValue: distance / scale,
-          unit,
+          value: fromCal.value,
+          scaledValue: fromCal.scaledValue,
+          unit: fromCal.unit,
+          calibrated: fromCal.calibrated,
+          aiNote: fromCal.note,
         };
       }
       
@@ -1981,16 +1993,20 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           { x: maxX, y: maxY },
           { x: minX, y: maxY },
         ];
-        const width = maxX - minX;
-        const height = maxY - minY;
-        const areaPixels = width * height;
+        const cal = useCanvasStore.getState().getPageCalibration(currentPage);
+        const fromCal = computeAreaMeasurementFromBounds(areaPoints, {
+          renderPixelsPerUnit: pageCalibrationToRenderPixelsPerUnit(cal),
+          unit: cal.unit,
+        });
         return {
           ...baseMarkup,
           type: 'measurement-area',
           points: areaPoints,
-          value: areaPixels,
-          scaledValue: areaPixels / (scale * scale),
-          unit: unit === 'ft' ? 'sq ft' : `sq ${unit}`,
+          value: fromCal.value,
+          scaledValue: fromCal.scaledValue,
+          unit: fromCal.unit,
+          calibrated: fromCal.calibrated,
+          aiNote: fromCal.note,
         };
       }
         

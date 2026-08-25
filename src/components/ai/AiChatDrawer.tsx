@@ -36,7 +36,6 @@ import {
   verifyPlacementMarkupsWithGeometryGate,
 } from '@/services/ai/placement';
 import { useEditorStore } from '@/store/editorStore';
-import type { ToolType } from '@/types/editor';
 import { useProductSync } from '@/hooks/useProductSync';
 import { ChatMessage } from './ChatMessage';
 import { AiToolbar } from './AiToolbar';
@@ -282,11 +281,6 @@ export function AgentAssistantDrawer() {
       if (bounds && canvas.activeDocId) {
         canvas.setAiSelectionRect(canvas.activeDocId, page, bounds);
       }
-    },
-    activateEditorTool: (tool) => {
-      // createAgentToolContext also applies setActiveTool; this makes the
-      // drawer wiring explicit for the live editor UI path.
-      useEditorStore.getState().setActiveTool(tool as ToolType);
     },
   }), [
     addAIMarkupBatch,

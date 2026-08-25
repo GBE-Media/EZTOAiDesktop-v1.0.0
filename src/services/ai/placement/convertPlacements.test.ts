@@ -397,4 +397,137 @@ describe('convertPlacementsToMarkups rotation-aware output (Phase 5)', () => {
     expect(markup.height).toBeCloseTo(Math.max(expectedBox.height, 28), 5);
     expect(markup.leaderPoints?.[1]).toEqual(expectedLeader);
   });
+
+  it.each([180, 270] as const)(
+    'applies PageGeometry.rotationDeg=%s for count-marker via docToRender',
+    (rotationDeg) => {
+      const page = createPageGeometry({
+        pageNumber: 1,
+        docWidth: 612,
+        docHeight: 792,
+        renderScale: BASE_RENDER_SCALE,
+        rotationDeg,
+      });
+      const docPoint = { x: 100, y: 200 };
+      const expected = docToRender(docPoint, page);
+      const result = convertPlacementsToMarkups(
+        {
+          notes: [],
+          markups: [placement({
+            id: `rot-${rotationDeg}`,
+            type: 'count-marker',
+            page: 1,
+            points: [docPoint],
+          })],
+        },
+        style,
+        'group',
+        BASE_RENDER_SCALE,
+        BASE_RENDER_SCALE,
+        undefined,
+        new Map([[1, page]]),
+      );
+      expect(result[0].markup).toMatchObject({
+        type: 'count-marker',
+        x: expected.x,
+        y: expected.y,
+      });
+      // Must differ from unrotated scale-only placement.
+      const unrotated = {
+        x: docPoint.x * BASE_RENDER_SCALE,
+        y: docPoint.y * BASE_RENDER_SCALE,
+      };
+      expect(result[0].markup).not.toMatchObject(unrotated);
+    },
+  );
+});
+
+describe('convertPlacementsToMarkups measurement calibration', () => {
+  it('computes real scaledValue from PageCalibration (not hardcoded 0)', () => {
+    const page = createPageGeometry({
+      pageNumber: 1,
+      docWidth: 612,
+      docHeight: 792,
+      renderScale: BASE_RENDER_SCALE,
+    });
+    // 100 doc-points → 150 render-px. At 30 render-px/ft → 5 ft.
+    const renderPixelsPerUnit = 30;
+    const docPixelsPerUnit = renderPixelsPerUnit / BASE_RENDER_SCALE;
+    const calibrationByPage = new Map([[1, {
+      pageNumber: 1,
+      method: 'manual' as const,
+      pixelsPerUnit: docPixelsPerUnit,
+      unit: 'ft',
+      confidence: 1,
+    }]]);
+
+    const result = convertPlacementsToMarkups(
+      {
+        notes: [],
+        markups: [placement({
+          id: 'len-1',
+          type: 'measurement-length',
+          page: 1,
+          points: [{ x: 0, y: 0 }, { x: 100, y: 0 }],
+        })],
+      },
+      style,
+      'group',
+      BASE_RENDER_SCALE,
+      BASE_RENDER_SCALE,
+      undefined,
+      new Map([[1, page]]),
+      calibrationByPage,
+    );
+
+    const markup = result[0].markup as {
+      type: string;
+      value: number;
+      scaledValue: number;
+      unit: string;
+      calibrated?: boolean;
+    };
+    expect(markup.type).toBe('measurement-length');
+    expect(markup.value).toBeCloseTo(150, 5);
+    expect(markup.scaledValue).toBeCloseTo(5, 5);
+    expect(markup.unit).toBe('ft');
+    expect(markup.calibrated).toBe(true);
+  });
+
+  it('marks uncalibrated measurements with raw value + note (not silent 0)', () => {
+    const page = createPageGeometry({
+      pageNumber: 1,
+      docWidth: 612,
+      docHeight: 792,
+      renderScale: BASE_RENDER_SCALE,
+    });
+    const result = convertPlacementsToMarkups(
+      {
+        notes: [],
+        markups: [placement({
+          id: 'len-raw',
+          type: 'measurement-length',
+          page: 1,
+          points: [{ x: 0, y: 0 }, { x: 80, y: 0 }],
+        })],
+      },
+      style,
+      'group',
+      BASE_RENDER_SCALE,
+      BASE_RENDER_SCALE,
+      undefined,
+      new Map([[1, page]]),
+      new Map([[1, null]]),
+    );
+    const markup = result[0].markup as {
+      value: number;
+      scaledValue: number;
+      calibrated?: boolean;
+      aiNote?: string;
+    };
+    expect(markup.value).toBeCloseTo(120, 5);
+    expect(markup.scaledValue).toBeCloseTo(120, 5);
+    expect(markup.calibrated).toBe(false);
+    expect(markup.aiNote).toMatch(/uncalibrated/i);
+  });
 });

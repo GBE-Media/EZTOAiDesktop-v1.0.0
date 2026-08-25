@@ -20,6 +20,7 @@ describe('canvasStore page calibration isolation', () => {
           originalPdfBytes: null,
           textContentByPage: {},
           textWordsByPage: {},
+          pageGeometryByPage: {},
           ocrStatus: 'none',
           ocrProgress: 0,
           contentRevision: 1,
