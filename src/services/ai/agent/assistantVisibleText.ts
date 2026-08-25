@@ -3,18 +3,36 @@ import { parseAgentDecision } from './decisionParser';
 const FALLBACK_MALFORMED =
   'I prepared an action but couldn\'t display it properly — please try again.';
 
+const PROTOCOL_TYPES = new Set(['tool_calls', 'final', 'plan', 'clarify']);
+
 /**
  * Detect agent protocol JSON that must never be shown raw in the chat UI.
- * Matches tool_calls / final / plan / clarify envelopes (and hybrid blobs).
+ * Requires a real JSON object with a recognized `type` field — not a loose
+ * substring match on "toolCalls" (which false-positives unrelated JSON).
+ * Truncated envelopes that clearly begin as our protocol are also flagged.
  */
 export function looksLikeAgentProtocolJson(text: string): boolean {
-  const trimmed = text.trim();
+  const trimmed = text.trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '');
   if (!trimmed.startsWith('{')) return false;
-  return (
-    /"type"\s*:\s*"(tool_calls|final|plan|clarify)"/i.test(trimmed)
-    || /"toolCalls"\s*:/.test(trimmed)
-    || /"tool_calls"\s*:/.test(trimmed)
-  );
+
+  try {
+    let parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed === 'string') {
+      const inner = parsed.trim();
+      if (!inner.startsWith('{')) return false;
+      parsed = JSON.parse(inner);
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return false;
+    }
+    const type = String((parsed as Record<string, unknown>).type || '').toLowerCase();
+    return PROTOCOL_TYPES.has(type);
+  } catch {
+    // Unparseable but clearly our envelope prefix (e.g. truncated mid-stream).
+    return /^\{\s*"type"\s*:\s*"(tool_calls|final|plan|clarify)"/i.test(trimmed);
+  }
 }
 
 /**

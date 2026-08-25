@@ -140,12 +140,32 @@ function humanAssistantText(
   return content.trim();
 }
 
-function stableArgsKey(args: Record<string, unknown>): string {
+/**
+ * Deterministic deep serialization for tool-call dedup keys.
+ * Sorts object keys at every nesting level; preserves array element order.
+ * Must NOT use JSON.stringify's property-allowlist replacer (that strips nested fields).
+ */
+export function stableArgsKey(args: Record<string, unknown>): string {
   try {
-    return JSON.stringify(args, Object.keys(args).sort());
+    return JSON.stringify(normalizeForStableKey(args));
   } catch {
     return String(args);
   }
+}
+
+function normalizeForStableKey(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => normalizeForStableKey(item));
+  }
+  const obj = value as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(obj).sort()) {
+    sorted[key] = normalizeForStableKey(obj[key]);
+  }
+  return sorted;
 }
 
 function safeParseObject(raw: string): Record<string, unknown> {
