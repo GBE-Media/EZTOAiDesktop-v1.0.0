@@ -31,6 +31,11 @@ import {
   detectionPctToDocPointerFields,
   parseChatMarkupPointerRow,
 } from './placement/parseChatMarkupPointer';
+import {
+  applyLegendAwareCounting,
+  formatLegendPromptBlock,
+  parseLegendFromTextLines,
+} from './detection/legendAwareCounting';
 
 export interface PipelineProgress {
   stage: PipelineStage | 'complete' | 'error';
@@ -444,14 +449,6 @@ export function reconcileTileDetections(
   return reconciled;
 }
 
-function countsFromDetections(items: BlueprintAnalysisResult['items']): Record<string, number> {
-  return items.reduce<Record<string, number>>((counts, item) => {
-    const key = item.type || item.name || 'Unknown';
-    counts[key] = (counts[key] || 0) + 1;
-    return counts;
-  }, {});
-}
-
 export interface MaximumAccuracyPageResult {
   analysis: BlueprintAnalysisResult;
   overviewImage: string;
@@ -495,10 +492,19 @@ export async function analyzePageMaximumAccuracy(options: {
   const textContext = visibleOnly || !textEvidence.context
     ? ''
     : `${textEvidence.source === 'ocr' ? 'OCR' : 'Native PDF'} text evidence:\n${textEvidence.context}`;
+
+  // Legend-aware: extract type codes from THIS page's schedule/legend text before vision.
+  const textLines = textEvidence.context
+    ? textEvidence.context.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    : [];
+  const legendEntries = visibleOnly ? [] : parseLegendFromTextLines(textLines);
+  const legendPrompt = formatLegendPromptBlock(legendEntries);
+
   const commonContext = [
     visibleOnly
       ? 'VISIBLE-ONLY MODE: Count only physical symbols visible in the drawing. Never use schedule rows as quantities.'
       : 'Use schedules and legends only to identify symbol types; never treat schedule rows as placed quantities.',
+    legendPrompt || undefined,
     userPrompt ? `User request: ${userPrompt}` : undefined,
     trainingContext,
     textContext,
@@ -545,16 +551,32 @@ export async function analyzePageMaximumAccuracy(options: {
 
   onProgress?.(`Reconciling page ${page} detections...`, 80);
   const tileItems = reconcileTileDetections(tileResults, pageWidth, pageHeight);
-  const items = tileItems.length > 0 ? tileItems : overview.items;
-  const typeCounts = countsFromDetections(items);
+  const rawItems = tileItems.length > 0 ? tileItems : overview.items;
+
+  // Post-vision: remap free-form labels onto this page's legend type codes.
+  const legendAware = applyLegendAwareCounting({
+    items: rawItems,
+    legendEntries,
+    trade,
+  });
+  const items = legendAware.items;
+  const typeCounts = legendEntries.length > 0
+    ? legendAware.legendTypeCounts
+    : legendAware.typeCounts;
   const questions = [
     ...(overview.questions || []),
     ...tileResults.flatMap(({ result }) => result.questions || []),
+    ...legendAware.verification.notes.filter((note) =>
+      /ambiguous|could not be matched|provisional|Reliability:/i.test(note),
+    ),
   ];
   const evidence = Array.from(new Set([
     ...(overview.evidence || []),
     ...tileResults.flatMap(({ result }) => result.evidence || []),
     ...items.map(item => item.evidence).filter((value): value is string => !!value),
+    ...(legendEntries.length
+      ? [`Legend types: ${legendEntries.map((e) => e.typeCode).join(', ')}`]
+      : []),
   ]));
 
   onProgress?.(`Verifying page ${page} results...`, 90);
@@ -599,6 +621,10 @@ ${JSON.stringify(items.map(item => ({
       page,
       items,
       typeCounts,
+      legendTypeCodes: legendEntries.map((e) => e.typeCode),
+      legendTypeCounts: legendAware.legendTypeCounts,
+      countReliability: legendAware.reliability,
+      countVerificationNotes: legendAware.verification.notes,
       questions: Array.from(new Set([...questions, ...verifiedQuestions])),
       evidence: Array.from(new Set([...evidence, ...verifiedEvidence])),
     },

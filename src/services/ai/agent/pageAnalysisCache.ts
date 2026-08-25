@@ -256,6 +256,9 @@ export interface PageItemCountResult {
     location?: DetectedItem['location'];
     confidence?: number;
   }>;
+  countReliability?: 'high' | 'partial' | 'low';
+  legendTypeCodes?: string[];
+  verificationNotes?: string[];
   message?: string;
 }
 
@@ -286,7 +289,12 @@ export function countItemsFromAnalysis(
   const q = query.trim();
   const items = analysis.items || [];
   const matchingItems = items.filter(item => itemMatchesQuery(item, q));
-  const allTypeCounts = { ...(analysis.typeCounts || {}) };
+  // Prefer legend-grounded counts when present (includes zero-count legend types).
+  const allTypeCounts = {
+    ...(analysis.legendTypeCounts && Object.keys(analysis.legendTypeCounts).length > 0
+      ? analysis.legendTypeCounts
+      : analysis.typeCounts || {}),
+  };
   const matchingTypeCounts: Record<string, number> = {};
   for (const [type, count] of Object.entries(allTypeCounts)) {
     if (typeKeyMatchesQuery(type, q)) {
@@ -299,6 +307,15 @@ export function countItemsFromAnalysis(
     (sum, item) => sum + (typeof item.quantity === 'number' && item.quantity > 0 ? item.quantity : 1),
     0,
   );
+
+  const reliability = analysis.countReliability;
+  const verificationNotes = analysis.countVerificationNotes || [];
+  const reliabilityNote = reliability
+    ? ` Count reliability: ${reliability}.`
+    : '';
+  const legendNote = analysis.legendTypeCodes?.length
+    ? ` Legend-grounded types: ${analysis.legendTypeCodes.join(', ')}.`
+    : ' No page legend types extracted — treat per-type counts as provisional.';
 
   return {
     status: 'completed',
@@ -316,8 +333,14 @@ export function countItemsFromAnalysis(
       location: item.location,
       confidence: item.confidence,
     })),
-    message: q
+    countReliability: reliability,
+    legendTypeCodes: analysis.legendTypeCodes,
+    verificationNotes,
+    message: (q
       ? `Counted items matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
-      : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`,
+      : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`)
+      + reliabilityNote
+      + legendNote
+      + (verificationNotes.length ? ` ${verificationNotes[0]}` : ''),
   };
 }
