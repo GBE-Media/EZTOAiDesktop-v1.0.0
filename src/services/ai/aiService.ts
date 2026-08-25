@@ -615,6 +615,9 @@ Respond with a JSON object in this format:
       "boundingBox": { "x": 48, "y": 28, "width": 4, "height": 4 },
       "confidence": 0.95,
       "evidence": "Visible symbol and adjacent type callout",
+      "legendTypeCode": "A",
+      "matchConfidence": "high",
+      "matchReasoning": "Matches TYPE A schedule symbol; no emergency/night-light modifier visible",
       "codeReference": "NEC 210.52",
       "notes": "any relevant notes"
     }

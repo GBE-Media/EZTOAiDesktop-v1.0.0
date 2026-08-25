@@ -136,6 +136,14 @@ export interface BlueprintAnalysisResult {
   text: ExtractedText[];
   symbols: DetectedSymbol[];
   typeCounts?: Record<string, number>;
+  /** Legend type codes extracted from this page (schedule/legend). */
+  legendTypeCodes?: string[];
+  /** Full per-legend-type counts including zeros. */
+  legendTypeCounts?: Record<string, number>;
+  /** Legend-grounded reliability for per-type counts. */
+  countReliability?: 'high' | 'partial' | 'low';
+  /** Verification notes from legend-aware self-check. */
+  countVerificationNotes?: string[];
   questions?: string[];
   questionOptions?: QuestionOption[];
   evidence?: string[];
@@ -172,6 +180,15 @@ export interface DetectedItem {
   evidence?: string;
   codeReference?: string;
   notes?: string;
+  /**
+   * Vision-native legend classification: exact page legend type code, or
+   * "no_confident_match". Validated in code against the page legend allow-list.
+   */
+  legendTypeCode?: string;
+  /** Vision self-assessed confidence for legendTypeCode. */
+  matchConfidence?: 'high' | 'medium' | 'low';
+  /** Short explanation of why this legendTypeCode was chosen. */
+  matchReasoning?: string;
 }
 
 export interface DetectedDimension {

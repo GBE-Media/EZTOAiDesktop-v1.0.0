@@ -26,11 +26,20 @@ import type {
   LayoutSuggestion,
   PipelineStage,
   ChatMarkupPointer,
+  DetectedItem,
 } from './providers/types';
 import {
   detectionPctToDocPointerFields,
   parseChatMarkupPointerRow,
 } from './placement/parseChatMarkupPointer';
+import {
+  applyLegendAwareCounting,
+  parseLegendFromTextLines,
+} from './detection/legendAwareCounting';
+import {
+  buildLegendClassificationPrompt,
+  resolveLegendAwareCounting,
+} from './detection/visionLegendClassification';
 
 export interface PipelineProgress {
   stage: PipelineStage | 'complete' | 'error';
@@ -312,6 +321,17 @@ function normalizeAnalysis(
       evidence: typeof candidate.evidence === 'string' ? candidate.evidence : undefined,
       codeReference: typeof candidate.codeReference === 'string' ? candidate.codeReference : undefined,
       notes: typeof candidate.notes === 'string' ? candidate.notes : undefined,
+      legendTypeCode: typeof candidate.legendTypeCode === 'string'
+        ? candidate.legendTypeCode
+        : undefined,
+      matchConfidence: ((): DetectedItem['matchConfidence'] => {
+        const raw = candidate.matchConfidence;
+        if (raw === 'high' || raw === 'medium' || raw === 'low') return raw;
+        return undefined;
+      })(),
+      matchReasoning: typeof candidate.matchReasoning === 'string'
+        ? candidate.matchReasoning
+        : undefined,
     };
   });
 
@@ -444,14 +464,6 @@ export function reconcileTileDetections(
   return reconciled;
 }
 
-function countsFromDetections(items: BlueprintAnalysisResult['items']): Record<string, number> {
-  return items.reduce<Record<string, number>>((counts, item) => {
-    const key = item.type || item.name || 'Unknown';
-    counts[key] = (counts[key] || 0) + 1;
-    return counts;
-  }, {});
-}
-
 export interface MaximumAccuracyPageResult {
   analysis: BlueprintAnalysisResult;
   overviewImage: string;
@@ -495,10 +507,19 @@ export async function analyzePageMaximumAccuracy(options: {
   const textContext = visibleOnly || !textEvidence.context
     ? ''
     : `${textEvidence.source === 'ocr' ? 'OCR' : 'Native PDF'} text evidence:\n${textEvidence.context}`;
+
+  // Legend-aware: extract type codes from THIS page's schedule/legend text before vision.
+  const textLines = textEvidence.context
+    ? textEvidence.context.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    : [];
+  const legendEntries = visibleOnly ? [] : parseLegendFromTextLines(textLines);
+  const legendPrompt = buildLegendClassificationPrompt(legendEntries);
+
   const commonContext = [
     visibleOnly
       ? 'VISIBLE-ONLY MODE: Count only physical symbols visible in the drawing. Never use schedule rows as quantities.'
       : 'Use schedules and legends only to identify symbol types; never treat schedule rows as placed quantities.',
+    legendPrompt || undefined,
     userPrompt ? `User request: ${userPrompt}` : undefined,
     trainingContext,
     textContext,
@@ -537,6 +558,9 @@ export async function analyzePageMaximumAccuracy(options: {
       trade,
       `${commonContext}\n\nDETAIL TILE ${tile.region.id}: Find every physical instance visible in this crop. ` +
       'Return one item per physical symbol with quantity 1, center location and boundingBox in 0-100 coordinates relative to this tile, confidence, and visual evidence. ' +
+      (legendEntries.length
+        ? 'For each item include legendTypeCode (from the allowed legend list or "no_confident_match"), matchConfidence ("high"|"medium"|"low"), and matchReasoning. '
+        : '') +
       'Do not count schedule/legend rows as installed items.',
       page
     );
@@ -545,16 +569,33 @@ export async function analyzePageMaximumAccuracy(options: {
 
   onProgress?.(`Reconciling page ${page} detections...`, 80);
   const tileItems = reconcileTileDetections(tileResults, pageWidth, pageHeight);
-  const items = tileItems.length > 0 ? tileItems : overview.items;
-  const typeCounts = countsFromDetections(items);
+  const rawItems = tileItems.length > 0 ? tileItems : overview.items;
+
+  // Primary: vision-native legendTypeCode fields. Secondary: token-overlap only when absent.
+  const legendAware = resolveLegendAwareCounting({
+    items: rawItems,
+    legendEntries,
+    trade,
+    applyTokenOverlapFallback: applyLegendAwareCounting,
+  });
+  const items = legendAware.items;
+  const typeCounts = legendEntries.length > 0
+    ? legendAware.legendTypeCounts
+    : legendAware.typeCounts;
   const questions = [
     ...(overview.questions || []),
     ...tileResults.flatMap(({ result }) => result.questions || []),
+    ...legendAware.verification.notes.filter((note) =>
+      /ambiguous|could not be matched|provisional|Reliability:/i.test(note),
+    ),
   ];
   const evidence = Array.from(new Set([
     ...(overview.evidence || []),
     ...tileResults.flatMap(({ result }) => result.evidence || []),
     ...items.map(item => item.evidence).filter((value): value is string => !!value),
+    ...(legendEntries.length
+      ? [`Legend types: ${legendEntries.map((e) => e.typeCode).join(', ')}`]
+      : []),
   ]));
 
   onProgress?.(`Verifying page ${page} results...`, 90);
@@ -599,6 +640,10 @@ ${JSON.stringify(items.map(item => ({
       page,
       items,
       typeCounts,
+      legendTypeCodes: legendEntries.map((e) => e.typeCode),
+      legendTypeCounts: legendAware.legendTypeCounts,
+      countReliability: legendAware.reliability,
+      countVerificationNotes: legendAware.verification.notes,
       questions: Array.from(new Set([...questions, ...verifiedQuestions])),
       evidence: Array.from(new Set([...evidence, ...verifiedEvidence])),
     },
