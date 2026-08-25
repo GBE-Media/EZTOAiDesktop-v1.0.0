@@ -286,7 +286,7 @@ const initialState: CanvasState = {
   
   gridSize: 20,
   snapToGrid: false,
-  snapToObjects: false,
+  snapToObjects: true, // Must match editorStore.snapEnabled default (true)
   snapPoints: [],
   
   // Document content snap

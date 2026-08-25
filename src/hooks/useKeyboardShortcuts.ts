@@ -1,6 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
+import { toggleSnapToObjectsEnabled } from '@/store/snapSettings';
 import { useHistoryStore } from '@/store/historyStore';
 import { useFileOpen } from '@/hooks/useFileOpen';
 import { useProjectSave } from '@/hooks/useProjectSave';
@@ -32,7 +33,8 @@ const KEYBOARD_SHORTCUTS: Record<string, ToolType | 'action'> = {
 };
 
 export function useKeyboardShortcuts() {
-  const { setActiveTool, toggleGrid, toggleSnap } = useEditorStore();
+  const { setActiveTool, toggleGrid } = useEditorStore();
+
   const { 
     pdfDocuments,
     activeDocId,
@@ -148,7 +150,7 @@ export function useKeyboardShortcuts() {
       switch (key) {
         case 's':
           e.preventDefault();
-          toggleSnap();
+          toggleSnapToObjectsEnabled();
           break;
         case 'c':
           e.preventDefault();
@@ -218,7 +220,6 @@ export function useKeyboardShortcuts() {
   }, [
     setActiveTool, 
     toggleGrid, 
-    toggleSnap, 
     setZoom, 
     zoom, 
     triggerFileDialog,

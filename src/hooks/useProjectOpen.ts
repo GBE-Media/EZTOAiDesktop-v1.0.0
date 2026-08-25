@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
+import { setSnapToObjectsEnabled, syncCanvasSnapFromEditor } from '@/store/snapSettings';
 import { useProductStore } from '@/store/productStore';
 import { loadPDF, getPageDimensions } from '@/lib/pdfLoader';
 import { toast } from 'sonner';
@@ -8,7 +9,7 @@ import type { ProjectFile } from '@/types/project';
 import type { LinkedMeasurement, ProductNode } from '@/types/product';
 
 export function useProjectOpen() {
-  const { addDocument, setActiveDocument, setScale, setScaleUnit, toggleSnap, toggleGrid, snapEnabled, gridEnabled } = useEditorStore();
+  const { addDocument, setActiveDocument, setScale, setScaleUnit, toggleGrid, gridEnabled } = useEditorStore();
   const { setPdfDocument, setMarkupsForPage, setActiveDocId } = useCanvasStore();
   const { loadFromDatabase } = useProductStore();
 
@@ -35,12 +36,12 @@ export function useProjectOpen() {
         setScale(projectData.settings.scale);
         setScaleUnit(projectData.settings.scaleUnit);
         
-        if (projectData.settings.snapEnabled !== snapEnabled) {
-          toggleSnap();
-        }
+        setSnapToObjectsEnabled(Boolean(projectData.settings.snapEnabled));
         if (projectData.settings.gridEnabled !== gridEnabled) {
           toggleGrid();
         }
+      } else {
+        syncCanvasSnapFromEditor();
       }
 
       // Restore only project measurement links. Catalog data remains sourced
@@ -205,7 +206,7 @@ export function useProjectOpen() {
       toast.error('Failed to load project', { id: 'load-project' });
       return false;
     }
-  }, [addDocument, setPdfDocument, setMarkupsForPage, setActiveDocument, setActiveDocId, setScale, setScaleUnit, toggleSnap, toggleGrid, snapEnabled, gridEnabled, loadFromDatabase]);
+  }, [addDocument, setPdfDocument, setMarkupsForPage, setActiveDocument, setActiveDocId, setScale, setScaleUnit, toggleGrid, gridEnabled, loadFromDatabase]);
 
   const openProjectFile = useCallback(async () => {
     if (!window.electronAPI?.openFile) {
