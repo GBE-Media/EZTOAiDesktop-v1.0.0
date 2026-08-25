@@ -186,4 +186,51 @@ describe('vision-native legend classification', () => {
     expect(resolved.path).toBe('token-overlap-fallback');
     expect(fallback).toHaveBeenCalledOnce();
   });
+
+  it('resolveLegendAwareCounting: present-but-invalid legendTypeCode does NOT invoke token-overlap fallback', () => {
+    const fallback = vi.fn(applyLegendAwareCounting);
+    const resolved = resolveLegendAwareCounting({
+      items: [det({
+        id: 'only',
+        legendTypeCode: 'NOT_ON_THIS_PAGE',
+        matchConfidence: 'high',
+        matchReasoning: 'invented',
+      })],
+      legendEntries: legend,
+      applyTokenOverlapFallback: fallback,
+    });
+    expect(resolved.path).toBe('vision-native');
+    expect(fallback).not.toHaveBeenCalled();
+    expect(resolved.unresolved).toHaveLength(1);
+    expect(resolved.unresolved[0]?.id).toBe('only');
+    expect(Object.values(resolved.legendTypeCounts).every((n) => n === 0)).toBe(true);
+  });
+
+  it('resolveLegendAwareCounting: mixed batch (one structured, one absent) stays vision-native batch-wide', () => {
+    const fallback = vi.fn(applyLegendAwareCounting);
+    const resolved = resolveLegendAwareCounting({
+      items: [
+        det({
+          id: 'structured',
+          legendTypeCode: 'EX1',
+          matchConfidence: 'high',
+          matchReasoning: 'Exit sign',
+        }),
+        det({
+          id: 'absent',
+          type: 'B',
+          name: 'night light fixture',
+          // no legendTypeCode — must NOT be rescued by token-overlap in a mixed batch
+        }),
+      ],
+      legendEntries: legend,
+      applyTokenOverlapFallback: fallback,
+    });
+    expect(resolved.path).toBe('vision-native');
+    expect(fallback).not.toHaveBeenCalled();
+    expect(resolved.legendTypeCounts.EX1).toBe(1);
+    // Sibling without structured fields is unresolved under vision-native, not remapped to B-NL.
+    expect(resolved.unresolved.some((i) => i.id === 'absent')).toBe(true);
+    expect(resolved.legendTypeCounts['B-NL'] ?? 0).toBe(0);
+  });
 });

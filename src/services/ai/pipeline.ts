@@ -26,7 +26,6 @@ import type {
   LayoutSuggestion,
   PipelineStage,
   ChatMarkupPointer,
-  DetectedItem,
 } from './providers/types';
 import {
   detectionPctToDocPointerFields,
@@ -38,6 +37,7 @@ import {
 } from './detection/legendAwareCounting';
 import {
   buildLegendClassificationPrompt,
+  normalizeMatchConfidence,
   resolveLegendAwareCounting,
 } from './detection/visionLegendClassification';
 
@@ -283,7 +283,7 @@ function normalizePercent(value: unknown): number {
   return Math.max(0, Math.min(100, number));
 }
 
-function normalizeAnalysis(
+export function normalizeAnalysis(
   raw: unknown,
   page: number,
   trade: TradeType
@@ -295,6 +295,9 @@ function normalizeAnalysis(
   const items = data.items.map((candidate, index) => {
     const location = (candidate.location || {}) as Record<string, unknown>;
     const bounds = (candidate.boundingBox || {}) as Record<string, unknown>;
+    const rawLegendType = typeof candidate.legendTypeCode === 'string'
+      ? candidate.legendTypeCode.trim()
+      : undefined;
     return {
       id: typeof candidate.id === 'string' ? candidate.id : `detected_${page}_${index}`,
       type: typeof candidate.type === 'string' ? candidate.type : 'unknown',
@@ -321,14 +324,9 @@ function normalizeAnalysis(
       evidence: typeof candidate.evidence === 'string' ? candidate.evidence : undefined,
       codeReference: typeof candidate.codeReference === 'string' ? candidate.codeReference : undefined,
       notes: typeof candidate.notes === 'string' ? candidate.notes : undefined,
-      legendTypeCode: typeof candidate.legendTypeCode === 'string'
-        ? candidate.legendTypeCode
-        : undefined,
-      matchConfidence: ((): DetectedItem['matchConfidence'] => {
-        const raw = candidate.matchConfidence;
-        if (raw === 'high' || raw === 'medium' || raw === 'low') return raw;
-        return undefined;
-      })(),
+      legendTypeCode: rawLegendType || undefined,
+      // Single source of truth: same case-insensitive trim as downstream normalizer.
+      matchConfidence: normalizeMatchConfidence(candidate.matchConfidence),
       matchReasoning: typeof candidate.matchReasoning === 'string'
         ? candidate.matchReasoning
         : undefined,
