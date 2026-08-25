@@ -15,7 +15,7 @@ export type LegendEntry = {
   source: 'legend' | 'schedule' | 'text';
 };
 
-export type LegendMatchKind = 'exact' | 'token' | 'none' | 'ambiguous';
+export type LegendMatchKind = 'exact' | 'token' | 'description' | 'none' | 'ambiguous';
 
 export type LegendNormalizeResult = {
   typeCode: string | null;
@@ -141,10 +141,95 @@ export function sortTypeCodesSpecificFirst(codes: string[]): string[] {
   return [...codes].sort((a, b) => b.length - a.length || a.localeCompare(b));
 }
 
-/** Description overlap must be a real majority with ≥2 tokens — never a single incidental word. */
-function descriptionMatchQualifies(matchedCount: number, descTokenCount: number): boolean {
-  if (descTokenCount <= 0 || matchedCount < 2) return false;
-  return matchedCount / descTokenCount > 0.5;
+/**
+ * English function/connective words — not trade vocabulary.
+ * Stripped before cross-legend frequency so "WITH" cannot pollute uniqueness.
+ */
+const DESCRIPTION_FUNCTION_WORDS = new Set([
+  'WITH', 'FROM', 'INTO', 'OVER', 'ONLY', 'ALSO', 'THAN', 'THEN', 'EACH',
+  'BOTH', 'SUCH', 'SAME', 'HAVING', 'BEING', 'HAVE', 'BEEN', 'WERE', 'THIS', 'THAT',
+]);
+
+export function tokenizeDescription(description: string): string[] {
+  return description
+    .toUpperCase()
+    .split(/[^A-Z0-9]+/)
+    .filter((tok) => tok.length >= 4 && !DESCRIPTION_FUNCTION_WORDS.has(tok));
+}
+
+/** How many legend entries on this page include each description token. */
+export function buildLegendTokenFrequency(legend: LegendEntry[]): Map<string, number> {
+  const freq = new Map<string, number>();
+  for (const entry of legend) {
+    const seen = new Set(tokenizeDescription(entry.description || ''));
+    for (const tok of seen) {
+      freq.set(tok, (freq.get(tok) || 0) + 1);
+    }
+  }
+  return freq;
+}
+
+/**
+ * Tokens that appear in only one legend description on this page.
+ * Shared/generic words (WALL, LIGHT, MOUNT when they span siblings) are excluded.
+ */
+function discriminatingTokens(tokens: string[], freq: Map<string, number>): string[] {
+  return tokens.filter((tok) => (freq.get(tok) || 0) <= 1);
+}
+
+/**
+ * Description match using page-local specificity (Option A).
+ * Requires a majority of THIS entry's unique vocabulary, never generic cross-legend words.
+ */
+function descriptionMatchQualifies(discMatched: number, discDescCount: number): boolean {
+  if (discDescCount <= 0 || discMatched < 1) return false;
+  if (discMatched / discDescCount <= 0.5) return false;
+  // ≥2 unique matches always OK; a single unique token is OK only when the
+  // entry has at most 2 unique tokens (WASHER, FIXTURE, EMERGENCY alone).
+  if (discMatched >= 2) return true;
+  return discDescCount <= 2;
+}
+
+function idfWeight(token: string, freq: Map<string, number>, legendSize: number): number {
+  const f = Math.max(1, freq.get(token) || 1);
+  return Math.log(1 + legendSize / f);
+}
+
+/**
+ * When an entry's description has no page-unique tokens (every word is shared
+ * with some sibling — e.g. A/EM/NL sharing EMERGENCY with EM1/ER1), allow a
+ * stricter IDF-weighted fallback: need ≥3 matched tokens and strong cumulative
+ * IDF, so 2 generic words (WALL+LIGHT) still cannot upgrade.
+ */
+function descriptionMatchQualifiesIdfFallback(
+  matched: string[],
+  descTokens: string[],
+  freq: Map<string, number>,
+  legendSize: number,
+): boolean {
+  if (matched.length < 3 || descTokens.length === 0) return false;
+  const effectiveMatched = matched.reduce((sum, tok) => sum + idfWeight(tok, freq, legendSize), 0);
+  const effectiveDesc = descTokens.reduce((sum, tok) => sum + idfWeight(tok, freq, legendSize), 0);
+  if (effectiveDesc <= 0) return false;
+  const ratio = effectiveMatched / effectiveDesc;
+  // Require roughly ≥2.5 "fully unique" IDF units so sparse generic overlap fails.
+  const minIdf = idfWeight('__unique__', new Map([['__unique__', 1]]), legendSize) * 2.5;
+  return ratio > 0.5 && effectiveMatched >= minIdf;
+}
+
+function scoreDescriptionOverlap(
+  discMatched: number,
+  discRatio: number,
+  matched: string[],
+  freq: Map<string, number>,
+  legendSize: number,
+  codeLength: number,
+): number {
+  if (discMatched > 0) {
+    return 3 + discMatched * 2 + discRatio + codeLength / 100;
+  }
+  const idf = matched.reduce((sum, tok) => sum + idfWeight(tok, freq, legendSize), 0);
+  return 2.5 + idf + codeLength / 100;
 }
 
 /**
@@ -165,6 +250,7 @@ export function normalizeTypeAgainstLegend(
   const hayCompact = hay.replace(/\s+/g, '');
   const t = normalizeCode(rawType || '');
   const n = normalizeCode(rawName || '');
+  const tokenFreq = buildLegendTokenFrequency(legend);
 
   type Hit = { code: string; score: number; via: 'exact' | 'token' | 'description' };
   const hits: Hit[] = [];
@@ -187,15 +273,26 @@ export function normalizeTypeAgainstLegend(
 
     const entry = legend.find((e) => e.typeCode === code);
     if (!entry?.description) continue;
-    const descTokens = entry.description
-      .toUpperCase()
-      .split(/[^A-Z0-9]+/)
-      .filter((tok) => tok.length >= 4);
+    const descTokens = tokenizeDescription(entry.description);
     const hayTokens = new Set(hay.split(/[^A-Z0-9]+/).filter(Boolean));
     const matched = descTokens.filter((tok) => hayTokens.has(tok));
-    if (!descriptionMatchQualifies(matched.length, descTokens.length)) continue;
-    const ratio = matched.length / descTokens.length;
-    const score = 3 + matched.length + ratio + code.length / 100;
+    const discDesc = discriminatingTokens(descTokens, tokenFreq);
+    const discMatched = discriminatingTokens(matched, tokenFreq);
+    const primaryOk = descriptionMatchQualifies(discMatched.length, discDesc.length);
+    const fallbackOk = !primaryOk && discDesc.length === 0
+      && descriptionMatchQualifiesIdfFallback(matched, descTokens, tokenFreq, legend.length);
+    if (!primaryOk && !fallbackOk) continue;
+    const ratio = discDesc.length > 0
+      ? discMatched.length / discDesc.length
+      : matched.length / Math.max(descTokens.length, 1);
+    const score = scoreDescriptionOverlap(
+      discMatched.length,
+      ratio,
+      matched,
+      tokenFreq,
+      legend.length,
+      code.length,
+    );
     const existing = hits.find((h) => h.code === code);
     if (existing) {
       existing.score = Math.max(existing.score, score);
@@ -205,8 +302,7 @@ export function normalizeTypeAgainstLegend(
   }
 
   // Demote a generic exact match only when a more-specific sibling has STRONG
-  // evidence (token/exact on the sibling code, or a qualified description majority).
-  // Pure code-string containment (B ⊂ B1) + weak description must NOT demote.
+  // evidence (token/exact on the sibling code, or a specificity-qualified description).
   for (const hit of hits) {
     if (hit.via !== 'exact') continue;
     for (const other of hits) {
@@ -215,7 +311,7 @@ export function normalizeTypeAgainstLegend(
       const strongSibling =
         other.via === 'token'
         || other.via === 'exact'
-        || other.via === 'description'; // description hits already require ≥2 tokens + majority
+        || other.via === 'description';
       if (strongSibling) {
         hit.score = Math.min(hit.score, 4);
       }
@@ -251,9 +347,14 @@ export function normalizeTypeAgainstLegend(
     }
   }
 
+  const matchKind: LegendMatchKind =
+    best.via === 'exact' ? 'exact'
+      : best.via === 'description' ? 'description'
+        : 'token';
+
   return {
     typeCode: best.code,
-    matchKind: best.via === 'exact' ? 'exact' : 'token',
+    matchKind,
     candidates: [best.code],
   };
 }

@@ -84,7 +84,7 @@ export function buildE100MessyVisionDetections(): DetectedItem[] {
   // B detections
   push('B', 'Type B cylinder', 3);
   // B-NL wrongly labeled as B (reported confusion)
-  push('B', 'night light', 1);
+  push('B', 'night light fixture', 1);
   push('B1', 'Type B1 wall washer', 4);
   // C: none
   push('D', 'downlight', 1);

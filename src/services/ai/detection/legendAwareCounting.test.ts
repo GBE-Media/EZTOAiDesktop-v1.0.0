@@ -31,7 +31,7 @@ describe('legend-aware fixture counting', () => {
     const legend = parseLegendFromTextLines(E100_LEGEND_LINES);
     const night = normalizeTypeAgainstLegend('B', 'night light fixture', legend);
     expect(night.typeCode).toBe('B-NL');
-    expect(night.matchKind).not.toBe('ambiguous');
+    expect(night.matchKind).toBe('description');
 
     const plainB = normalizeTypeAgainstLegend('B', 'Type B cylinder', legend);
     expect(plainB.typeCode).toBe('B');
@@ -39,6 +39,7 @@ describe('legend-aware fixture counting', () => {
     const variant = normalizeTypeAgainstLegend('A', 'recessed emergency night light', legend);
     // Should map to A/EM/NL via description tokens, not silently stay as A
     expect(variant.typeCode).toBe('A/EM/NL');
+    expect(variant.matchKind).toBe('description');
   });
 
   it('does not upgrade exact base type to sibling on incidental one-word overlap (B vs B1 WALL WASHER)', () => {
@@ -58,6 +59,56 @@ describe('legend-aware fixture counting', () => {
     const result = normalizeTypeAgainstLegend('C', 'wet area pendant', legend);
     expect(result.typeCode).toBe('C');
     expect(result.typeCode).not.toBe('C1');
+  });
+
+  it('does not upgrade on shared generic legend vocabulary (B vs B2 WALL MOUNT LIGHT)', () => {
+    // ADV1: 2 of 3 tokens overlap, but WALL/MOUNT/LIGHT are common across this page's legend.
+    const legend = [
+      { typeCode: 'A', description: 'RECESSED LIGHT', source: 'schedule' as const },
+      { typeCode: 'B', description: 'SURFACE CYLINDER', source: 'schedule' as const },
+      { typeCode: 'B2', description: 'WALL MOUNT LIGHT', source: 'schedule' as const },
+      { typeCode: 'B3', description: 'WALL MOUNT SCONCE', source: 'schedule' as const },
+      { typeCode: 'D', description: 'DOWNLIGHT WALL WASH', source: 'schedule' as const },
+    ];
+    const result = normalizeTypeAgainstLegend('B', 'wall bracket light', legend);
+    expect(result.typeCode).toBe('B');
+    expect(result.typeCode).not.toBe('B2');
+  });
+
+  it('does not upgrade on 3/4 shared generic tokens against a longer sibling description', () => {
+    // ADV5-style: wall/mount/light/fixture appear across multiple legend rows.
+    const legend = [
+      { typeCode: 'B', description: 'SURFACE CYLINDER', source: 'schedule' as const },
+      { typeCode: 'B4', description: 'WALL MOUNT LIGHT FIXTURE', source: 'schedule' as const },
+      { typeCode: 'E', description: 'WALL LIGHT FIXTURE', source: 'schedule' as const },
+      { typeCode: 'F', description: 'CEILING MOUNT FIXTURE', source: 'schedule' as const },
+    ];
+    const result = normalizeTypeAgainstLegend('B', 'wall mount light unit', legend);
+    expect(result.typeCode).toBe('B');
+    expect(result.typeCode).not.toBe('B4');
+  });
+
+  it('still upgrades when shared vocabulary is page-unique and distinguishing', () => {
+    const legend = parseLegendFromTextLines(E100_LEGEND_LINES);
+    // WASHER is unique to B1 on this legend — must still upgrade.
+    const washer = normalizeTypeAgainstLegend('B', 'wall washer', legend);
+    expect(washer.typeCode).toBe('B1');
+    expect(washer.matchKind).toBe('description');
+
+    // A/EM/NL shares EMERGENCY with EM1/ER1 (not page-unique), but ≥3 overlapping
+    // schedule words still upgrade via the IDF fallback.
+    const compound = normalizeTypeAgainstLegend('A', 'recessed emergency night light', legend);
+    expect(compound.typeCode).toBe('A/EM/NL');
+    expect(compound.matchKind).toBe('description');
+
+    // Truly unique multi-token description on a small legend.
+    const wetLegend = [
+      { typeCode: 'C', description: 'PENDANT', source: 'schedule' as const },
+      { typeCode: 'C1', description: 'WET LOCATION', source: 'schedule' as const },
+    ];
+    const wet = normalizeTypeAgainstLegend('C', 'wet location rated', wetLegend);
+    expect(wet.typeCode).toBe('C1');
+    expect(wet.matchKind).toBe('description');
   });
 
   it('BEFORE (raw counts) fails the E-100 harness; AFTER (legend-aware) matches ground truth', () => {
