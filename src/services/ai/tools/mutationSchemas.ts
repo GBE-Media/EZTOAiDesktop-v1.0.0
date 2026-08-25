@@ -153,6 +153,15 @@ export const proposeCalloutsSchema = z.preprocess(
   }),
 );
 
+const markupStylePatchSchema = z.object({
+  strokeColor: z.string().min(1).optional(),
+  fillColor: z.string().min(1).optional(),
+  strokeWidth: z.number().finite().positive().optional(),
+  opacity: z.number().finite().optional(),
+  fontSize: z.number().finite().positive().optional(),
+  fontFamily: z.string().optional(),
+}).strict();
+
 export const updateMarkupsSchema = z.object({
   ...approvalMetaSchema,
   updates: z.array(z.object({
@@ -167,7 +176,14 @@ export const updateMarkupsSchema = z.object({
       y: z.number().finite().optional(),
       width: z.number().finite().positive().optional(),
       height: z.number().finite().positive().optional(),
-    }).passthrough(),
+      startX: z.number().finite().optional(),
+      startY: z.number().finite().optional(),
+      endX: z.number().finite().optional(),
+      endY: z.number().finite().optional(),
+      leaderPoints: z.array(docPointSchema).optional(),
+      number: z.number().finite().optional(),
+      style: markupStylePatchSchema.optional(),
+    }).strict(),
   })).min(1),
 });
 
@@ -186,9 +202,31 @@ export const linkCatalogSchema = z.object({
   })).min(1),
 });
 
+/** Matches ToolType in src/types/editor.ts — canvas mode handoff for the human. */
+export const editorToolTypeSchema = z.enum([
+  'select',
+  'pan',
+  'text',
+  'highlight',
+  'cloud',
+  'rectangle',
+  'ellipse',
+  'line',
+  'arrow',
+  'polyline',
+  'polygon',
+  'callout',
+  'stamp',
+  'freehand',
+  'eraser',
+  'count',
+  'measure-length',
+  'measure-area',
+]);
+
 export const activateEditorToolSchema = z.object({
   description: z.string().min(1).optional(),
-  tool: z.string().min(1),
+  tool: editorToolTypeSchema,
 });
 
 export const applyMaterialCountAdjustmentsSchema = z.object({

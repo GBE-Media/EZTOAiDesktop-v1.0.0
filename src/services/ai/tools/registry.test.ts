@@ -75,6 +75,21 @@ describe('assistant tool registry', () => {
     expect(context.navigateToPage).toHaveBeenCalledWith(2, bounds);
   });
 
+  it('activate_editor_tool runs immediately without approval', async () => {
+    const context = makeContext();
+    context.activateEditorTool = vi.fn(() => ({
+      activated: true,
+      tool: 'measure-length',
+      message: 'Switched to measure-length tool — please use the canvas to continue.',
+    }));
+    const result = await executeAssistantTool('activate_editor_tool', {
+      tool: 'measure-length',
+    }, context);
+    expect(result.status).toBe('completed');
+    expect(context.addApproval).not.toHaveBeenCalled();
+    expect(context.activateEditorTool).toHaveBeenCalledWith('measure-length');
+  });
+
   it('executes only an explicitly approved action', async () => {
     const context = makeContext();
     const pointers = [{
