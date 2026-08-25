@@ -442,6 +442,31 @@ describe('page analysis cache + count_page_items', () => {
     expect(result.matchingTypeCounts).toEqual({ light: 2 });
   });
 
+  it('countItemsFromAnalysis surfaces legend reliability and verification notes to the model', () => {
+    const analysis = {
+      ...analysisFixture(),
+      typeCounts: { A: 8, B: 4 },
+      legendTypeCounts: { A: 8, 'A/EM/NL': 1, B: 3, 'B-NL': 1, B1: 4 },
+      legendTypeCodes: ['A', 'A/EM/NL', 'B', 'B-NL', 'B1'],
+      countReliability: 'partial' as const,
+      countVerificationNotes: [
+        'Legend-grounded using 5 type code(s) from this page: A, A/EM/NL, B, B-NL, B1',
+        '1 detection(s) could not be matched to the page legend.',
+        'Reliability: partial. Do not present per-type counts as final without review of flagged items.',
+      ],
+    };
+
+    const result = countItemsFromAnalysis(analysis, '');
+    expect(result.allTypeCounts).toEqual(analysis.legendTypeCounts);
+    expect(result.countReliability).toBe('partial');
+    expect(result.legendTypeCodes).toEqual(analysis.legendTypeCodes);
+    expect(result.verificationNotes).toEqual(analysis.countVerificationNotes);
+    expect(result.message).toMatch(/Count reliability: partial/i);
+    expect(result.message).toMatch(/Legend-grounded types:/i);
+    expect(result.message).toMatch(/could not be matched|Legend-grounded using/i);
+    expect(result.message).not.toMatch(/No page legend types extracted/);
+  });
+
   it('routing puts count_page_items first for counting requests', () => {
     const intake = runIntake({
       userMessage: 'Yes, please help with counting the lights on the lighting plan',

@@ -41,6 +41,25 @@ describe('legend-aware fixture counting', () => {
     expect(variant.typeCode).toBe('A/EM/NL');
   });
 
+  it('does not upgrade exact base type to sibling on incidental one-word overlap (B vs B1 WALL WASHER)', () => {
+    const legend = parseLegendFromTextLines(E100_LEGEND_LINES);
+    // B1 description is "WALL WASHER" (2 tokens). "wall" alone must NOT steal exact B.
+    const result = normalizeTypeAgainstLegend('B', 'wall sconce', legend);
+    expect(result.typeCode).toBe('B');
+    expect(result.typeCode).not.toBe('B1');
+  });
+
+  it('does not upgrade exact base type to sibling on incidental one-word overlap (C vs C1 WET LOCATION)', () => {
+    const legend = [
+      { typeCode: 'C', description: 'PENDANT', source: 'schedule' as const },
+      { typeCode: 'C1', description: 'WET LOCATION', source: 'schedule' as const },
+    ];
+    // Single shared word "wet" against 2-token sibling description must not demote exact C.
+    const result = normalizeTypeAgainstLegend('C', 'wet area pendant', legend);
+    expect(result.typeCode).toBe('C');
+    expect(result.typeCode).not.toBe('C1');
+  });
+
   it('BEFORE (raw counts) fails the E-100 harness; AFTER (legend-aware) matches ground truth', () => {
     const legend = parseLegendFromTextLines(E100_LEGEND_LINES);
     const messy = buildE100MessyVisionDetections();

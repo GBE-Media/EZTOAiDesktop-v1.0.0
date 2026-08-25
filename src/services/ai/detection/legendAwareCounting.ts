@@ -141,6 +141,12 @@ export function sortTypeCodesSpecificFirst(codes: string[]): string[] {
   return [...codes].sort((a, b) => b.length - a.length || a.localeCompare(b));
 }
 
+/** Description overlap must be a real majority with ≥2 tokens — never a single incidental word. */
+function descriptionMatchQualifies(matchedCount: number, descTokenCount: number): boolean {
+  if (descTokenCount <= 0 || matchedCount < 2) return false;
+  return matchedCount / descTokenCount > 0.5;
+}
+
 /**
  * Map a free-form vision label onto the page's own legend type codes.
  * Never invents a type code that is not in the legend.
@@ -165,7 +171,6 @@ export function normalizeTypeAgainstLegend(
 
   for (const code of codes) {
     if (t === code || n === code) {
-      // Exact on a short/generic code can be demoted if a longer variant also matches.
       hits.push({ code, score: 10 + code.length / 100, via: 'exact' });
     }
   }
@@ -188,24 +193,30 @@ export function normalizeTypeAgainstLegend(
       .filter((tok) => tok.length >= 4);
     const hayTokens = new Set(hay.split(/[^A-Z0-9]+/).filter(Boolean));
     const matched = descTokens.filter((tok) => hayTokens.has(tok));
-    if (descTokens.length === 0 || matched.length / descTokens.length < 0.5) continue;
+    if (!descriptionMatchQualifies(matched.length, descTokens.length)) continue;
     const ratio = matched.length / descTokens.length;
     const score = 3 + matched.length + ratio + code.length / 100;
     const existing = hits.find((h) => h.code === code);
     if (existing) {
-      // Description evidence can elevate a code above a bare exact short match.
       existing.score = Math.max(existing.score, score);
     } else {
       hits.push({ code, score, via: 'description' });
     }
   }
 
-  // Demote generic exact matches when a more-specific sibling also scored.
+  // Demote a generic exact match only when a more-specific sibling has STRONG
+  // evidence (token/exact on the sibling code, or a qualified description majority).
+  // Pure code-string containment (B ⊂ B1) + weak description must NOT demote.
   for (const hit of hits) {
     if (hit.via !== 'exact') continue;
     for (const other of hits) {
       if (other.code === hit.code) continue;
-      if (other.code.includes(hit.code) && other.score >= 3) {
+      if (!other.code.includes(hit.code)) continue;
+      const strongSibling =
+        other.via === 'token'
+        || other.via === 'exact'
+        || other.via === 'description'; // description hits already require ≥2 tokens + majority
+      if (strongSibling) {
         hit.score = Math.min(hit.score, 4);
       }
     }
