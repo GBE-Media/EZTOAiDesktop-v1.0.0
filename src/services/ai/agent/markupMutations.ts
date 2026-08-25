@@ -4,6 +4,7 @@ import { useCanvasStore } from '@/store/canvasStore';
 import { useEditorStore } from '@/store/editorStore';
 import { useHistoryStore } from '@/store/historyStore';
 import { BASE_RENDER_SCALE, createPageGeometry, docToRender } from '../placement/coords';
+import { loadPageGeometries } from '../placement/loadPageGeometries';
 import type { DocPoint, PageGeometry } from '../placement/types';
 
 export const EDITOR_TOOL_TYPES = [
@@ -104,9 +105,8 @@ function getActiveDocData() {
 }
 
 /**
- * Prefer cached per-page PageGeometry (includes real PDF rotationDeg from
- * loadPageGeometries). Fall back to document display size with rotation 0 only
- * when no cache exists yet.
+ * Prefer cached per-page PageGeometry (includes real PDF rotationDeg).
+ * Sync fallback only — prefer ensurePageGeometry when rotation must be correct.
  */
 export function pageGeometryFor(page: number): PageGeometry {
   const meta = getActiveDocData();
@@ -129,6 +129,46 @@ export function pageGeometryFor(page: number): PageGeometry {
     renderScale: BASE_RENDER_SCALE,
     rotationDeg: 0,
   });
+}
+
+/**
+ * Resolve page geometry with real rotation even when the cache is cold
+ * (e.g. update_markups before any place_markups on that page). Uses the same
+ * loadPageGeometries path as place/normalize, then caches the result.
+ */
+export async function ensurePageGeometry(page: number): Promise<PageGeometry> {
+  const meta = getActiveDocData();
+  const cached = meta?.canvas.getPageGeometry(page);
+  if (cached) {
+    return createPageGeometry({
+      pageNumber: page,
+      docWidth: cached.docWidth,
+      docHeight: cached.docHeight,
+      renderScale: BASE_RENDER_SCALE,
+      rotationDeg: cached.rotationDeg,
+    });
+  }
+
+  const pdfDocument = meta?.docData.pdfDocument ?? null;
+  if (pdfDocument && typeof pdfDocument.getPage === 'function') {
+    const { geometryByPage } = await loadPageGeometries({
+      pageNumbers: [page],
+      pdfDocument,
+    });
+    const loaded = geometryByPage.get(page);
+    if (loaded) {
+      meta?.canvas.cachePageGeometries(geometryByPage);
+      return createPageGeometry({
+        pageNumber: page,
+        docWidth: loaded.docWidth,
+        docHeight: loaded.docHeight,
+        renderScale: BASE_RENDER_SCALE,
+        rotationDeg: loaded.rotationDeg,
+      });
+    }
+  }
+
+  return pageGeometryFor(page);
 }
 
 export function findMarkupById(
@@ -469,14 +509,14 @@ export function executeDeleteMarkups(payload: unknown): {
   };
 }
 
-export function executeUpdateMarkups(payload: unknown): {
+export async function executeUpdateMarkups(payload: unknown): Promise<{
   status: 'completed';
   updated: number;
   rejected: number;
   notFound: number;
   results: MarkupMutationItemResult[];
   message: string;
-} {
+}> {
   const record = isPlainObject(payload) ? payload : {};
   const updates = Array.isArray(record.updates) ? record.updates : [];
   const results: MarkupMutationItemResult[] = [];
@@ -507,10 +547,11 @@ export function executeUpdateMarkups(payload: unknown): {
       continue;
     }
 
+    const geometry = await ensurePageGeometry(found.page);
     const validated = buildValidatedMarkupPatch(
       found.markup,
       patch,
-      pageGeometryFor(found.page),
+      geometry,
     );
 
     if (validated.ok === false) {

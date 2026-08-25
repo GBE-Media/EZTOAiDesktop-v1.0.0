@@ -1,7 +1,7 @@
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
 import type { CanvasPlacement, PlacementMarkup } from '../providers/types';
 import {
-  computeAreaMeasurementFromBounds,
+  computeAreaMeasurementFromPoints,
   computeLengthMeasurementFromPoints,
 } from '@/lib/measurementValues';
 import {
@@ -227,7 +227,7 @@ export function convertPlacementsToMarkups(
       const scaleInput = measurementScaleForPage(pageNumber);
       const measured = placement.type === 'measurement-length'
         ? computeLengthMeasurementFromPoints(renderPoints, scaleInput)
-        : computeAreaMeasurementFromBounds(renderPoints, scaleInput);
+        : computeAreaMeasurementFromPoints(renderPoints, scaleInput);
       const notes = [placement.aiNote, measured.note].filter(Boolean);
       markups.push({
         page: placement.page,
