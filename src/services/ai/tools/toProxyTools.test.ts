@@ -87,11 +87,70 @@ describe('assistantToolsToProxyDefinitions', () => {
 });
 
 describe('decisionFromCompletion', () => {
-  it('prefers native provider toolCalls over JSON content', () => {
+  beforeEach(() => {
+    resetAgentToolRegistrationForTests();
+    registerAllAgentTools();
+  });
+
+  it('merges native tools with JSON-protocol tool_calls and never leaks raw JSON as assistantText', () => {
+    const hybrid = {
+      type: 'tool_calls',
+      assistantText: "I'll place a non-destructive text count summary on sheet E-100.",
+      toolCalls: [{
+        id: 'call_1',
+        name: 'place_markups',
+        arguments: {
+          description: 'Place preliminary lighting fixture count summary on E-100',
+          markups: [{ type: 'text', page: 1, content: 'A: 8' }],
+        },
+      }],
+      final: {
+        message: 'Please approve the markup placement.',
+        clarifyingQuestions: [],
+      },
+    };
+
+    const decision = decisionFromCompletion({
+      content: JSON.stringify(hybrid),
+      toolCalls: [
+        { id: 'call_native_1', name: 'get_document_context', input: {} },
+      ],
+    });
+
+    expect(decision.type).toBe('tool_calls');
+    if (decision.type !== 'tool_calls') return;
+    expect(decision.toolCalls.map(c => c.name)).toEqual(
+      expect.arrayContaining(['place_markups', 'get_document_context']),
+    );
+    // Approval-required mutation is ordered ahead of the read tool.
+    expect(decision.toolCalls[0].name).toBe('place_markups');
+    expect(decision.assistantText).toBe(
+      "I'll place a non-destructive text count summary on sheet E-100.",
+    );
+    expect(decision.assistantText).not.toContain('"type":"tool_calls"');
+    expect(decision.assistantText).not.toContain('place_markups');
+  });
+
+  it('uses nested final.message as visible text when assistantText is missing', () => {
+    const decision = decisionFromCompletion({
+      content: JSON.stringify({
+        type: 'tool_calls',
+        toolCalls: [{ id: 'c1', name: 'place_markups', arguments: { description: 'x', markups: [] } }],
+        final: { message: 'Please approve this placement.', clarifyingQuestions: [] },
+      }),
+      toolCalls: [{ id: 'n1', name: 'get_document_context', input: {} }],
+    });
+    expect(decision.type).toBe('tool_calls');
+    if (decision.type === 'tool_calls') {
+      expect(decision.assistantText).toBe('Please approve this placement.');
+    }
+  });
+
+  it('does not dump a JSON final envelope into assistantText when native tools are present', () => {
     const decision = decisionFromCompletion({
       content: JSON.stringify({
         type: 'final',
-        message: 'should be ignored when native tools present',
+        message: 'should be shown as human text',
       }),
       toolCalls: [
         { id: 'call_native_1', name: 'get_document_context', input: {} },
@@ -104,10 +163,7 @@ describe('decisionFromCompletion', () => {
         { id: 'call_native_1', name: 'get_document_context', arguments: {} },
         { id: 'call_native_2', name: 'analyze_page', arguments: { page: 2, scope: 'full' } },
       ],
-      assistantText: JSON.stringify({
-        type: 'final',
-        message: 'should be ignored when native tools present',
-      }),
+      assistantText: 'should be shown as human text',
     });
   });
 

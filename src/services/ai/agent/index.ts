@@ -68,3 +68,8 @@ export {
   hasLatestFullPageAnalysis,
 } from './pageAnalysisCache';
 export { DEFAULT_MAX_AGENT_STEPS, buildMaxStepsAssistantMessage } from './runnerCore';
+export {
+  sanitizeAssistantVisibleText,
+  looksLikeAgentProtocolJson,
+  ASSISTANT_PROTOCOL_DISPLAY_FALLBACK,
+} from './assistantVisibleText';

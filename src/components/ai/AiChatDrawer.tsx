@@ -74,6 +74,7 @@ import {
   shouldAttachDocumentEvidence,
   summarizeCachedPageAnalyses,
 } from '@/services/ai/agent';
+import { sanitizeAssistantVisibleText } from '@/services/ai/agent/assistantVisibleText';
 import type { ClarificationAnswerDetail } from './QuestionCard';
 import { AssistantHeader } from './AssistantHeader';
 import { AssistantComposer } from './AssistantComposer';
@@ -699,7 +700,10 @@ export function AgentAssistantDrawer() {
       if (!agentResult) throw new Error('Agent task returned no result.');
       if (runSignal.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
 
-      const answerText = ensureNumberedCalloutMentions(agentResult.assistantMessage, []);
+      const answerText = ensureNumberedCalloutMentions(
+        sanitizeAssistantVisibleText(agentResult.assistantMessage),
+        [],
+      );
       updateMessage(assistantMsgId, {
         content: answerText,
         isLoading: agentResult.status === 'needs_approval',
