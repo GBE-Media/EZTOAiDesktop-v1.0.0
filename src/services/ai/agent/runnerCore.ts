@@ -7,6 +7,7 @@ import type { ApprovalRequest, ClarificationRequest } from '@/types/assistant';
 import type { AssistantToolContext, AssistantToolResult } from '../tools/types';
 import { executeAssistantTool, getAssistantTool } from '../tools/registry';
 import { formatToolResultForPrompt, resolveToolSafety } from './safety';
+import { sanitizeAssistantVisibleText } from './assistantVisibleText';
 import { createJsonToolModelAdapter, type ModelAdapter } from './modelAdapter';
 import { emitAgentTrace } from './trace';
 import { runVerificationTools } from './verification';
@@ -603,7 +604,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       const result = finishWith(session, {
         status: 'completed',
         finalStatus: 'completed',
-        assistantMessage: decision.message,
+        assistantMessage: sanitizeAssistantVisibleText(decision.message),
         clarifyingQuestions: decision.clarifyingQuestions,
       });
       store().finishRun(session.runId, 'completed');
@@ -612,16 +613,17 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
     }
 
     // tool_calls — canonicalize ids ONCE; reuse the same list for history + execution.
-    if (decision.assistantText) {
+    const visibleAssistantText = sanitizeAssistantVisibleText(decision.assistantText);
+    if (visibleAssistantText) {
       store().updateMessage(session.messageId, {
-        content: decision.assistantText,
+        content: visibleAssistantText,
         isLoading: true,
       });
     }
     const toolCalls = canonicalizeAgentToolCalls(decision.toolCalls, steps);
     session.messages.push({
       role: 'assistant',
-      content: decision.assistantText || '',
+      content: visibleAssistantText || '',
       toolCalls,
     });
     onStatus?.('running_tools');
@@ -727,7 +729,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         return finishWith(session, {
           status: 'needs_approval',
           finalStatus: 'needs_approval',
-          assistantMessage: decision.assistantText
+          assistantMessage: sanitizeAssistantVisibleText(decision.assistantText)
             || result.summary
             || 'I need your approval before making this change.',
           approvalRequest: result.approval,

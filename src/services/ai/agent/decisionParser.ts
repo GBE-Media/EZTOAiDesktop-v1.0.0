@@ -2,14 +2,24 @@ import type { AgentModelDecision, AgentToolCallRequest } from './types';
 
 /** Parse model JSON (or prose fallback) into an agent decision. */
 export function parseAgentDecision(raw: string): AgentModelDecision {
-  const cleaned = raw
+  let cleaned = raw
     .trim()
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```$/i, '');
 
+  // Unwrap a single layer of double-encoded JSON strings.
   let parsed: unknown;
   try {
     parsed = JSON.parse(cleaned);
+    if (typeof parsed === 'string') {
+      const inner = parsed.trim();
+      try {
+        parsed = JSON.parse(inner);
+        cleaned = inner;
+      } catch {
+        return { type: 'final', message: inner || 'I could not produce a structured response.' };
+      }
+    }
   } catch {
     return { type: 'final', message: cleaned || 'I could not produce a structured response.' };
   }
@@ -53,13 +63,15 @@ export function parseAgentDecision(raw: string): AgentModelDecision {
     const rawCalls = (obj.toolCalls || obj.tool_calls || []) as unknown[];
     const toolCalls: AgentToolCallRequest[] = rawCalls.slice(0, 3).map((call, index) => {
       const item = (call || {}) as Record<string, unknown>;
-      const args = item.arguments ?? item.args ?? {};
+      const args = item.arguments ?? item.args ?? item.input ?? {};
       return {
         id: String(item.id || `call_${index + 1}`),
         name: String(item.name || item.tool || ''),
         arguments: (typeof args === 'object' && args && !Array.isArray(args)
           ? args
-          : {}) as Record<string, unknown>,
+          : typeof args === 'string'
+            ? safeParseArgs(args)
+            : {}) as Record<string, unknown>,
       };
     }).filter(call => call.name);
 
@@ -70,10 +82,20 @@ export function parseAgentDecision(raw: string): AgentModelDecision {
       };
     }
 
+    // Hybrid envelopes sometimes nest final.message alongside tool_calls.
+    const nestedFinal = obj.final && typeof obj.final === 'object' && !Array.isArray(obj.final)
+      ? obj.final as Record<string, unknown>
+      : null;
+    const nestedFinalMessage = nestedFinal && typeof nestedFinal.message === 'string'
+      ? nestedFinal.message
+      : undefined;
+
     return {
       type: 'tool_calls',
       toolCalls,
-      assistantText: typeof obj.assistantText === 'string' ? obj.assistantText : undefined,
+      assistantText: typeof obj.assistantText === 'string'
+        ? obj.assistantText
+        : nestedFinalMessage,
     };
   }
 
@@ -89,4 +111,16 @@ export function parseAgentDecision(raw: string): AgentModelDecision {
   }
 
   return { type: 'final', message: cleaned };
+}
+
+function safeParseArgs(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignore
+  }
+  return {};
 }

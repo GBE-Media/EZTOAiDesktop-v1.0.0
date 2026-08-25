@@ -13,6 +13,7 @@ import { PulsingStatus } from './PulsingStatus';
 import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
+import { sanitizeAssistantVisibleText } from '@/services/ai/agent/assistantVisibleText';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -267,13 +268,19 @@ function formatContent(
   if (!content) {
     return null;
   }
+
+  // Never render internal agent protocol JSON to the end user.
+  const safeContent = sanitizeAssistantVisibleText(content);
+  if (!safeContent) {
+    return null;
+  }
   
   // Simple markdown-like formatting
   // Bold: **text**
   // Code: `code`
   // Lists: - item
   
-  const lines = content.split('\n');
+  const lines = safeContent.split('\n');
   
   return lines.map((line, i) => {
     const listPrefix = line.startsWith('- ') || line.startsWith('• ') ? 2 : 0;
