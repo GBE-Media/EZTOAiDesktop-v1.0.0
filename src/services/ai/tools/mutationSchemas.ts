@@ -52,6 +52,8 @@ export const placementMarkupSchema = z.object({
   aiNote: z.string().optional(),
   confidence: z.number().min(0).max(1).optional(),
   linkedItemId: z.string().optional(),
+  /** Real catalog product id from search_catalog — optional; omit when no confident match. */
+  productId: z.string().min(1).optional(),
   pending: z.boolean().optional(),
 });
 
@@ -200,6 +202,15 @@ export const linkCatalogSchema = z.object({
     productId: z.string().min(1),
     page: z.number().int().positive().optional(),
   })).min(1),
+});
+
+/** Read-only search over the real Products panel catalog (useProductStore). */
+export const searchCatalogSchema = z.object({
+  query: z.string().optional().default(''),
+  category: z.string().optional(),
+  limit: z.number().int().min(1).max(50).optional(),
+  /** Prefer true when binding takeoff counts — assemblies cannot receive measurements. */
+  productsOnly: z.boolean().optional().default(true),
 });
 
 /** Matches ToolType in src/types/editor.ts — canvas mode handoff for the human. */

@@ -14,6 +14,7 @@ import {
   pageCalibrationToRenderPixelsPerUnit,
 } from './pageCalibration';
 import type { DocPoint, DocRect, PageCalibration, PageGeometry } from './types';
+import { validateLinkableProductId } from '../catalog/linkPlacedProducts';
 
 export type PlacementVerificationMeta = {
   id: string;
@@ -174,6 +175,20 @@ export function convertPlacementsToMarkups(
       calloutRef: placement.calloutRef,
     } as const;
 
+    /** Optional catalog bind — only real type:'product' ids; never invent. */
+    const resolveCatalogProductId = (): { productId?: string; aiNote?: string } => {
+      const requested = placement.productId?.trim();
+      if (!requested) return { aiNote: placement.aiNote };
+      const validated = validateLinkableProductId(requested);
+      if (!validated.ok) {
+        const flag = `no matching catalog product found for productId “${requested}”`;
+        return {
+          aiNote: [placement.aiNote, flag].filter(Boolean).join(' — '),
+        };
+      }
+      return { productId: requested, aiNote: placement.aiNote };
+    };
+
     if (placement.type === 'rectangle') {
       const start = placement.points?.[0] || { x: 0, y: 0 };
       const end = placement.points?.[1] || start;
@@ -204,6 +219,7 @@ export function convertPlacementsToMarkups(
         ? { x: verifiedBox.x + verifiedBox.width / 2, y: verifiedBox.y + verifiedBox.height / 2 }
         : point;
       const rendered = toRenderPoint(docPoint, page);
+      const catalog = resolveCatalogProductId();
       markups.push({
         page: placement.page,
         markup: {
@@ -213,6 +229,8 @@ export function convertPlacementsToMarkups(
           y: rendered.y,
           number: 1,
           groupId,
+          productId: catalog.productId,
+          aiNote: catalog.aiNote,
         },
       });
       return;
@@ -228,7 +246,8 @@ export function convertPlacementsToMarkups(
       const measured = placement.type === 'measurement-length'
         ? computeLengthMeasurementFromPoints(renderPoints, scaleInput)
         : computeAreaMeasurementFromPoints(renderPoints, scaleInput);
-      const notes = [placement.aiNote, measured.note].filter(Boolean);
+      const catalog = resolveCatalogProductId();
+      const notes = [catalog.aiNote, measured.note].filter(Boolean);
       markups.push({
         page: placement.page,
         markup: {
@@ -239,6 +258,7 @@ export function convertPlacementsToMarkups(
           scaledValue: measured.scaledValue,
           unit: measured.unit,
           calibrated: measured.calibrated,
+          productId: catalog.productId,
           aiNote: notes.length ? notes.join(' — ') : undefined,
         },
       });

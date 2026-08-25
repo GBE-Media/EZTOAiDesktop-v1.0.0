@@ -61,7 +61,7 @@ describe('mutationSchemas', () => {
   it('place_markups accepts PlacementMarkup rows and rejects delete-shaped input', () => {
     const ok = placeMarkupsSchema.safeParse({
       description: 'Place verified callout',
-      markups: [samplePlacementMarkup],
+      markups: [{ ...samplePlacementMarkup, productId: 'prod_duplex' }],
     });
     expect(ok.success).toBe(true);
 

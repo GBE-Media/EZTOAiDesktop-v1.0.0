@@ -29,6 +29,8 @@ import {
   executeDeleteMarkups,
   executeUpdateMarkups,
 } from './markupMutations';
+import { searchCatalog } from '../catalog/searchCatalog';
+import { executeLinkCatalog } from '../catalog/attachProductToMarkup';
 
 export interface CreateAgentToolContextOptions {
   runId: string;
@@ -526,6 +528,18 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
       };
     },
 
+    searchCatalog: (input) => {
+      const record = input && typeof input === 'object' && !Array.isArray(input)
+        ? input as Record<string, unknown>
+        : {};
+      return searchCatalog({
+        query: typeof record.query === 'string' ? record.query : '',
+        category: typeof record.category === 'string' ? record.category : undefined,
+        limit: typeof record.limit === 'number' ? record.limit : undefined,
+        productsOnly: record.productsOnly !== false,
+      });
+    },
+
     inspectMarkups: () => {
       const { docId, page } = getDocMeta();
       if (!docId) return { summary: '', markups: [] };
@@ -629,7 +643,7 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
     placeMarkups: payload => options.placeMarkups(payload),
     updateMarkups: payload => executeUpdateMarkups(payload),
     deleteMarkups: payload => executeDeleteMarkups(payload),
-    linkCatalog: () => ({ status: 'unsupported', message: 'link_catalog executor not wired in v1' }),
+    linkCatalog: payload => executeLinkCatalog(payload),
 
     applyMaterialCountAdjustments: payload => {
       const adjustments = Array.isArray(payload)

@@ -18,6 +18,8 @@ export interface AssistantToolContext {
   countPageItems?: (input: unknown) => Promise<unknown>;
   searchDocument: (query: string) => Promise<EvidenceCitation[]>;
   inspectCatalog: () => unknown;
+  /** Structured catalog search returning real product IDs (Products panel store). */
+  searchCatalog: (input: unknown) => unknown;
   inspectMarkups: () => unknown;
   navigateToPage: (page: number, bounds?: { x: number; y: number; width: number; height: number }) => void;
   /** Activate a canvas ToolType. Returns activation result when using the real adapter. */

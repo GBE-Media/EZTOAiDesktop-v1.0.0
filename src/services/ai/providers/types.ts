@@ -263,6 +263,8 @@ export interface PlacementMarkup {
   aiNote?: string;
   confidence?: number;
   linkedItemId?: string;
+  /** Real Products-panel catalog product id (from search_catalog). */
+  productId?: string;
   pending: boolean; // For suggest-and-confirm mode
 }
 
