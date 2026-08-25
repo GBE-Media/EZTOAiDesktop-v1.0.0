@@ -180,6 +180,15 @@ export interface DetectedItem {
   evidence?: string;
   codeReference?: string;
   notes?: string;
+  /**
+   * Vision-native legend classification: exact page legend type code, or
+   * "no_confident_match". Validated in code against the page legend allow-list.
+   */
+  legendTypeCode?: string;
+  /** Vision self-assessed confidence for legendTypeCode. */
+  matchConfidence?: 'high' | 'medium' | 'low';
+  /** Short explanation of why this legendTypeCode was chosen. */
+  matchReasoning?: string;
 }
 
 export interface DetectedDimension {

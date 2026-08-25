@@ -26,6 +26,7 @@ import type {
   LayoutSuggestion,
   PipelineStage,
   ChatMarkupPointer,
+  DetectedItem,
 } from './providers/types';
 import {
   detectionPctToDocPointerFields,
@@ -33,9 +34,12 @@ import {
 } from './placement/parseChatMarkupPointer';
 import {
   applyLegendAwareCounting,
-  formatLegendPromptBlock,
   parseLegendFromTextLines,
 } from './detection/legendAwareCounting';
+import {
+  buildLegendClassificationPrompt,
+  resolveLegendAwareCounting,
+} from './detection/visionLegendClassification';
 
 export interface PipelineProgress {
   stage: PipelineStage | 'complete' | 'error';
@@ -317,6 +321,17 @@ function normalizeAnalysis(
       evidence: typeof candidate.evidence === 'string' ? candidate.evidence : undefined,
       codeReference: typeof candidate.codeReference === 'string' ? candidate.codeReference : undefined,
       notes: typeof candidate.notes === 'string' ? candidate.notes : undefined,
+      legendTypeCode: typeof candidate.legendTypeCode === 'string'
+        ? candidate.legendTypeCode
+        : undefined,
+      matchConfidence: ((): DetectedItem['matchConfidence'] => {
+        const raw = candidate.matchConfidence;
+        if (raw === 'high' || raw === 'medium' || raw === 'low') return raw;
+        return undefined;
+      })(),
+      matchReasoning: typeof candidate.matchReasoning === 'string'
+        ? candidate.matchReasoning
+        : undefined,
     };
   });
 
@@ -498,7 +513,7 @@ export async function analyzePageMaximumAccuracy(options: {
     ? textEvidence.context.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
     : [];
   const legendEntries = visibleOnly ? [] : parseLegendFromTextLines(textLines);
-  const legendPrompt = formatLegendPromptBlock(legendEntries);
+  const legendPrompt = buildLegendClassificationPrompt(legendEntries);
 
   const commonContext = [
     visibleOnly
@@ -543,6 +558,9 @@ export async function analyzePageMaximumAccuracy(options: {
       trade,
       `${commonContext}\n\nDETAIL TILE ${tile.region.id}: Find every physical instance visible in this crop. ` +
       'Return one item per physical symbol with quantity 1, center location and boundingBox in 0-100 coordinates relative to this tile, confidence, and visual evidence. ' +
+      (legendEntries.length
+        ? 'For each item include legendTypeCode (from the allowed legend list or "no_confident_match"), matchConfidence ("high"|"medium"|"low"), and matchReasoning. '
+        : '') +
       'Do not count schedule/legend rows as installed items.',
       page
     );
@@ -553,11 +571,12 @@ export async function analyzePageMaximumAccuracy(options: {
   const tileItems = reconcileTileDetections(tileResults, pageWidth, pageHeight);
   const rawItems = tileItems.length > 0 ? tileItems : overview.items;
 
-  // Post-vision: remap free-form labels onto this page's legend type codes.
-  const legendAware = applyLegendAwareCounting({
+  // Primary: vision-native legendTypeCode fields. Secondary: token-overlap only when absent.
+  const legendAware = resolveLegendAwareCounting({
     items: rawItems,
     legendEntries,
     trade,
+    applyTokenOverlapFallback: applyLegendAwareCounting,
   });
   const items = legendAware.items;
   const typeCounts = legendEntries.length > 0
