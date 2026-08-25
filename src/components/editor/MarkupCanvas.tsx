@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback, MouseEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useCanvasStore } from '@/store/canvasStore';
+import { beginEditorInteraction, endEditorInteraction } from '@/store/editorInteractionBusy';
 import { useEditorStore } from '@/store/editorStore';
 import type { ToolType } from '@/types/editor';
 import { useProductStore } from '@/store/productStore';
@@ -29,7 +30,7 @@ import type {
 import { TextEditOverlay } from './TextEditOverlay';
 import { resolveMarkupDrawAppearance } from './markupDrawAppearance';
 import {
-  computeAreaMeasurementFromBounds,
+  computeAreaMeasurementFromPoints,
   computeLengthMeasurement,
 } from '@/lib/measurementValues';
 import { pageCalibrationToRenderPixelsPerUnit } from '@/services/ai/placement/pageCalibration';
@@ -1436,7 +1437,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
               startY: point.y,
               originalMarkup: JSON.parse(JSON.stringify(selectedMarkup)),
             });
-            useCanvasStore.getState().setEditorInteractionBusy(true);
+            beginEditorInteraction();
             return;
           }
         }
@@ -1462,7 +1463,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           }));
         }
         setIsDragging(true);
-        useCanvasStore.getState().setEditorInteractionBusy(true);
+        beginEditorInteraction();
         setDragStart(point);
         
         if ('x' in markup) {
@@ -1751,13 +1752,13 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     // End resizing
     if (resizing) {
       setResizing(null);
-      useCanvasStore.getState().setEditorInteractionBusy(false);
+      endEditorInteraction();
       return;
     }
     
     if (isDragging) {
       setIsDragging(false);
-      useCanvasStore.getState().setEditorInteractionBusy(false);
+      endEditorInteraction();
       setDragStart(null);
       return;
     }
@@ -1994,7 +1995,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           { x: minX, y: maxY },
         ];
         const cal = useCanvasStore.getState().getPageCalibration(currentPage);
-        const fromCal = computeAreaMeasurementFromBounds(areaPoints, {
+        const fromCal = computeAreaMeasurementFromPoints(areaPoints, {
           renderPixelsPerUnit: pageCalibrationToRenderPixelsPerUnit(cal),
           unit: cal.unit,
         });

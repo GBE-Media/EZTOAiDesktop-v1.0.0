@@ -1,5 +1,5 @@
 import './testGlobals';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useEditorStore } from '@/store/editorStore';
 import { useHistoryStore } from '@/store/historyStore';
@@ -234,7 +234,7 @@ describe('activate_editor_tool + update/delete markups', () => {
     expect(undone.label).toBe('old');
   });
 
-  it('executeUpdateMarkups / executeDeleteMarkups return completed status instead of unsupported', () => {
+  it('executeUpdateMarkups / executeDeleteMarkups return completed status instead of unsupported', async () => {
     useCanvasStore.getState().setMarkupsForPage(1, [
       baseMarkup({
         id: 'm1',
@@ -246,12 +246,12 @@ describe('activate_editor_tool + update/delete markups', () => {
         content: 'c',
       }),
     ]);
-    const updated = executeUpdateMarkups({
+    const updated = await executeUpdateMarkups({
       updates: [{ id: 'm1', patch: { content: 'updated' } }],
     });
     expect(updated.status).toBe('completed');
     expect(updated.updated).toBe(1);
-    expect((updated as { message?: string }).message).not.toMatch(/unsupported/i);
+    expect(updated.message).not.toMatch(/unsupported/i);
 
     const deleted = executeDeleteMarkups({ markupIds: ['m1'] });
     expect(deleted.status).toBe('completed');
@@ -275,6 +275,19 @@ describe('activate_editor_tool + update/delete markups', () => {
     expect(useEditorStore.getState().activeTool).toBe('measure-length');
   });
 
+  it('rejects activate_editor_tool while isCalibrating', () => {
+    useCanvasStore.setState(state => ({
+      calibration: { ...state.calibration, isCalibrating: true },
+    }));
+    const blocked = activateEditorToolOnCanvas('rectangle');
+    expect(blocked.activated).toBe(false);
+    expect(blocked.message).toMatch(/mid-interaction/i);
+    expect(useEditorStore.getState().activeTool).toBe('select');
+    useCanvasStore.setState(state => ({
+      calibration: { ...state.calibration, isCalibrating: false },
+    }));
+  });
+
   it('rejects activate_editor_tool while editorInteractionBusy (select-drag/resize)', () => {
     useCanvasStore.getState().setEditorInteractionBusy(true);
     const blocked = activateEditorToolOnCanvas('count');
@@ -283,9 +296,30 @@ describe('activate_editor_tool + update/delete markups', () => {
     useCanvasStore.getState().setEditorInteractionBusy(false);
   });
 
+  it('does not invoke external activateEditorTool callback before the mid-gesture guard', async () => {
+    const external = vi.fn();
+    useCanvasStore.getState().startDrawing({ x: 1, y: 1 });
+    const context = createAgentToolContext({
+      runId: 'run-bypass',
+      messageId: 'msg-bypass',
+      trade: 'electrical',
+      placeMarkups: async () => ({ placed: 0 }),
+      activateEditorTool: external,
+    });
+    const result = await executeAssistantTool(
+      'activate_editor_tool',
+      { tool: 'stamp' },
+      context,
+    );
+    expect(result.status).toBe('failed');
+    expect(external).not.toHaveBeenCalled();
+    expect(useEditorStore.getState().activeTool).toBe('select');
+    useCanvasStore.getState().cancelDrawing();
+  });
+
   it.each([90, 180, 270] as const)(
     'update_markups DocPoint patch respects page rotationDeg=%s',
-    (rotationDeg) => {
+    async (rotationDeg) => {
       const page = createPageGeometry({
         pageNumber: 1,
         docWidth: 612,
@@ -307,7 +341,7 @@ describe('activate_editor_tool + update/delete markups', () => {
 
       const docPoint = { x: 100, y: 200 };
       const expected = docToRender(docPoint, page);
-      const result = executeUpdateMarkups({
+      const result = await executeUpdateMarkups({
         updates: [{ id: 'move-me', page: 1, patch: { x: docPoint.x, y: docPoint.y } }],
       });
       expect(result.updated).toBe(1);
@@ -315,9 +349,65 @@ describe('activate_editor_tool + update/delete markups', () => {
         .find(m => m.id === 'move-me') as { x: number; y: number };
       expect(moved.x).toBeCloseTo(expected.x, 5);
       expect(moved.y).toBeCloseTo(expected.y, 5);
-      // Unrotated scale-only mapping would be (150, 300); rotated must differ.
       expect(moved.x === docPoint.x * BASE_RENDER_SCALE
         && moved.y === docPoint.y * BASE_RENDER_SCALE).toBe(false);
     },
   );
+
+  it('update_markups loads rotation on demand when page geometry cache is cold', async () => {
+    const rotated = createPageGeometry({
+      pageNumber: 1,
+      docWidth: 612,
+      docHeight: 792,
+      renderScale: BASE_RENDER_SCALE,
+      rotationDeg: 90,
+    });
+    // Cache must be empty — this is the regression the review flagged.
+    expect(useCanvasStore.getState().getPageGeometry(1)).toBeNull();
+
+    const loadSpy = vi.spyOn(await import('../placement/loadPageGeometries'), 'loadPageGeometries')
+      .mockResolvedValue({
+        geometryByPage: new Map([[1, rotated]]),
+        failedPages: new Set(),
+      });
+
+    useCanvasStore.getState().setMarkupsForPage(1, [
+      baseMarkup({
+        id: 'cold',
+        type: 'count-marker',
+        x: 0,
+        y: 0,
+        number: 1,
+        groupId: 'g',
+      }),
+    ]);
+    // Fake PDF so ensurePageGeometry attempts loadPageGeometries
+    useCanvasStore.setState(state => {
+      const doc = state.pdfDocuments[state.activeDocId!];
+      return {
+        pdfDocuments: {
+          ...state.pdfDocuments,
+          [state.activeDocId!]: {
+            ...doc,
+            pdfDocument: { getPage: async () => ({}) },
+          },
+        },
+      };
+    });
+
+    const docPoint = { x: 100, y: 200 };
+    const expected = docToRender(docPoint, rotated);
+    const result = await executeUpdateMarkups({
+      updates: [{ id: 'cold', page: 1, patch: { x: docPoint.x, y: docPoint.y } }],
+    });
+    expect(loadSpy).toHaveBeenCalled();
+    expect(result.updated).toBe(1);
+    const moved = useCanvasStore.getState().getMarkupsByPage()[1]
+      .find(m => m.id === 'cold') as { x: number; y: number };
+    expect(moved.x).toBeCloseTo(expected.x, 5);
+    expect(moved.y).toBeCloseTo(expected.y, 5);
+    // Cache populated for subsequent calls
+    expect(useCanvasStore.getState().getPageGeometry(1)?.rotationDeg).toBe(90);
+    loadSpy.mockRestore();
+  });
 });
