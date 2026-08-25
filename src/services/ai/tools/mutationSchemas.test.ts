@@ -149,6 +149,8 @@ describe('mutationSchemas', () => {
 
   it('activate_editor_tool and applyMaterialCountAdjustments use typed fields', () => {
     expect(activateEditorToolSchema.safeParse({ tool: 'callout' }).success).toBe(true);
+    expect(activateEditorToolSchema.safeParse({ tool: 'measure-length' }).success).toBe(true);
+    expect(activateEditorToolSchema.safeParse({ tool: 'not-a-tool' }).success).toBe(false);
     expect(activateEditorToolSchema.safeParse({ description: 'x' }).success).toBe(false);
 
     expect(applyMaterialCountAdjustmentsSchema.safeParse({

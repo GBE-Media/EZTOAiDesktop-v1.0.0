@@ -294,16 +294,46 @@ const coreTools: AssistantToolDefinition[] = [
     defaultDescription: 'Link catalog items to markups',
     toApprovalPayload: approvalPayloadFromLinkCatalog,
   }),
-  createTypedMutationTool({
+  /**
+   * Tool-mode handoff for the human (select/measure/stamp/…).
+   * Does NOT mutate the document — only switches editorStore.activeTool —
+   * so this runs immediately (risk: navigate) without an approval card.
+   * Document writes still go through place/update/delete approval gates.
+   */
+  {
     id: 'activate_editor_tool',
     title: 'Activate editor tool',
-    description: 'Activate a canvas editor tool after user approval.',
+    description:
+      'Switch the canvas to a specific editor tool mode for the user '
+      + '(e.g. measure-length, count, stamp). Does not place or edit markups; '
+      + 'runs immediately without approval.',
+    risk: 'navigate',
+    requiresConfirmation: false,
     undoable: false,
-    risk: 'write',
     schema: activateEditorToolSchema,
-    defaultDescription: 'Activate editor tool',
-    toApprovalPayload: (input) => input.tool,
-  }),
+    execute: async (context, input) => {
+      const result = context.activateEditorTool(input.tool) as {
+        activated?: boolean;
+        tool?: string;
+        message?: string;
+      } | void;
+      if (result && typeof result === 'object' && result.activated === false) {
+        return {
+          status: 'failed',
+          summary: result.message || `Could not activate tool ${input.tool}.`,
+          output: result,
+        };
+      }
+      const summary = (result && typeof result === 'object' && result.message)
+        ? result.message
+        : `Switched to ${input.tool} tool — please use the canvas to continue.`;
+      return {
+        status: 'completed',
+        summary,
+        output: result ?? { activated: true, tool: input.tool },
+      };
+    },
+  },
 ];
 
 export const assistantToolRegistry = new Map<string, AssistantToolDefinition>(

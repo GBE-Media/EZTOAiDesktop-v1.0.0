@@ -20,7 +20,8 @@ export interface AssistantToolContext {
   inspectCatalog: () => unknown;
   inspectMarkups: () => unknown;
   navigateToPage: (page: number, bounds?: { x: number; y: number; width: number; height: number }) => void;
-  activateEditorTool: (tool: string) => void;
+  /** Activate a canvas ToolType. Returns activation result when using the real adapter. */
+  activateEditorTool: (tool: string) => unknown;
   placeMarkups: (payload: unknown) => Promise<unknown> | unknown;
   updateMarkups: (payload: unknown) => Promise<unknown> | unknown;
   deleteMarkups: (payload: unknown) => Promise<unknown> | unknown;

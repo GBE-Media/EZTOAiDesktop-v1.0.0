@@ -24,6 +24,11 @@ import {
   type CachedAnalyzePageResult,
   type CachedExtractPageTextResult,
 } from './pageAnalysisCache';
+import {
+  activateEditorToolOnCanvas,
+  executeDeleteMarkups,
+  executeUpdateMarkups,
+} from './markupMutations';
 
 export interface CreateAgentToolContextOptions {
   runId: string;
@@ -613,12 +618,19 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
     },
 
     activateEditorTool: tool => {
-      options.activateEditorTool?.(tool);
+      // Prefer explicit UI wiring when provided; always fall back to editorStore
+      // so activate_editor_tool works in tests and any call site that omits the callback.
+      if (options.activateEditorTool) {
+        options.activateEditorTool(tool);
+        // Ensure store reflects the requested tool even if the callback is a no-op spy.
+        return activateEditorToolOnCanvas(tool);
+      }
+      return activateEditorToolOnCanvas(tool);
     },
 
     placeMarkups: payload => options.placeMarkups(payload),
-    updateMarkups: () => ({ status: 'unsupported', message: 'update_markups executor not wired in v1' }),
-    deleteMarkups: () => ({ status: 'unsupported', message: 'delete_markups executor not wired in v1' }),
+    updateMarkups: payload => executeUpdateMarkups(payload),
+    deleteMarkups: payload => executeDeleteMarkups(payload),
     linkCatalog: () => ({ status: 'unsupported', message: 'link_catalog executor not wired in v1' }),
 
     applyMaterialCountAdjustments: payload => {
