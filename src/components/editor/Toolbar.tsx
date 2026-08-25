@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
+import { toggleSnapToObjectsEnabled } from '@/store/snapSettings';
 import { useHistoryStore } from '@/store/historyStore';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasLayersStore } from '@/store/canvasLayersStore';
@@ -98,7 +99,8 @@ function ToolbarDivider() {
 }
 
 export function Toolbar() {
-  const { snapEnabled, gridEnabled, toggleSnap, toggleGrid, documents, activeDocument, rotation, setRotation } = useEditorStore();
+  const { snapEnabled, gridEnabled, toggleGrid, documents, activeDocument, rotation, setRotation } = useEditorStore();
+  // Snap toggle must update canvasStore.snapToObjects (what MarkupCanvas uses), not only editor UI flag.
   const {
     zoom,
     setZoom,
@@ -273,7 +275,7 @@ export function Toolbar() {
         label="Snap to Objects" 
         shortcut="Shift+S"
         active={snapEnabled}
-        onClick={toggleSnap}
+        onClick={() => toggleSnapToObjectsEnabled()}
       />
       <ToolButton 
         icon={<Grid3X3 className="w-4 h-4" />} 

@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { Minus, Square, X } from 'lucide-react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
+import { toggleSnapToObjectsEnabled } from '@/store/snapSettings';
 import { useProductStore } from '@/store/productStore';
 import { useFileOpen } from '@/hooks/useFileOpen';
 import { useProjectSave } from '@/hooks/useProjectSave';
@@ -42,7 +43,6 @@ export function MenuBar() {
     gridEnabled, 
     snapEnabled,
     toggleGrid, 
-    toggleSnap,
     setActiveTool,
     closeDocument,
   } = useEditorStore();
@@ -510,7 +510,7 @@ export function MenuBar() {
             <MenubarItem className="text-xs" onClick={toggleGrid}>
               {gridEnabled ? '✓ ' : '   '}Show Grid
             </MenubarItem>
-            <MenubarItem className="text-xs" onClick={toggleSnap}>
+            <MenubarItem className="text-xs" onClick={() => toggleSnapToObjectsEnabled()}>
               {snapEnabled ? '✓ ' : '   '}Snap to Objects
             </MenubarItem>
             <MenubarSeparator />
