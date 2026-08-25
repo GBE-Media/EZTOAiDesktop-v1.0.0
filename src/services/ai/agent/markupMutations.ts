@@ -69,6 +69,24 @@ export function activateEditorToolOnCanvas(tool: string): ActivateEditorToolResu
       message: `Unknown editor tool "${tool}". Valid tools: ${EDITOR_TOOL_TYPES.join(', ')}.`,
     };
   }
+
+  // Mid-drag / mid-draw / mid-calibration: rejecting is safer than queueing.
+  // There is no existing editor-tool queue, and switching tools mid-gesture would
+  // finalize markups with mismatched tool semantics. The model can retry.
+  const canvas = useCanvasStore.getState();
+  if (
+    canvas.drawing.isDrawing
+    || canvas.calibration.isCalibrating
+    || canvas.editorInteractionBusy
+  ) {
+    return {
+      activated: false,
+      message:
+        'User is mid-interaction on the canvas (drawing, calibrating, or dragging). '
+        + 'Wait for the gesture to finish, then retry activate_editor_tool.',
+    };
+  }
+
   useEditorStore.getState().setActiveTool(tool);
   return {
     activated: true,
@@ -85,8 +103,23 @@ function getActiveDocData() {
   return { canvas, docId: canvas.activeDocId, docData };
 }
 
-function pageGeometryFor(page: number): PageGeometry {
+/**
+ * Prefer cached per-page PageGeometry (includes real PDF rotationDeg from
+ * loadPageGeometries). Fall back to document display size with rotation 0 only
+ * when no cache exists yet.
+ */
+export function pageGeometryFor(page: number): PageGeometry {
   const meta = getActiveDocData();
+  const cached = meta?.canvas.getPageGeometry(page);
+  if (cached) {
+    return createPageGeometry({
+      pageNumber: page,
+      docWidth: cached.docWidth,
+      docHeight: cached.docHeight,
+      renderScale: BASE_RENDER_SCALE,
+      rotationDeg: cached.rotationDeg,
+    });
+  }
   const docWidth = meta?.docData.originalPageWidth || 612;
   const docHeight = meta?.docData.originalPageHeight || 792;
   return createPageGeometry({
@@ -94,6 +127,7 @@ function pageGeometryFor(page: number): PageGeometry {
     docWidth,
     docHeight,
     renderScale: BASE_RENDER_SCALE,
+    rotationDeg: 0,
   });
 }
 

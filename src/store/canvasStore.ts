@@ -6,7 +6,7 @@ import { useEditorStore } from './editorStore';
 import { useProductStore } from './productStore';
 import type { TextItemWithBounds, TextWord } from '@/lib/pdfLoader';
 import type { LinkedMeasurement } from '@/types/product';
-import type { PageCalibration } from '@/services/ai/placement/types';
+import type { PageCalibration, PageGeometry } from '@/services/ai/placement/types';
 import {
   pageCalibrationFromManualMeasure,
   pageCalibrationToRenderPixelsPerUnit,
@@ -81,6 +81,8 @@ interface DocumentPdfData {
   originalPdfBytes: ArrayBuffer | null; // Store original PDF for saving
   textContentByPage: Record<number, TextItemWithBounds[]>; // Cached text for highlight snapping
   textWordsByPage: Record<number, TextWord[]>; // Word-level text for professional highlighting
+  /** Per-page PageGeometry (unrotated doc size + rotationDeg) for AI DocPoint conversion. */
+  pageGeometryByPage: Record<number, PageGeometry>;
   ocrStatus: 'none' | 'running' | 'completed' | 'failed';
   ocrProgress: number; // 0-100
   /**
@@ -107,6 +109,11 @@ interface CanvasState {
   
   // Drawing state
   drawing: DrawingState;
+  /**
+   * True while the user is mid gesture that must not be interrupted by AI tool switches
+   * (select-drag / resize). Drawing uses drawing.isDrawing; calibration uses isCalibrating.
+   */
+  editorInteractionBusy: boolean;
   
   // Calibration
   calibration: CalibrationState;
@@ -199,6 +206,9 @@ interface CanvasActions {
   cancelCalibration: () => void;
   setPageCalibration: (pageNumber: number, calibration: PageCalibration) => void;
   getPageCalibration: (pageNumber: number) => PageCalibration;
+  cachePageGeometries: (geometryByPage: Map<number, PageGeometry>) => void;
+  getPageGeometry: (pageNumber: number) => PageGeometry | null;
+  setEditorInteractionBusy: (busy: boolean) => void;
   /** Render-space px/unit + unit for measurement tools on a page (page-specific or legacy). */
   getScaleForPage: (pageNumber: number) => { scale: number; unit: string };
   
@@ -272,6 +282,7 @@ const initialState: CanvasState = {
     currentPoints: [],
     previewMarkup: null,
   },
+  editorInteractionBusy: false,
   
   calibration: {
     isCalibrating: false,
@@ -452,6 +463,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
             originalPdfBytes: originalBytes || null,
             textContentByPage: {},
             textWordsByPage: {},
+            pageGeometryByPage: {},
             ocrStatus: 'none' as const,
             ocrProgress: 0,
             contentRevision: nextContentRevision(existing),
@@ -484,6 +496,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
             originalPdfBytes: originalBytes,
             textContentByPage: {},  // Clear text cache (page structure changed)
             textWordsByPage: {},
+            pageGeometryByPage: {},
             ocrStatus: 'none' as const,
             ocrProgress: 0,
             contentRevision: nextContentRevision(existingDocData),
@@ -982,6 +995,35 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
       legacy: null,
     });
   },
+
+  cachePageGeometries: (geometryByPage) => {
+    const state = get();
+    if (!state.activeDocId) return;
+    const docData = state.pdfDocuments[state.activeDocId];
+    if (!docData) return;
+    const next = { ...docData.pageGeometryByPage };
+    geometryByPage.forEach((geometry, pageNumber) => {
+      next[pageNumber] = { ...geometry, pageNumber };
+    });
+    set({
+      pdfDocuments: {
+        ...state.pdfDocuments,
+        [state.activeDocId]: {
+          ...docData,
+          pageGeometryByPage: next,
+        },
+      },
+    });
+  },
+
+  getPageGeometry: (pageNumber) => {
+    const state = get();
+    if (!state.activeDocId) return null;
+    const cached = state.pdfDocuments[state.activeDocId]?.pageGeometryByPage?.[pageNumber];
+    return cached || null;
+  },
+
+  setEditorInteractionBusy: (busy) => set({ editorInteractionBusy: busy }),
 
   getScaleForPage: (pageNumber) => {
     const state = get();

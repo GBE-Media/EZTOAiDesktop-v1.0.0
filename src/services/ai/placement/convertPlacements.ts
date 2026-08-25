@@ -1,12 +1,19 @@
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
 import type { CanvasPlacement, PlacementMarkup } from '../providers/types';
 import {
+  computeAreaMeasurementFromBounds,
+  computeLengthMeasurementFromPoints,
+} from '@/lib/measurementValues';
+import {
   BASE_RENDER_SCALE,
   createPageGeometry,
   docRectToRender,
   docToRender,
 } from './coords';
-import type { DocPoint, DocRect, PageGeometry } from './types';
+import {
+  pageCalibrationToRenderPixelsPerUnit,
+} from './pageCalibration';
+import type { DocPoint, DocRect, PageCalibration, PageGeometry } from './types';
 
 export type PlacementVerificationMeta = {
   id: string;
@@ -99,6 +106,8 @@ function toRenderRect(rect: DocRect, page: PageGeometry): DocRect {
  *
  * DocPoint → canvas coordinates go through docToRender / docRectToRender so
  * PageGeometry.rotationDeg is applied (never raw x*scale alone).
+ * Measurement value/scaledValue reuse the shared manual-tool formulas with
+ * per-page PageCalibration when provided.
  */
 export function convertPlacementsToMarkups(
   placements: CanvasPlacement,
@@ -108,6 +117,7 @@ export function convertPlacementsToMarkups(
   scaleY: number = BASE_RENDER_SCALE,
   verificationById?: PlacementVerificationMeta[],
   geometryByPage?: Map<number, PageGeometry>,
+  calibrationByPage?: Map<number, PageCalibration | null>,
 ): Array<{ page: number; markup: CanvasMarkup }> {
   const now = new Date().toISOString();
   const markups: Array<{ page: number; markup: CanvasMarkup }> = [];
@@ -128,8 +138,16 @@ export function convertPlacementsToMarkups(
     fontFamily: defaultStyle.fontFamily,
   });
 
-  placements.markups.forEach((placement, index) => {
-    const style = buildStyle(placement.style);
+  const measurementScaleForPage = (pageNumber: number) => {
+    const cal = calibrationByPage?.get(pageNumber) ?? null;
+    const renderPixelsPerUnit = cal ? pageCalibrationToRenderPixelsPerUnit(cal) : null;
+    return {
+      renderPixelsPerUnit,
+      unit: cal?.unit ?? null,
+    };
+  };
+
+  placements.markups.forEach((placement, index) => {    const style = buildStyle(placement.style);
     const verification = verificationMap.get(placement.id || '')
       || verificationMap.get(`proposal_pl_${index}`)
       || verificationMap.get(`proposal_ptr_${placement.calloutRef || index + 1}`);
@@ -204,16 +222,24 @@ export function convertPlacementsToMarkups(
       const original = pointsAabb(placement.points);
       const dx = verifiedBox && original ? (verifiedBox.x + verifiedBox.width / 2) - original.centerX : 0;
       const dy = verifiedBox && original ? (verifiedBox.y + verifiedBox.height / 2) - original.centerY : 0;
+      const renderPoints = (placement.points || []).map((point) =>
+        toRenderPoint({ x: point.x + dx, y: point.y + dy }, page));
+      const scaleInput = measurementScaleForPage(pageNumber);
+      const measured = placement.type === 'measurement-length'
+        ? computeLengthMeasurementFromPoints(renderPoints, scaleInput)
+        : computeAreaMeasurementFromBounds(renderPoints, scaleInput);
+      const notes = [placement.aiNote, measured.note].filter(Boolean);
       markups.push({
         page: placement.page,
         markup: {
           ...base,
           type: placement.type,
-          points: (placement.points || []).map((point) =>
-            toRenderPoint({ x: point.x + dx, y: point.y + dy }, page)),
-          value: 0,
-          scaledValue: 0,
-          unit: 'ft',
+          points: renderPoints,
+          value: measured.value,
+          scaledValue: measured.scaledValue,
+          unit: measured.unit,
+          calibrated: measured.calibrated,
+          aiNote: notes.length ? notes.join(' — ') : undefined,
         },
       });
       return;

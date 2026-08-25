@@ -44,6 +44,7 @@ describe('assistant batch history', () => {
           originalPdfBytes: null,
           textContentByPage: {},
           textWordsByPage: {},
+          pageGeometryByPage: {},
           ocrStatus: 'none',
           ocrProgress: 0,
           contentRevision: 1,

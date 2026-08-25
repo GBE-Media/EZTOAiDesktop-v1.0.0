@@ -17,6 +17,13 @@ import { verifyPlacementMarkupsByPage } from './verifyPlacementsByPage';
 import { useCanvasStore } from '@/store/canvasStore';
 import { nonePageCalibration } from './pageCalibration';
 
+function cacheLoadedPageGeometries(geometryByPage: Map<number, PageGeometry>): void {
+  const canvas = useCanvasStore.getState();
+  if (typeof canvas.cachePageGeometries === 'function') {
+    canvas.cachePageGeometries(geometryByPage);
+  }
+}
+
 /** Logged/reported when a pointer is dropped because legacy pct needs page size. */
 export const POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE =
   'could not determine placement — missing page size';
@@ -116,7 +123,23 @@ function convertVerifiedBatch(options: {
     BASE_RENDER_SCALE,
     verificationMetaFromResults(verified),
     options.geometryByPage,
+    buildCalibrationByPage(options.markups, options.resolveCalibration),
   );
+}
+
+function buildCalibrationByPage(
+  markups: PlacementMarkup[],
+  resolveCalibration?: (pageNumber: number) => PageCalibration | null,
+): Map<number, PageCalibration | null> {
+  const map = new Map<number, PageCalibration | null>();
+  const pages = new Set(markups.map(m => m.page || 1));
+  for (const pageNumber of pages) {
+    map.set(
+      pageNumber,
+      resolveCalibration?.(pageNumber) ?? resolveCalibrationForPage(pageNumber),
+    );
+  }
+  return map;
 }
 
 function convertUnverifiableBatch(options: {
@@ -138,6 +161,8 @@ function convertUnverifiableBatch(options: {
     BASE_RENDER_SCALE,
     BASE_RENDER_SCALE,
     failureVerificationMeta(annotated),
+    undefined,
+    buildCalibrationByPage(annotated),
   );
 }
 
@@ -187,6 +212,7 @@ export async function normalizeAgentMarkupPayload(
         },
         getPageDimensions: options.getPageDimensions,
       });
+      cacheLoadedPageGeometries(geometryByPage);
 
       const placementMarkups = legacy
         .map((item) => {
@@ -254,6 +280,7 @@ export async function normalizeAgentMarkupPayload(
     },
     getPageDimensions: options.getPageDimensions,
   });
+  cacheLoadedPageGeometries(geometryByPage);
 
   const verifiablePointers: ChatMarkupPointer[] = [];
   const unverifiablePointers: ChatMarkupPointer[] = [];
@@ -395,6 +422,7 @@ export async function verifyPlacementMarkupsWithGeometryGate(options: {
     // Path A must never fall back to document-wide page-1 dimensions.
     getPageDimensions: options.getPageDimensions,
   });
+  cacheLoadedPageGeometries(geometryByPage);
 
   const resolveAnchors = options.resolveAnchors
     || ((page: PageGeometry, pageNumber: number) => resolvePageAnchors({ page, pageNumber }));
@@ -432,6 +460,7 @@ export async function verifyPlacementMarkupsWithGeometryGate(options: {
     BASE_RENDER_SCALE,
     verificationMetaFromResults(verifiedResults),
     geometryByPage,
+    buildCalibrationByPage(verifiable),
   );
 
   const reviewOnly = convertUnverifiableBatch({
