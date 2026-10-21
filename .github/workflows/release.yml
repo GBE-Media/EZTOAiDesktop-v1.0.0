@@ -6,31 +6,42 @@ on:
       - main
 
 # A push made by this workflow's own version-bump commit uses the default
-# GITHUB_TOKEN, which GitHub never re-triggers workflow runs for - but cancel
-# any older in-flight run for the branch anyway so rapid test pushes don't
-# pile up or race each other.
+# GITHUB_TOKEN, which GitHub never re-triggers workflow runs for. The bump
+# commit message also includes [skip ci] as a second guard.
+# Do not cancel an in-flight release: a new main push queues behind it so
+# uploads are not cut off mid-publish.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
-  # Cleanup old releases first (keep last 10)
+  # Cleanup old published releases first (keep last 10). Never delete drafts
+  # (in-progress tags stay until verify publishes them) and never delete the
+  # tag matching the current package.json version.
   cleanup:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Cleanup old releases (keep last 10)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cleanup old releases (keep last 10 published)
         run: |
-          tags=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[10:] | .[].tagName' || echo "")
+          set -euo pipefail
+          current=$(node -p "require('./package.json').version")
+          echo "Protecting current version tag v$current from deletion; skipping drafts"
+          tags=$(gh release list --limit 200 --json tagName,createdAt,isDraft --jq 'map(select(.isDraft == false)) | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' || echo "")
           for tag in $tags; do
-            echo "Deleting old release: $tag"
+            if [ "$tag" = "v$current" ]; then
+              echo "Skipping current version tag: $tag"
+              continue
+            fi
+            echo "Deleting old published release: $tag"
             gh release delete "$tag" -y --cleanup-tag || true
           done
 
@@ -40,6 +51,9 @@ jobs:
   version-bump:
     needs: cleanup
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      sha: ${{ steps.bump.outputs.sha }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,7 +61,9 @@ jobs:
           ref: main
 
       - name: Bump patch version
+        id: bump
         run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           npm version patch --no-git-tag-version
@@ -56,22 +72,113 @@ jobs:
           git commit -m "chore(release): bump version to $version [skip ci]"
           git pull --rebase origin main
           git push origin main
+          sha=$(git rev-parse HEAD)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+  # Create a DRAFT GitHub Release once, before either platform job publishes.
+  # electron-builder then attaches assets; verify publishes the draft only when
+  # both platforms are complete. Drafts also avoid electron-builder skipping
+  # uploads to published releases older than 2 hours.
+  create-release:
+    needs: version-bump
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    outputs:
+      version: ${{ needs.version-bump.outputs.version }}
+      tag: v${{ needs.version-bump.outputs.version }}
+      sha: ${{ needs.version-bump.outputs.sha }}
+    steps:
+      - name: Create draft GitHub Release (idempotent)
+        env:
+          RELEASE_VERSION: ${{ needs.version-bump.outputs.version }}
+          TARGET_SHA: ${{ needs.version-bump.outputs.sha }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_VERSION:?missing version-bump version}"
+          sha="${TARGET_SHA:?missing version-bump sha}"
+          tag="v$version"
+
+          set +e
+          view_out=$(gh release view "$tag" --json tagName,isDraft 2>&1)
+          view_status=$?
+          set -e
+
+          if [ "$view_status" -eq 0 ]; then
+            echo "Release $tag already exists."
+            echo "$view_out"
+            exit 0
+          fi
+
+          if echo "$view_out" | grep -qiE 'release not found|HTTP 404'; then
+            echo "Release $tag not found; creating draft at $sha"
+          else
+            echo "::error::gh release view $tag failed unexpectedly:"
+            echo "$view_out"
+            exit 1
+          fi
+
+          set +e
+          create_out=$(gh release create "$tag" \
+            --draft \
+            --title "v$version" \
+            --notes "Automated BidveraAi $version desktop release." \
+            --target "$sha" 2>&1)
+          create_status=$?
+          set -e
+
+          if [ "$create_status" -eq 0 ]; then
+            echo "Created draft release $tag"
+            exit 0
+          fi
+
+          # Simultaneous create can return 422 already_exists.
+          set +e
+          view_out=$(gh release view "$tag" --json tagName,isDraft 2>&1)
+          view_status=$?
+          set -e
+          if [ "$view_status" -eq 0 ]; then
+            echo "Release $tag appeared during create; continuing."
+            exit 0
+          fi
+          echo "::error::Failed to create draft release $tag"
+          echo "$create_out"
+          echo "$view_out"
+          exit 1
 
   # Build and publish for each platform
   build:
-    needs: version-bump
+    needs: [version-bump, create-release]
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
 
     steps:
-      - name: Checkout
+      - name: Checkout version-bump commit
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ needs.version-bump.outputs.sha }}
+
+      - name: Confirm package version matches release
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.version-bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          actual=$(node -p "require('./package.json').version")
+          if [ "$actual" != "$EXPECTED_VERSION" ]; then
+            echo "::error::package.json version $actual does not match expected $EXPECTED_VERSION (checkout SHA ${{ needs.version-bump.outputs.sha }})"
+            exit 1
+          fi
+          echo "Building BidveraAi $actual at ${{ needs.version-bump.outputs.sha }}"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -120,29 +227,125 @@ jobs:
           test -f dist/index.html
           test -f dist-electron/main.js
 
-      - name: Check if release exists
+      # Per-platform gate: skip only if THIS OS's full updater set is already
+      # on the release (manifest AND installer). Partial uploads must republish.
+      - name: Check if this platform's update assets exist
         id: check_release
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           version=$(node -p "require('./package.json').version")
           tag="v$version"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release already exists for $tag. Skipping publish."
+
+          set +e
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name' 2>&1)
+          view_status=$?
+          set -e
+
+          if [ "$view_status" -ne 0 ]; then
+            if echo "$assets" | grep -qiE 'release not found|HTTP 404'; then
+              echo "::error::Release $tag is missing; create-release should have made it."
+            else
+              echo "::error::gh release view $tag failed unexpectedly:"
+              echo "$assets"
+            fi
+            exit 1
+          fi
+          echo "Existing assets for $tag:"
+          echo "$assets"
+
+          platform_complete=false
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            if echo "$assets" | grep -Fxq "latest.yml" && echo "$assets" | grep -Eq 'x64\.exe$'; then
+              platform_complete=true
+            fi
+          else
+            if echo "$assets" | grep -Fxq "latest-mac.yml" && echo "$assets" | grep -Eq '\.(dmg|zip)$'; then
+              platform_complete=true
+            fi
+          fi
+
+          if [ "$platform_complete" = true ]; then
+            echo "Release $tag already has this platform's full updater set. Skipping publish."
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
           else
+            echo "Release $tag is missing this platform's full updater set. Publishing."
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # electron-builder ^26.4.0 GitHub publisher attaches artifacts to an
+      # existing tagged draft. EP_GH_IGNORE_TIME covers published-release
+      # 2-hour skip if a rerun ever hits a non-draft tag.
       - name: Publish to GitHub Release
         if: steps.check_release.outputs.should_publish == 'true'
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_HTTP_TIMEOUT: 600000
           ELECTRON_BUILDER_HTTP_MAX_RETRY: 5
+          EP_GH_IGNORE_TIME: "true"
         run: |
           set -euo pipefail
           test -f dist/index.html
           npx electron-builder --publish always
+
+  # Fail the workflow if either platform's updater artifacts are missing.
+  # Only then undraft the release so clients never see an incomplete Latest.
+  verify-release:
+    needs: [create-release, build]
+    if: always() && needs.create-release.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Verify release has Windows and macOS updater assets, then publish
+        env:
+          RELEASE_VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_VERSION:?missing create-release version}"
+          tag="v$version"
+          echo "Verifying GitHub Release $tag"
+
+          set +e
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name' 2>&1)
+          view_status=$?
+          set -e
+
+          if [ "$view_status" -ne 0 ]; then
+            if echo "$assets" | grep -qiE 'release not found|HTTP 404'; then
+              echo "::error::Release $tag does not exist"
+            else
+              echo "::error::gh release view $tag failed unexpectedly:"
+              echo "$assets"
+            fi
+            exit 1
+          fi
+          echo "Assets:"
+          echo "$assets"
+
+          missing=0
+          require() {
+            local pattern="$1"
+            local label="$2"
+            if echo "$assets" | grep -E "$pattern" >/dev/null; then
+              echo "OK: $label"
+            else
+              echo "::error::Missing $label on $tag"
+              missing=1
+            fi
+          }
+
+          require 'x64\.exe$' "Windows x64 installer (.exe)"
+          require '^latest\.yml$' "Windows updater manifest (latest.yml)"
+          require '\.(dmg|zip)$' "macOS installer (.dmg or .zip)"
+          require '^latest-mac\.yml$' "macOS updater manifest (latest-mac.yml)"
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Release $tag is incomplete; leaving it as a draft so auto-update will not see it."
+            exit 1
+          fi
+
+          echo "Release $tag has the required Windows and macOS updater assets. Publishing draft."
+          gh release edit "$tag" --draft=false --latest
+          echo "Published $tag as Latest."
