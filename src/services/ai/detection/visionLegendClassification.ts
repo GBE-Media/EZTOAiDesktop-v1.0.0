@@ -68,7 +68,7 @@ export function validateLegendTypeCode(
   return { ok: true, code };
 }
 
-function normalizeMatchConfidence(raw: unknown): MatchConfidence | undefined {
+export function normalizeMatchConfidence(raw: unknown): MatchConfidence | undefined {
   if (raw === 'high' || raw === 'medium' || raw === 'low') return raw;
   if (typeof raw === 'string') {
     const v = raw.toLowerCase().trim();
