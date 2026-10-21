@@ -9,6 +9,7 @@ on:
 # GITHUB_TOKEN, which GitHub never re-triggers workflow runs for - but cancel
 # any older in-flight run for the branch anyway so rapid test pushes don't
 # pile up or race each other.
+# The bump commit message also includes [skip ci] as a second guard.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: true
@@ -17,7 +18,9 @@ permissions:
   contents: write
 
 jobs:
-  # Cleanup old releases first (keep last 10)
+  # Cleanup old releases first (keep last 10). Never delete the tag matching
+  # the current package.json version so an in-progress / just-published release
+  # cannot be pruned.
   cleanup:
     runs-on: ubuntu-latest
     steps:
@@ -28,8 +31,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          current=$(node -p "require('./package.json').version")
+          echo "Protecting current version tag v$current from deletion"
           tags=$(gh release list --limit 200 --json tagName,createdAt --jq 'sort_by(.createdAt) | reverse | .[10:] | .[].tagName' || echo "")
           for tag in $tags; do
+            if [ "$tag" = "v$current" ]; then
+              echo "Skipping current version tag: $tag"
+              continue
+            fi
             echo "Deleting old release: $tag"
             gh release delete "$tag" -y --cleanup-tag || true
           done
@@ -40,6 +49,8 @@ jobs:
   version-bump:
     needs: cleanup
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,6 +58,7 @@ jobs:
           ref: main
 
       - name: Bump patch version
+        id: bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -56,10 +68,47 @@ jobs:
           git commit -m "chore(release): bump version to $version [skip ci]"
           git pull --rebase origin main
           git push origin main
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  # Create the GitHub Release once, before either platform job publishes.
+  # electron-builder --publish always then only attaches assets (no create race).
+  create-release:
+    needs: version-bump
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ needs.version-bump.outputs.version }}
+      tag: v${{ needs.version-bump.outputs.version }}
+    steps:
+      - name: Create GitHub Release (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ needs.version-bump.outputs.version }}"
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists."
+            exit 0
+          fi
+          if gh release create "$tag" \
+            --title "v$version" \
+            --notes "Automated BidveraAi $version desktop release." \
+            --target main \
+            --latest; then
+            echo "Created release $tag"
+            exit 0
+          fi
+          # Simultaneous create can return 422 already_exists.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag appeared during create; continuing."
+            exit 0
+          fi
+          echo "Failed to create release $tag"
+          exit 1
 
   # Build and publish for each platform
   build:
-    needs: version-bump
+    needs: [version-bump, create-release]
     strategy:
       fail-fast: false
       matrix:
@@ -120,21 +169,42 @@ jobs:
           test -f dist/index.html
           test -f dist-electron/main.js
 
-      - name: Check if release exists
+      # Per-platform gate: skip only if THIS OS's updater manifest is already
+      # on the release. A macOS-created release must not block Windows publish.
+      - name: Check if this platform's update manifest exists
         id: check_release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           version=$(node -p "require('./package.json').version")
           tag="v$version"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release already exists for $tag. Skipping publish."
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            manifest="latest.yml"
+          else
+            manifest="latest-mac.yml"
+          fi
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag is missing; create-release should have made it."
+            exit 1
+          fi
+
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name' || true)
+          echo "Existing assets for $tag:"
+          echo "$assets"
+
+          if echo "$assets" | grep -Fxq "$manifest"; then
+            echo "Release $tag already has $manifest. Skipping publish."
             echo "should_publish=false" >> "$GITHUB_OUTPUT"
           else
+            echo "Release $tag is missing $manifest. Publishing this platform's assets."
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # electron-builder ^26.4.0 GitHub publisher attaches artifacts to an
+      # existing tagged release; --publish always does not require creating it.
       - name: Publish to GitHub Release
         if: steps.check_release.outputs.should_publish == 'true'
         shell: bash
@@ -146,3 +216,51 @@ jobs:
           set -euo pipefail
           test -f dist/index.html
           npx electron-builder --publish always
+
+  # Fail the workflow if either platform's updater artifacts are missing.
+  # A silent Windows skip (the v1.3.43 failure mode) must turn the run red.
+  verify-release:
+    needs: [create-release, build]
+    if: always() && needs.create-release.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify release has Windows and macOS updater assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ needs.create-release.outputs.version }}"
+          tag="v$version"
+          echo "Verifying GitHub Release $tag"
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag does not exist"
+            exit 1
+          fi
+
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          echo "Assets:"
+          echo "$assets"
+
+          missing=0
+          require() {
+            local pattern="$1"
+            local label="$2"
+            if echo "$assets" | grep -E "$pattern" >/dev/null; then
+              echo "OK: $label"
+            else
+              echo "::error::Missing $label on $tag"
+              missing=1
+            fi
+          }
+
+          require 'x64\.exe$' "Windows x64 installer (.exe)"
+          require '^latest\.yml$' "Windows updater manifest (latest.yml)"
+          require '\.(dmg|zip)$' "macOS installer (.dmg or .zip)"
+          require '^latest-mac\.yml$' "macOS updater manifest (latest-mac.yml)"
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Release $tag is incomplete; auto-update would not see this version."
+            exit 1
+          fi
+          echo "Release $tag has the required Windows and macOS updater assets."

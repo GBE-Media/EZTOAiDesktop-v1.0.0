@@ -31,7 +31,9 @@
   - Users will auto-update on next launch
 
 ## CI Auto-Release (GitHub Actions)
-- Every push to `main` builds Windows and macOS installers
-- Each build publishes a GitHub Release tagged like `v<version>-<sha>-run-<runId>`
-- CI deletes older releases before publish and keeps the newest 20
+- Every push to `main` bumps a patch version (`[skip ci]` so the bump commit does not start another release run), then builds Windows and macOS installers
+- A dedicated `create-release` job creates GitHub Release `v<version>` once; matrix jobs only attach platform assets
+- Each platform publishes unless **that** platform's updater manifest is already on the release (`latest.yml` on Windows, `latest-mac.yml` on macOS)
+- The `verify-release` job **fails the workflow** if the new tag is missing any of: an x64 `.exe`, `latest.yml`, a `.dmg` or `.zip`, `latest-mac.yml`. Missing Windows `latest.yml` must not report success (that is what broke auto-update at v1.3.43).
+- CI deletes older releases before publish and keeps the newest 10 (never deletes the tag matching the current `package.json` version)
 - You can disable CI by removing `.github/workflows/release.yml`
