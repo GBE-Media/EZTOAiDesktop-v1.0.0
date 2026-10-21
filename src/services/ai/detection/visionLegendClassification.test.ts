@@ -187,6 +187,22 @@ describe('vision-native legend classification', () => {
     expect(fallback).toHaveBeenCalledOnce();
   });
 
+  it('resolveLegendAwareCounting: whitespace-only legendTypeCode stays vision-native (present-but-invalid)', () => {
+    const fallback = vi.fn(applyLegendAwareCounting);
+    const resolved = resolveLegendAwareCounting({
+      items: [
+        det({ id: 'ws-a', legendTypeCode: '   ', matchConfidence: 'high' }),
+        det({ id: 'ws-b', type: 'B', name: 'night light fixture', legendTypeCode: '   ' }),
+      ],
+      legendEntries: legend,
+      applyTokenOverlapFallback: fallback,
+    });
+    expect(resolved.path).toBe('vision-native');
+    expect(fallback).toHaveBeenCalledTimes(0);
+    expect(resolved.unresolved.map((i) => i.id).sort()).toEqual(['ws-a', 'ws-b']);
+    expect(Object.values(resolved.legendTypeCounts).every((n) => n === 0)).toBe(true);
+  });
+
   it('resolveLegendAwareCounting: present-but-invalid legendTypeCode does NOT invoke token-overlap fallback', () => {
     const fallback = vi.fn(applyLegendAwareCounting);
     const resolved = resolveLegendAwareCounting({

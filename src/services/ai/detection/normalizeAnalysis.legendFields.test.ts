@@ -1,9 +1,9 @@
 import '../agent/testGlobals';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { normalizeAnalysis } from '../pipeline';
-import { parseLegendFromTextLines } from './legendAwareCounting';
+import { applyLegendAwareCounting, parseLegendFromTextLines } from './legendAwareCounting';
 import { E100_LEGEND_LINES } from './fixtures/lightingPlanE100.fixture';
-import { applyVisionNativeLegendCounting } from './visionLegendClassification';
+import { applyVisionNativeLegendCounting, resolveLegendAwareCounting } from './visionLegendClassification';
 
 describe('normalizeAnalysis legend field parsing boundary', () => {
   const legend = parseLegendFromTextLines(E100_LEGEND_LINES);
@@ -113,10 +113,54 @@ describe('normalizeAnalysis legend field parsing boundary', () => {
 
     const normalized = normalizeAnalysis(raw, 2, 'electrical');
     expect(normalized).not.toBeNull();
+    const byId = Object.fromEntries(normalized!.items.map((i) => [i.id, i]));
+    expect(byId.missing?.legendTypeCode).toBeUndefined();
+    expect(byId.nullish?.legendTypeCode).toBeUndefined();
+    expect(byId['wrong-type']?.legendTypeCode).toBeUndefined();
+    // Whitespace-only is present (present-but-invalid), not absent.
+    expect(byId.empty?.legendTypeCode).toBe('   ');
     for (const item of normalized!.items) {
-      expect(item.legendTypeCode).toBeUndefined();
       expect(item.matchConfidence).toBeUndefined();
       expect(item.matchReasoning).toBeUndefined();
     }
+  });
+
+  it('whitespace-only legendTypeCode stays vision-native (never token-overlap fallback)', () => {
+    const raw = {
+      items: [
+        {
+          id: 'ws-a',
+          type: 'B',
+          name: 'night light fixture',
+          location: { x: 10, y: 20 },
+          confidence: 0.9,
+          legendTypeCode: '   ',
+          matchConfidence: 'high',
+        },
+        {
+          id: 'ws-b',
+          type: 'A',
+          name: 'recessed',
+          location: { x: 30, y: 40 },
+          confidence: 0.9,
+          legendTypeCode: '   ',
+        },
+      ],
+      dimensions: [],
+      text: [],
+      symbols: [],
+    };
+    const normalized = normalizeAnalysis(raw, 1, 'electrical');
+    expect(normalized).not.toBeNull();
+    const fallback = vi.fn(applyLegendAwareCounting);
+    const resolved = resolveLegendAwareCounting({
+      items: normalized!.items,
+      legendEntries: legend,
+      applyTokenOverlapFallback: fallback,
+    });
+    expect(resolved.path).toBe('vision-native');
+    expect(fallback).toHaveBeenCalledTimes(0);
+    expect(resolved.unresolved.map((i) => i.id).sort()).toEqual(['ws-a', 'ws-b']);
+    expect(Object.values(resolved.legendTypeCounts).every((n) => n === 0)).toBe(true);
   });
 });

@@ -295,9 +295,6 @@ export function normalizeAnalysis(
   const items = data.items.map((candidate, index) => {
     const location = (candidate.location || {}) as Record<string, unknown>;
     const bounds = (candidate.boundingBox || {}) as Record<string, unknown>;
-    const rawLegendType = typeof candidate.legendTypeCode === 'string'
-      ? candidate.legendTypeCode.trim()
-      : undefined;
     return {
       id: typeof candidate.id === 'string' ? candidate.id : `detected_${page}_${index}`,
       type: typeof candidate.type === 'string' ? candidate.type : 'unknown',
@@ -324,7 +321,7 @@ export function normalizeAnalysis(
       evidence: typeof candidate.evidence === 'string' ? candidate.evidence : undefined,
       codeReference: typeof candidate.codeReference === 'string' ? candidate.codeReference : undefined,
       notes: typeof candidate.notes === 'string' ? candidate.notes : undefined,
-      legendTypeCode: rawLegendType || undefined,
+      legendTypeCode: typeof candidate.legendTypeCode === 'string' ? candidate.legendTypeCode : undefined,
       // Single source of truth: same case-insensitive trim as downstream normalizer.
       matchConfidence: normalizeMatchConfidence(candidate.matchConfidence),
       matchReasoning: typeof candidate.matchReasoning === 'string'
