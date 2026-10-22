@@ -124,6 +124,22 @@ describe('unresolved list caps', () => {
     expect(result.matchingOmitted).toBe(0);
     expect(result.unresolvedOmitted).toBe(0);
   });
+
+  it('keeps all 80 matching rows when 300 unresolved would overflow 10k', () => {
+    const matching = Array.from({ length: 80 }, (_, i) => item(`ok-${i}`, 'A', 10.12, 10 + i * 0.13));
+    const unresolved = Array.from({ length: 300 }, (_, i) => item(`u-${i}`, 'R', 20, 20, {
+      legendTypeCode: undefined,
+      type: 'receptacle',
+      name: 'unknown receptacle',
+      matchConfidence: 'low',
+    }));
+    const analysis = e100Analysis([...matching, ...unresolved]);
+    analysis.legendTypeCounts = { A: 80 };
+    const result = countItemsFromAnalysis(analysis, 'Type A');
+    expect(result.matchingItems.length).toBe(80);
+    expect(result.unresolvedOmitted).toBeGreaterThan(0);
+    expect(JSON.stringify(result).length).toBeLessThan(10_000);
+  });
 });
 
 describe('legend column split + extra keywords (fix 2)', () => {
@@ -168,9 +184,12 @@ describe('tile grid + reconcile (fix 4)', () => {
   });
 
   it('reports tile count and DPI for letter, 11x17, 24x36 and 30x42', () => {
-    const dpi = (w: number, h: number, grid: { rows: number; cols: number }) => (
-      768 / (Math.min(w / grid.cols, h / grid.rows) / 72)
-    );
+    const dpi = (w: number, h: number, grid: { rows: number; cols: number }) => {
+      const overlap = 0.12;
+      const cropW = Math.min(w, (w / grid.cols) * (1 + 2 * overlap));
+      const cropH = Math.min(h, (h / grid.rows) * (1 + 2 * overlap));
+      return 768 / (Math.min(cropW, cropH) / 72);
+    };
     const letter = visionTileGridForPage(612, 792);
     const tabloid = visionTileGridForPage(792, 1224);
     const archD = visionTileGridForPage(24 * 72, 36 * 72);
@@ -282,9 +301,10 @@ describe('tile reconcile ownership and absolute radius', () => {
     });
     for (const errIn of [0, 0.2, 0.4, 0.6]) {
       const err = errIn * 72;
+      const dirs = [[0, -1], [1, 0], [0, 1], [-1, 0]] as const;
       const items = reconcileTileDetections(regions.map((region, index) => {
-        const pageX = 360 + err;
-        const pageY = 360 + err;
+        const pageX = 360 + dirs[index][0] * err;
+        const pageY = 360 + dirs[index][1] * err;
         const localX = ((pageX - region.x) / region.width) * 100;
         const localY = ((pageY - region.y) / region.height) * 100;
         return {
@@ -312,6 +332,43 @@ describe('tile reconcile ownership and absolute radius', () => {
     const items = reconcileTileDetections([
       { region: left, result: { page: 1, items: [item('l', 'A', local(left, leftPt).x, local(left, leftPt).y)], dimensions: [], text: [], symbols: [] } },
       { region: right, result: { page: 1, items: [item('r', 'A', local(right, rightPt).x, local(right, rightPt).y)], dimensions: [], text: [], symbols: [] } },
+    ], pageW, pageH);
+    expect(items.filter(row => !row.locationMissing)).toHaveLength(2);
+  });
+
+  it('keeps the missed fixture and a same-code fixture 0.75in away on the owning tile', () => {
+    const pageW = 720;
+    const pageH = 720;
+    const regions = generateOverlappingTileRegions(pageW, pageH, 2, 2);
+    const owner = regions.find(region => region.row === 1 && region.col === 1)!;
+    const others = regions.filter(region => region.id !== owner.id);
+    const q = { x: 360, y: 360 };
+    const otherA = { x: 360 + 0.75 * 72, y: 360 };
+    const local = (region: typeof owner, pt: { x: number; y: number }) => ({
+      x: ((pt.x - region.x) / region.width) * 100,
+      y: ((pt.y - region.y) / region.height) * 100,
+    });
+    const items = reconcileTileDetections([
+      ...others.map((region, index) => ({
+        region,
+        result: {
+          page: 1,
+          items: [item(`q-${index}`, 'A', local(region, q).x, local(region, q).y)],
+          dimensions: [],
+          text: [],
+          symbols: [],
+        },
+      })),
+      {
+        region: owner,
+        result: {
+          page: 1,
+          items: [item('a-near', 'A', local(owner, otherA).x, local(owner, otherA).y)],
+          dimensions: [],
+          text: [],
+          symbols: [],
+        },
+      },
     ], pageW, pageH);
     expect(items.filter(row => !row.locationMissing)).toHaveLength(2);
   });

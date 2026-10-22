@@ -54,7 +54,7 @@ const NOISE_CODES = new Set([
   'DRAWING', 'PLAN', 'FLOOR', 'ROOM', 'NOTE', 'NOTES', 'SEE', 'PER',
   'AND', 'THE', 'FOR', 'WITH', 'FROM', 'TO', 'OF', 'IN', 'ON',
   'AFF', 'GFI', 'GFCI', 'WP', 'TYP', 'NIC', 'EC',
-  'BKR', 'CKT', 'LTG', 'MCB',
+  'BKR', 'CKT', 'LTG', 'MCB', 'RM',
 ]);
 
 export type LegendTextItem = {
@@ -66,7 +66,7 @@ export type LegendTextItem = {
 };
 
 const SCHEDULE_HEADER_RE =
-  /^(LIGHTING\s+FIXTURE\s+SCHEDULE|LUMINAIRE\s+SCHEDULE|FIXTURE\s+SCHEDULE|SYMBOL\s+LEGEND|LEGEND)\b/i;
+  /(LIGHTING\s+FIXTURE\s+SCHEDULE|LUMINAIRE\s+SCHEDULE|FIXTURE\s+SCHEDULE|SYMBOL\s+LEGEND|\bLEGEND\b)/i;
 
 function normalizeCode(raw: string): string {
   return raw.trim().toUpperCase().replace(/\s+/g, '');
@@ -132,9 +132,9 @@ export function parseLegendFromTextLines(lines: string[]): LegendEntry[] {
       continue;
     }
 
-    // Schedule-style: "A    2x4 RECESSED LED" (code then spaces then description)
+    // Schedule-style: "A    2x4 RECESSED LED" or "A 2x4 RECESSED LED"
     const spaced = line.match(
-      /^\s*(?:TYPE\s+)?([A-Z]{1,3}\d*(?:[/-][A-Z0-9]+)*)\s{2,}(.+)$/i,
+      /^\s*(?:TYPE\s+)?([A-Z]{1,3}\d*(?:[/-][A-Z0-9]+)*)\s+(.+)$/i,
     );
     if (spaced && (inSection || sectionLinesRemaining > 0)) {
       add(spaced[1], spaced[2], 'schedule');
@@ -197,10 +197,18 @@ export function parseLegendFromPageItems(items: LegendTextItem[]): LegendEntry[]
     return parseLegendFromTextLines(rows.map(rowText).filter(Boolean));
   }
 
-  const header = rowExtent(rows[headerIndex]);
+  const headerRow = rows[headerIndex];
+  const headerMatch = rowText(headerRow).match(SCHEDULE_HEADER_RE);
+  const headerWords = (headerMatch?.[0] || '').split(/\s+/).filter(Boolean);
+  const headerItems = headerWords.length
+    ? headerRow.filter(item => headerWords.some(word => item.str.toUpperCase() === word.toUpperCase()))
+    : headerRow;
+  const header = rowExtent(headerItems.length ? headerItems : headerRow);
   let x0 = header.x0;
   let x1 = header.x1;
-  const blockRows: LegendTextItem[][] = [];
+  const headerInBlock = (headerItems.length ? headerItems : headerRow)
+    .filter(item => item.x < x1 + 48 && item.x + item.width > x0 - 24);
+  const blockRows: LegendTextItem[][] = [headerInBlock.length ? headerInBlock : headerRow];
   let prevY = header.y;
   const medianHeight = rows
     .map(row => Math.max(...row.map(item => item.height || 8)))

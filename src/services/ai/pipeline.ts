@@ -508,7 +508,7 @@ function inOverlapBand(
   return inCrop && !isOwnedByTile(item, region, pageWidth, pageHeight);
 }
 
-const OWNER_LINK_RADIUS_PT = 72;
+const OWNER_LINK_RADIUS_PT = 36;
 
 function regionIndex(region: PageTileRegion): number {
   return region.row * 1000 + region.col;
@@ -539,7 +539,6 @@ export function reconcileTileDetections(
     return a.region.id.localeCompare(b.region.id);
   });
   const regionById = new Map(orderedTiles.map(row => [row.region.id, row.region]));
-  const regions = orderedTiles.map(row => row.region);
   const located: BlueprintAnalysisResult['items'] = [];
   const missing: BlueprintAnalysisResult['items'] = [];
   for (const { region, result } of orderedTiles) {
@@ -561,57 +560,86 @@ export function reconcileTileDetections(
     return a.id.localeCompare(b.id);
   });
 
-  const dropOutsiders = located.filter((item) => {
-    const region = item.sourceTileId ? regionById.get(item.sourceTileId) : undefined;
-    if (region && isOwnedByTile(item, region, pageWidth, pageHeight)) return true;
-    const point = pagePoint(item, pageWidth, pageHeight);
-    if (!point) return true;
-    const owner = regions.find(candidate => regionOwnsPoint(candidate, point.x, point.y, pageWidth, pageHeight));
-    if (!owner) return true;
-    let nearest = Infinity;
-    for (const other of located) {
-      if (other === item) continue;
-      if (other.sourceTileId !== owner.id) continue;
-      if (!sameLegendIdentity(other, item)) continue;
-      if (!isOwnedByTile(other, owner, pageWidth, pageHeight)) continue;
-      const otherPoint = pagePoint(other, pageWidth, pageHeight);
-      if (!otherPoint) continue;
-      nearest = Math.min(nearest, Math.hypot(otherPoint.x - point.x, otherPoint.y - point.y));
-    }
-    return !(Number.isFinite(nearest) && nearest <= OWNER_LINK_RADIUS_PT);
-  });
+  const parent = located.map((_, index) => index);
+  const find = (index: number): number => {
+    if (parent[index] !== index) parent[index] = find(parent[index]);
+    return parent[index];
+  };
+  const union = (a: number, b: number) => {
+    const pa = find(a);
+    const pb = find(b);
+    if (pa !== pb) parent[pa] = pb;
+  };
 
-  const clusters: BlueprintAnalysisResult['items'][] = [];
-  for (const candidate of dropOutsiders) {
-    const cluster = clusters.find(group => group.some((existing) => {
-      if (existing.sourceTileId && candidate.sourceTileId
-        && existing.sourceTileId === candidate.sourceTileId) {
-        return false;
+  for (let i = 0; i < located.length; i += 1) {
+    const left = located[i];
+    const leftPoint = pagePoint(left, pageWidth, pageHeight);
+    if (!leftPoint) continue;
+    let nearestIdx = -1;
+    let nearestDist = Infinity;
+    for (let j = 0; j < located.length; j += 1) {
+      if (i === j) continue;
+      const right = located[j];
+      if (left.sourceTileId && right.sourceTileId && left.sourceTileId === right.sourceTileId) continue;
+      if (!sameLegendIdentity(left, right)) continue;
+      const rightPoint = pagePoint(right, pageWidth, pageHeight);
+      if (!rightPoint) continue;
+      const dist = Math.hypot(leftPoint.x - rightPoint.x, leftPoint.y - rightPoint.y);
+      if (dist < OWNER_LINK_RADIUS_PT && dist < nearestDist) {
+        nearestDist = dist;
+        nearestIdx = j;
       }
-      if (!sameLegendIdentity(existing, candidate)) return false;
-      const dxPt = ((existing.location.x - candidate.location.x) / 100) * pageWidth;
-      const dyPt = ((existing.location.y - candidate.location.y) / 100) * pageHeight;
-      if (Math.hypot(dxPt, dyPt) > TILE_MERGE_RADIUS_PT) return false;
-      const existingRegion = existing.sourceTileId ? regionById.get(existing.sourceTileId) : undefined;
-      const candidateRegion = candidate.sourceTileId ? regionById.get(candidate.sourceTileId) : undefined;
-      const overlap = (existingRegion && inOverlapBand(existing, existingRegion, pageWidth, pageHeight))
-        || (candidateRegion && inOverlapBand(candidate, candidateRegion, pageWidth, pageHeight))
-        || (existingRegion && candidateRegion && (
-          inOverlapBand(candidate, existingRegion, pageWidth, pageHeight)
-          || inOverlapBand(existing, candidateRegion, pageWidth, pageHeight)
-        ));
-      return !!overlap;
-    }));
-    if (cluster) cluster.push(candidate);
-    else clusters.push([candidate]);
+    }
+    if (nearestIdx >= 0) union(i, nearestIdx);
   }
 
-  const reconciled = clusters.map((cluster) => {
-    const owned = cluster.find((item) => {
-      const region = item.sourceTileId ? regionById.get(item.sourceTileId) : undefined;
-      return region ? isOwnedByTile(item, region, pageWidth, pageHeight) : false;
+  const regions = [...regionById.values()];
+  const cellW = regions[0]?.ownership.width || pageWidth;
+  const cellH = regions[0]?.ownership.height || pageHeight;
+  const cols = Math.max(1, Math.round(pageWidth / Math.max(1, cellW)));
+  const rows = Math.max(1, Math.round(pageHeight / Math.max(1, cellH)));
+  const vertexRadius = 0.6 * 72;
+  for (let row = 0; row <= rows; row += 1) {
+    for (let col = 0; col <= cols; col += 1) {
+      const vx = col * cellW;
+      const vy = row * cellH;
+      const nearVertex: number[] = [];
+      located.forEach((item, index) => {
+        const point = pagePoint(item, pageWidth, pageHeight);
+        if (!point) return;
+        if (Math.hypot(point.x - vx, point.y - vy) <= vertexRadius) nearVertex.push(index);
+      });
+      for (let i = 0; i < nearVertex.length; i += 1) {
+        for (let j = i + 1; j < nearVertex.length; j += 1) {
+          const left = located[nearVertex[i]];
+          const right = located[nearVertex[j]];
+          if (left.sourceTileId && right.sourceTileId && left.sourceTileId === right.sourceTileId) continue;
+          if (!sameLegendIdentity(left, right)) continue;
+          union(nearVertex[i], nearVertex[j]);
+        }
+      }
+    }
+  }
+
+  const groups = new Map<number, typeof located>();
+  located.forEach((item, index) => {
+    const root = find(index);
+    const group = groups.get(root) || [];
+    group.push(item);
+    groups.set(root, group);
+  });
+
+  const reconciled = [...groups.values()].map((group) => {
+    const ranked = [...group].sort((a, b) => {
+      const aRegion = a.sourceTileId ? regionById.get(a.sourceTileId) : undefined;
+      const bRegion = b.sourceTileId ? regionById.get(b.sourceTileId) : undefined;
+      const aOwned = aRegion ? isOwnedByTile(a, aRegion, pageWidth, pageHeight) : false;
+      const bOwned = bRegion ? isOwnedByTile(b, bRegion, pageWidth, pageHeight) : false;
+      if (aOwned !== bOwned) return aOwned ? -1 : 1;
+      if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+      return a.id.localeCompare(b.id);
     });
-    return owned || cluster[0];
+    return ranked[0];
   });
 
   missing.sort((a, b) => a.id.localeCompare(b.id));

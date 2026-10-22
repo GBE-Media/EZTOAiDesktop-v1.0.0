@@ -90,8 +90,8 @@ function exportCanvasWithinLimit(
  * DPI math (assumed, not confirmed): providers are treated as resizing each
  * tile so its short side is `providerShortSidePx` (default 768). Then
  * effectiveDpi ≈ providerShortSidePx / (tileShortSideInches).
- * Example: 36×24in sheet, 4×4 tiles → tile 9×6in, short=6in, ≈128 DPI
- * (not 150). 2×8 tiles → tile 4.5×12in, short=4.5in, ≈171 DPI under a 16-tile cap.
+ * Example: 36×24in sheet, 2×8 tiles with 12% overlap → overlapped crop short
+ * side ≈5.58in, ≈138 DPI under a 16-tile cap.
  */
 export function visionTileGridForPage(
   pageWidth: number,
@@ -100,10 +100,12 @@ export function visionTileGridForPage(
     providerShortSidePx?: number;
     targetDpi?: number;
     maxTiles?: number;
+    overlapRatio?: number;
   },
 ): { rows: number; cols: number } {
   const providerShortSidePx = options?.providerShortSidePx ?? 768;
   const targetDpi = options?.targetDpi ?? 150;
+  const overlapRatio = options?.overlapRatio ?? 0.12;
   const shortIn = Math.min(pageWidth, pageHeight) / 72;
   const longIn = Math.max(pageWidth, pageHeight) / 72;
   const sheetCap = longIn <= 11.5 && shortIn <= 8.6
@@ -117,9 +119,11 @@ export function visionTileGridForPage(
       if (rows * cols > maxTiles) continue;
       if (landscape && cols < rows) continue;
       if (!landscape && rows < cols) continue;
-      const tileW = pageWidth / cols;
-      const tileH = pageHeight / rows;
-      const shortPts = Math.min(tileW, tileH);
+      const cellW = pageWidth / cols;
+      const cellH = pageHeight / rows;
+      const cropW = Math.min(pageWidth, cellW * (1 + 2 * overlapRatio));
+      const cropH = Math.min(pageHeight, cellH * (1 + 2 * overlapRatio));
+      const shortPts = Math.min(cropW, cropH);
       const dpi = providerShortSidePx / (shortPts / 72);
       const aspectPage = pageWidth / Math.max(1, pageHeight);
       const aspectGrid = cols / rows;
