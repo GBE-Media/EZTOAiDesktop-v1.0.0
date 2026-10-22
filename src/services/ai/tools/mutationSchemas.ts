@@ -131,6 +131,7 @@ export const placeMarkupsSchema = z.preprocess(
       page: z.number().int().positive(),
       revision: z.number().int().nonnegative(),
       analyzedAt: z.string().min(1),
+      analysisId: z.string().min(1),
     }).optional(),
     includeReviewMarkers: z.boolean().optional(),
   }).superRefine((value, ctx) => {

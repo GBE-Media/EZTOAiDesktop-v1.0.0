@@ -393,6 +393,7 @@ async function defaultCountPageItems(
     ? raw.limit
     : undefined;
   const code = typeof raw.code === 'string' ? raw.code.trim() : '';
+  const section = raw.section === 'unresolved' ? 'unresolved' as const : undefined;
 
   if (page == null) {
     return {
@@ -422,6 +423,7 @@ async function defaultCountPageItems(
       offset,
       limit,
       code: code || undefined,
+      section,
     });
   }
 
@@ -452,6 +454,7 @@ async function defaultCountPageItems(
     offset,
     limit,
     code: code || undefined,
+    section,
   });
 }
 
@@ -689,7 +692,7 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
 
 function markupsToDetectedItems(markups: CanvasMarkup[], trade: TradeType): DetectedItem[] {
   return markups
-    .filter(m => m.type === 'count-marker' || m.type === 'callout')
+    .filter(m => (m.type === 'count-marker' || m.type === 'callout') && !m.reviewMarker)
     .slice(0, 80)
     .map((m, index) => {
       const x = 'x' in m ? Number((m as { x?: number }).x) || 0 : 0;

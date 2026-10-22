@@ -160,6 +160,8 @@ const coreTools: AssistantToolDefinition[] = [
         .describe('Max matching item rows to return (default fills the size budget, cap 50).'),
       code: z.string().min(1).optional()
         .describe('Return only matching items with this legend type code.'),
+      section: z.enum(['matching', 'unresolved']).optional()
+        .describe('Page matchingItems (default) or unresolvedItems. Use section=unresolved with offset=nextUnresolvedOffset.'),
     }),
     execute: async (context, input) => {
       if (!context.countPageItems) {

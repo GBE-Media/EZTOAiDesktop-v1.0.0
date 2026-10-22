@@ -17,6 +17,14 @@ export function resolveMarkupDrawAppearance(options: {
   scale?: number;
 }): MarkupDrawAppearance {
   const scale = options.scale && options.scale > 0 ? options.scale : 1;
+  if (options.markup.reviewMarker && !options.isEraserHovered) {
+    return {
+      lineDash: [6 / scale, 4 / scale],
+      strokeStyle: '#f59e0b',
+      fillAlphaScale: 0.7,
+      pendingBadge: true,
+    };
+  }
   if (options.markup.aiPending && !options.isEraserHovered) {
     return {
       lineDash: [6 / scale, 4 / scale],

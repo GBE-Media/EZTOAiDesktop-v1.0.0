@@ -513,6 +513,47 @@ describe('count_page_items compact DocPoints', () => {
     ]);
     expect(returnedIds.size).toBe(counted.matchingItems.length + page2.matchingItems.length);
   });
+
+  it('pages unresolved items so every unresolved id is reachable exactly once', () => {
+    const items: DetectedItem[] = Array.from({ length: 320 }, (_, i) => ({
+      id: `low-${i}`,
+      type: 'B',
+      trade: 'electrical' as const,
+      name: 'B',
+      quantity: 1,
+      location: { x: 10, y: 10 },
+      confidence: 0.4,
+      legendTypeCode: 'B',
+      matchConfidence: 'low' as const,
+    }));
+    const seen = new Set<string>();
+    let offset = 0;
+    let section: 'matching' | 'unresolved' = 'matching';
+    let pages = 0;
+    while (pages < 20) {
+      const counted = countItemsFromAnalysis({
+        page: 1,
+        items,
+        dimensions: [],
+        text: [],
+        symbols: [],
+        legendTypeCounts: { B: 0 },
+      }, '', { pageWidth: 612, pageHeight: 792, offset, section });
+      for (const row of counted.unresolvedItems || []) {
+        expect(seen.has(row.id)).toBe(false);
+        seen.add(row.id);
+      }
+      if (counted.hasMoreUnresolved && counted.nextUnresolvedOffset != null) {
+        section = 'unresolved';
+        offset = counted.nextUnresolvedOffset;
+        pages += 1;
+        continue;
+      }
+      break;
+    }
+    expect(seen.size).toBe(320);
+    expect([...seen].sort()).toEqual(items.map(item => item.id).sort());
+  });
 });
 
 describe('failed placement resumes the agent', () => {

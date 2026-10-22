@@ -1,15 +1,18 @@
 import '../agent/testGlobals';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MarkupStyle } from '@/types/markup';
+import type { CanvasMarkup, CountMarkerMarkup, MarkupStyle } from '@/types/markup';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { createPageGeometry } from './coords';
-import { executePlaceMarkupsApproval } from './executePlaceMarkupsApproval';
+import { executePlaceMarkupsApproval, newDirectPlaceMarkupsApprovalId } from './executePlaceMarkupsApproval';
+import { resolveMarkupDrawAppearance } from '@/components/editor/markupDrawAppearance';
+import { summarizeMarkupsForChat } from '../contextSummary';
 import { handleApprovalDecision, resetApprovalInFlightForTests } from './handleApprovalDecision';
 import { normalizeAgentMarkupPayload } from './normalizeAgentMarkupPayload';
 import { createAgentToolContext } from '../agent/createToolContext';
 import {
   clearPageAnalysisCache,
+  getLatestFullPageAnalysis,
   setCachedAnalyze,
 } from '../agent/pageAnalysisCache';
 import type { DetectedItem } from '../providers/types';
@@ -36,7 +39,7 @@ function item(id: string, page = 1): DetectedItem {
   };
 }
 
-function seedDoc(docId: string) {
+function seedDoc(docId: string, cacheGeometry = true) {
   const fakePdf = {
     getPage: async () => ({
       rotate: 0,
@@ -47,12 +50,20 @@ function seedDoc(docId: string) {
     }),
   };
   useCanvasStore.getState().setPdfDocument(docId, fakePdf, 2, 612, 792);
-  useCanvasStore.getState().cachePageGeometries(new Map([
-    [1, createPageGeometry({ pageNumber: 1, docWidth: 612, docHeight: 792, rotationDeg: 0 })],
-  ]));
+  if (cacheGeometry) {
+    useCanvasStore.getState().cachePageGeometries(new Map([
+      [1, createPageGeometry({ pageNumber: 1, docWidth: 612, docHeight: 792, rotationDeg: 0 })],
+    ]));
+  }
 }
 
-function seedAnalysis(docId: string, page: number, items: DetectedItem[], revision: number) {
+function seedAnalysis(
+  docId: string,
+  page: number,
+  items: DetectedItem[],
+  revision: number,
+  ref?: { analyzedAt: string; analysisId: string },
+) {
   setCachedAnalyze(`${docId}|full`, {
     status: 'completed',
     page,
@@ -66,6 +77,9 @@ function seedAnalysis(docId: string, page: number, items: DetectedItem[], revisi
       typeCounts: { A: items.length },
     },
     textEvidence: { source: 'native', confidence: 1, context: '', itemCount: items.length },
+    analysisRef: ref
+      ? { docId, page, revision, analyzedAt: ref.analyzedAt, analysisId: ref.analysisId }
+      : undefined,
   }, {
     docId,
     page,
@@ -73,6 +87,41 @@ function seedAnalysis(docId: string, page: number, items: DetectedItem[], revisi
     contentRevision: revision,
     promoteToLatestFull: true,
   });
+}
+
+function pageMarkups(docId: string): CanvasMarkup[] {
+  return useCanvasStore.getState().pdfDocuments[docId]?.markupsByPage[1] || [];
+}
+
+async function executeOnStore(payload: unknown, approvalId: string, messageId = 'msg-1') {
+  return executePlaceMarkupsApproval({
+    approval: { ...approval(payload), id: approvalId, messageId },
+    page: 1,
+    pageWidth: 612,
+    pageHeight: 792,
+    defaultStyle,
+    pdfDocument: useCanvasStore.getState().pdfDocuments[useCanvasStore.getState().activeDocId || '']?.pdfDocument,
+    addAIMarkupBatch: (rows, pending) => useCanvasStore.getState().addAIMarkupBatch(rows, pending),
+    setPendingPlacements: useAIChatStore.getState().setPendingPlacements,
+    getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
+  });
+}
+
+function countMarker(id: string, extras?: Partial<CountMarkerMarkup>): CountMarkerMarkup {
+  return {
+    id,
+    type: 'count-marker',
+    page: 1,
+    x: 10,
+    y: 20,
+    number: 1,
+    groupId: 'g',
+    style: defaultStyle,
+    locked: false,
+    author: 'AI',
+    createdAt: new Date().toISOString(),
+    ...extras,
+  };
 }
 
 function approval(payload: unknown): ApprovalRequest {
@@ -231,5 +280,149 @@ describe('itemIds analysisRef + duplicate markup ids', () => {
     expect(resume).toHaveBeenCalledTimes(1);
     const markups = useCanvasStore.getState().pdfDocuments['doc-a']?.markupsByPage[1] || [];
     expect(markups).toHaveLength(1);
+  });
+
+  it('two place_markups approvals in the same run produce disjoint markup ids', async () => {
+    seedDoc('doc-a');
+    const revision = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
+    seedAnalysis('doc-a', 1, [item('a1'), item('a2')], revision);
+    const analysisRef = getLatestFullPageAnalysis('doc-a', 1, revision)?.analysisRef;
+    const first = await executeOnStore({
+      itemIds: ['a1'],
+      page: 1,
+      analysisRef,
+    }, 'appr-1', 'same-run-msg');
+    const second = await executeOnStore({
+      itemIds: ['a2'],
+      page: 1,
+      analysisRef,
+    }, 'appr-2', 'same-run-msg');
+    expect(first.status).toBe('ok');
+    expect(second.status).toBe('ok');
+    const ids = pageMarkups('doc-a').map(m => m.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.some(id => id.includes('appr-1'))).toBe(true);
+    expect(ids.some(id => id.includes('appr-2'))).toBe(true);
+  });
+
+  it('direct path called twice produces disjoint ids', async () => {
+    seedDoc('doc-a');
+    const revision = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
+    seedAnalysis('doc-a', 1, [item('a1'), item('a2')], revision);
+    const analysisRef = getLatestFullPageAnalysis('doc-a', 1, revision)?.analysisRef;
+    const id1 = newDirectPlaceMarkupsApprovalId('same-msg');
+    const id2 = newDirectPlaceMarkupsApprovalId('same-msg');
+    expect(id1).not.toBe(id2);
+    await executeOnStore({ itemIds: ['a1'], page: 1, analysisRef }, id1, 'same-msg');
+    await executeOnStore({ itemIds: ['a2'], page: 1, analysisRef }, id2, 'same-msg');
+    const ids = pageMarkups('doc-a').map(m => m.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it('addAIMarkupBatch re-IDs an incoming markup whose id already exists', () => {
+    seedDoc('doc-a');
+    const first = countMarker('dup-id');
+    const second = countMarker('dup-id', { x: 40, y: 50 });
+    const batch1 = useCanvasStore.getState().addAIMarkupBatch([{ page: 1, markup: first }], false);
+    const batch2 = useCanvasStore.getState().addAIMarkupBatch([{ page: 1, markup: second }], false);
+    expect(batch1.ok).toBe(true);
+    expect(batch2.ok).toBe(true);
+    const markups = pageMarkups('doc-a');
+    expect(markups).toHaveLength(2);
+    expect(markups[0].id).toBe('dup-id');
+    expect(markups[1].id).not.toBe('dup-id');
+    expect(new Set(markups.map(m => m.id)).size).toBe(2);
+  });
+
+  it('review markers are drawn on the canvas, amber dashed, and excluded from totals', async () => {
+    seedDoc('doc-a');
+    const revision = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
+    const low: DetectedItem = {
+      ...item('low1'),
+      matchConfidence: 'low',
+      confidence: 0.4,
+    };
+    seedAnalysis('doc-a', 1, [low], revision);
+    const analysisRef = getLatestFullPageAnalysis('doc-a', 1, revision)?.analysisRef;
+    const req = approval({
+      itemIds: ['low1'],
+      page: 1,
+      analysisRef,
+      includeReviewMarkers: true,
+    });
+    useAIChatStore.getState().addApproval(req);
+    const resume = vi.fn(async () => ({
+      runId: 'run-1',
+      messageId: 'msg-1',
+      status: 'completed' as const,
+      agentResult: { status: 'completed', assistantMessage: 'ok' },
+    }));
+    await handleApprovalDecision('appr-1', 'approved', {
+      pageWidth: 612,
+      pageHeight: 792,
+      defaultStyle,
+      setPipelineStatus: () => {},
+      createEditorToolContext: (runId: string, messageId: string) => createAgentToolContext({
+        runId,
+        messageId,
+        trade: 'electrical' as const,
+        placeMarkups: () => ({ placed: 0 }),
+      }),
+      resumeAfterApproval: resume as never,
+    });
+    const markups = pageMarkups('doc-a');
+    expect(markups).toHaveLength(1);
+    expect(markups[0].reviewMarker).toBe(true);
+    expect(markups[0].aiPending).toBe(true);
+    expect(markups[0].label).toBe('?');
+    const appearance = resolveMarkupDrawAppearance({ markup: markups[0], scale: 1 });
+    expect(appearance.strokeStyle).toBe('#f59e0b');
+    expect(appearance.lineDash).toEqual([6, 4]);
+    const summary = summarizeMarkupsForChat({ 1: markups }, 1);
+    expect(summary).not.toMatch(/count-marker/);
+    useCanvasStore.getState().confirmAIMarkup(1, markups[0].id);
+    const confirmed = pageMarkups('doc-a')[0];
+    expect(confirmed.reviewMarker).toBe(false);
+    expect(confirmed.aiPending).toBe(false);
+    expect(summarizeMarkupsForChat({ 1: [confirmed] }, 1)).toMatch(/count-marker/);
+    expect(resolveMarkupDrawAppearance({ markup: confirmed, scale: 1 }).strokeStyle).toBeUndefined();
+  });
+
+  it('fails when page geometry is missing and places nothing', async () => {
+    seedDoc('doc-a', false);
+    expect(useCanvasStore.getState().getPageGeometry(1)).toBeNull();
+    const revision = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
+    seedAnalysis('doc-a', 1, [item('a1')], revision);
+    const analysisRef = getLatestFullPageAnalysis('doc-a', 1, revision)?.analysisRef;
+    const execution = await executeOnStore({
+      itemIds: ['a1'],
+      page: 1,
+      analysisRef,
+    }, 'appr-geo');
+    expect(execution.status).toBe('failed');
+    expect(execution.placed).toBe(0);
+    expect(execution.error).toMatch(/Page geometry unavailable; ask the AI to count again/);
+    expect(pageMarkups('doc-a')).toHaveLength(0);
+  });
+
+  it('rejects an old analysisRef when two analyses share a timestamp', async () => {
+    seedDoc('doc-a');
+    const revision = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
+    const stamp = '2026-01-01T00:00:00.000Z';
+    seedAnalysis('doc-a', 1, [item('a1')], revision, { analyzedAt: stamp, analysisId: 'analysis-old' });
+    const oldRef = getLatestFullPageAnalysis('doc-a', 1, revision)?.analysisRef;
+    expect(oldRef?.analyzedAt).toBe(stamp);
+    seedAnalysis('doc-a', 1, [item('a1')], revision, { analyzedAt: stamp, analysisId: 'analysis-new' });
+    const execution = await executeOnStore({
+      itemIds: ['a1'],
+      page: 1,
+      analysisRef: oldRef,
+    }, 'appr-stale');
+    expect(execution.status).toBe('failed');
+    expect(execution.placed).toBe(0);
+    expect(execution.error).toMatch(/re-analyzed after counting/);
+    expect(pageMarkups('doc-a')).toHaveLength(0);
   });
 });

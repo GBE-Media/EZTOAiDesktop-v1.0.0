@@ -31,8 +31,12 @@ export function partitionMarkupsByConfidence(
       continue;
     }
     let band = confidencePlacementBand(item.markup.aiConfidence);
+    // Explicit review markers stay drawn-but-pending even if verify lowered confidence.
+    if (item.markup.reviewMarker) {
+      band = 'confirm';
+    }
     // Global "Confirm" placement mode can only make auto stricter, never weaker.
-    if (options?.forceConfirm && band === 'auto') band = 'confirm';
+    if (options?.forceConfirm && band === 'auto' && !item.markup.reviewMarker) band = 'confirm';
 
     if (band === 'auto') {
       auto.push({

@@ -36,6 +36,17 @@ describe('resolveMarkupDrawAppearance', () => {
     expect(appearance.pendingBadge).toBe(true);
   });
 
+  it('paints review markers amber dashed, overriding emerald pending', () => {
+    const appearance = resolveMarkupDrawAppearance({
+      markup: { ...base, aiPending: true, reviewMarker: true },
+      scale: 1,
+    });
+    expect(appearance.lineDash).toEqual([6, 4]);
+    expect(appearance.strokeStyle).toBe('#f59e0b');
+    expect(appearance.fillAlphaScale).toBe(0.7);
+    expect(appearance.pendingBadge).toBe(true);
+  });
+
   it('does not apply pending treatment when aiPending is false/undefined', () => {
     expect(resolveMarkupDrawAppearance({ markup: { ...base, aiPending: false } })).toEqual({
       lineDash: [],

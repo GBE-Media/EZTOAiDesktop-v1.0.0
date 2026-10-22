@@ -35,7 +35,10 @@ import {
   usePlacementDebugStore,
   verifyPlacementMarkupsWithGeometryGate,
 } from '@/services/ai/placement';
-import { executePlaceMarkupsApproval } from '@/services/ai/placement/executePlaceMarkupsApproval';
+import {
+  executePlaceMarkupsApproval,
+  newDirectPlaceMarkupsApprovalId,
+} from '@/services/ai/placement/executePlaceMarkupsApproval';
 import { handleApprovalDecision } from '@/services/ai/placement/handleApprovalDecision';
 import { useEditorStore } from '@/store/editorStore';
 import { useProductSync } from '@/hooks/useProductSync';
@@ -252,7 +255,7 @@ export function AgentAssistantDrawer() {
       const pdf = docId ? canvas.pdfDocuments[docId] : null;
       return executePlaceMarkupsApproval({
         approval: {
-          id: `direct_${messageId}`,
+          id: newDirectPlaceMarkupsApprovalId(messageId),
           runId,
           messageId,
           toolId: 'place_markups',

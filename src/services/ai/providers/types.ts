@@ -283,6 +283,8 @@ export interface PlacementMarkup {
   /** Real Products-panel catalog product id (from search_catalog). */
   productId?: string;
   pending: boolean; // For suggest-and-confirm mode
+  /** Draw as unconfirmed review marker; never auto-commit. */
+  reviewMarker?: boolean;
 }
 
 export interface PlacementNote {

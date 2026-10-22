@@ -25,7 +25,7 @@ export function ModeTabs({ mode, onModeChange }: ModeTabsProps) {
     const markers: CountMarkerMarkup[] = [];
     Object.values(docData.markupsByPage).forEach((pageMarkups) => {
       pageMarkups.forEach((m) => {
-        if (m.type === 'count-marker') {
+        if (m.type === 'count-marker' && !m.reviewMarker) {
           markers.push(m as CountMarkerMarkup);
         }
       });

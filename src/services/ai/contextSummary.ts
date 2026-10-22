@@ -16,7 +16,8 @@ export function summarizeMarkupsForChat(
 
   const lines: string[] = [];
 
-  const countMarkers = markups.filter((m): m is CountMarkerMarkup => m.type === 'count-marker');
+  const countMarkers = markups.filter((m): m is CountMarkerMarkup =>
+    m.type === 'count-marker' && !m.reviewMarker);
   const countGroups = new Map<string, CountMarkerMarkup[]>();
   countMarkers.forEach((marker) => {
     const key = marker.groupId || 'ungrouped';

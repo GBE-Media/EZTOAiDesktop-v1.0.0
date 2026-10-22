@@ -34,6 +34,14 @@ function payloadRows(payload: unknown): unknown[] | null {
   return null;
 }
 
+export function newDirectPlaceMarkupsApprovalId(messageId: string): string {
+  return `direct_${messageId}_${crypto.randomUUID()}`;
+}
+
+function agentMarkupIdPrefix(approval: ApprovalRequest): string {
+  return `agent_${approval.id}`;
+}
+
 function readItemIds(payload: unknown): string[] {
   if (!payload || typeof payload !== 'object') return [];
   const rec = payload as Record<string, unknown>;
@@ -98,7 +106,7 @@ export async function executePlaceMarkupsApproval(options: {
       itemIds,
       page,
       includeReviewMarkers: includeReview,
-      idPrefix: `agent_${options.approval.messageId}`,
+      idPrefix: agentMarkupIdPrefix(options.approval),
       defaultStyle: options.defaultStyle,
       analysisRef: rec.analysisRef,
     });
@@ -110,7 +118,7 @@ export async function executePlaceMarkupsApproval(options: {
         markups: fromCache.markups,
         pdfDocument: options.pdfDocument,
         defaultStyle: options.defaultStyle,
-        idPrefix: `agent_${options.approval.messageId}`,
+        idPrefix: agentMarkupIdPrefix(options.approval),
       });
       markups = [...gatedGeometry.verified, ...gatedGeometry.reviewOnly];
     }
@@ -136,7 +144,7 @@ export async function executePlaceMarkupsApproval(options: {
       page: options.page,
       pageWidth: options.pageWidth,
       pageHeight: options.pageHeight,
-      idPrefix: `agent_${options.approval.messageId}`,
+      idPrefix: agentMarkupIdPrefix(options.approval),
       messageId: options.approval.messageId,
       defaultStyle: options.defaultStyle,
       pdfDocument: options.pdfDocument,

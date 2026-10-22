@@ -45,6 +45,8 @@ export interface BaseMarkup {
   aiGenerated?: boolean;      // True if created by AI
   aiNote?: string;            // AI explanation or code reference
   aiPending?: boolean;        // True if awaiting user confirmation
+  /** Unconfirmed AI review marker: drawn pending, excluded from confirmed counts. */
+  reviewMarker?: boolean;
   aiConfidence?: number;      // AI confidence score (0-1)
   aiLinkedItemId?: string;    // Links to AI detected item
   calloutRef?: number;        // Numbered chat mention [N]

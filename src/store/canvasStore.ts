@@ -1400,12 +1400,30 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
       affectedPages.map(page => [page, [...(docData.markupsByPage[page] || [])]])
     );
 
+    const takenIds = new Set<string>();
+    for (const pageMarkups of Object.values(docData.markupsByPage)) {
+      for (const existing of pageMarkups) {
+        if (existing.id) takenIds.add(existing.id);
+      }
+    }
+    const allocateId = (requested?: string): string => {
+      if (requested && !takenIds.has(requested)) {
+        takenIds.add(requested);
+        return requested;
+      }
+      let next = crypto.randomUUID();
+      while (takenIds.has(next)) next = crypto.randomUUID();
+      takenIds.add(next);
+      return next;
+    };
+
     // Group markups by page
     const markupsByPage = { ...docData.markupsByPage };
     
     for (const { page, markup } of markups) {
       const aiMarkup = {
         ...markup,
+        id: allocateId(markup.id),
         aiGenerated: true,
         // Prefer per-markup confidence gating when already set by the converter.
         aiPending: typeof markup.aiPending === 'boolean' ? markup.aiPending : pending,
@@ -1443,21 +1461,23 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
 
     // Mirror manual count/measure: productId on markup → productStore measurement link.
     attachProductsForPlacedMarkups(
-      markups.map(({ page, markup }) => ({
-        page,
-        markup: {
-          ...markup,
-          aiGenerated: true,
-          aiPending: typeof markup.aiPending === 'boolean' ? markup.aiPending : pending,
-        } as CanvasMarkup,
-      })),
+      markups
+        .filter(({ markup }) => !markup.reviewMarker)
+        .map(({ page, markup }) => ({
+          page,
+          markup: {
+            ...markup,
+            aiGenerated: true,
+            aiPending: typeof markup.aiPending === 'boolean' ? markup.aiPending : pending,
+          } as CanvasMarkup,
+        })),
       state.activeDocId,
     );
     return { ok: true, placed: markups.length };
   },
   
   confirmAIMarkup: (page, id) => {
-    get().updateMarkup(page, id, { aiPending: false });
+    get().updateMarkup(page, id, { aiPending: false, reviewMarker: false });
   },
   
   confirmAllAIMarkups: () => {
@@ -1471,8 +1491,10 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     
     for (const pageNum of Object.keys(markupsByPage)) {
       const page = parseInt(pageNum);
-      markupsByPage[page] = markupsByPage[page].map(markup => 
-        markup.aiPending ? { ...markup, aiPending: false } : markup
+      markupsByPage[page] = markupsByPage[page].map(markup =>
+        (markup.aiPending || markup.reviewMarker)
+          ? { ...markup, aiPending: false, reviewMarker: false }
+          : markup
       );
     }
     

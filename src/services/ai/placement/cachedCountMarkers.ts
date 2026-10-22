@@ -101,7 +101,7 @@ export function lookupCachedPageItems(options: {
       error: `No cached page analysis for page ${options.page}`,
     };
   }
-  if (cached.analysisRef && cached.analysisRef.analyzedAt !== analysisRef.analyzedAt) {
+  if (cached.analysisRef && cached.analysisRef.analysisId !== analysisRef.analysisId) {
     return {
       items: [],
       pageGeometry: canvas.getPageGeometry(options.page),
@@ -110,15 +110,17 @@ export function lookupCachedPageItems(options: {
     };
   }
   const stored = canvas.getPageGeometry(options.page);
-  const pageGeometry = stored || pageGeometryFromUnrotated({
-    pageNumber: options.page,
-    docWidth: pdf.originalPageWidth || 0,
-    docHeight: pdf.originalPageHeight || 0,
-    rotationDeg: 0,
-  });
+  if (!stored) {
+    return {
+      items: [],
+      pageGeometry: null,
+      analysisRef: cached.analysisRef,
+      error: 'Page geometry unavailable; ask the AI to count again',
+    };
+  }
   return {
     items: cached.analysis.items,
-    pageGeometry,
+    pageGeometry: stored,
     analysisRef: cached.analysisRef,
   };
 }
@@ -203,6 +205,7 @@ export function placementMarkupsFromCachedItemIds(options: {
       linkedItemId: item.id,
       confidence: review ? CONFIDENCE_REVIEW : 0.85,
       pending: review,
+      reviewMarker: review || undefined,
       aiNote: review
         ? 'Unconfirmed / low-confidence detection — excluded from confirmed counts'
         : undefined,
