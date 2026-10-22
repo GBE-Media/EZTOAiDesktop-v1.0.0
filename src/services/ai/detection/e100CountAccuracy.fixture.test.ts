@@ -2,9 +2,10 @@ import '../agent/testGlobals';
 import { describe, expect, it } from 'vitest';
 import { countItemsFromAnalysis, parseMatchedLegendCodes } from '../agent/pageAnalysisCache';
 import { generateOverlappingTileRegions, visionTileGridForPage } from '../imageCapture';
-import { reconcileTileDetections } from '../pipeline';
+import { mapTileItemToPage, reconcileTileDetections, TILE_MERGE_RADIUS_PT } from '../pipeline';
 import { groupTextIntoColumnLines } from '@/lib/pdfLoader';
-import { parseLegendFromTextLines } from './legendAwareCounting';
+import { applyLegendAwareCounting, parseLegendFromTextLines } from './legendAwareCounting';
+import { resolveLegendAwareCounting } from './visionLegendClassification';
 import type { BlueprintAnalysisResult, DetectedItem } from '../providers/types';
 import { E100_LEGEND_LINES } from './fixtures/lightingPlanE100.fixture';
 
@@ -84,6 +85,42 @@ describe('E-100 count query matching (fix 1)', () => {
     expect(parseMatchedLegendCodes('how many bananas', Object.keys(E100_COUNTS))).toEqual([]);
     expect(result.message).toMatch(/not a fuzzy match/i);
   });
+
+  it('does not treat filler "a" as Type A, and empty matchingItems when no code parsed', () => {
+    const named = e100Analysis(items.map((row) => (
+      row.legendTypeCode === 'EX1' ? { ...row, name: 'EXIT SIGN' } : row
+    )));
+    const exitSheet = countItemsFromAnalysis(named, 'how many exit signs are on a sheet');
+    expect(exitSheet.matchingTypeCounts.A).toBeUndefined();
+    expect(Object.keys(exitSheet.matchingTypeCounts).every(code => /EX|EXIT/i.test(code) || code === 'EX1')).toBe(true);
+    expect(exitSheet.matchingItems).toEqual([]);
+
+    const ab = countItemsFromAnalysis(analysis, 'A and B fixtures');
+    expect(ab.total).toBe(14);
+    expect(ab.matchingTypeCounts).toMatchObject({ A: 9, B: 5 });
+
+    const exitSign = countItemsFromAnalysis(named, 'exit sign');
+    expect(exitSign.matchingItems).toEqual([]);
+  });
+});
+
+describe('unresolved list caps', () => {
+  it('serializes 80 matching + 300 unresolved under 10k chars', () => {
+    const matching = Array.from({ length: 80 }, (_, i) => item(`ok-${i}`, 'A', 10, 10 + i));
+    const unresolved = Array.from({ length: 300 }, (_, i) => item(`u-${i}`, 'R', 20, 20, {
+      legendTypeCode: undefined,
+      type: 'receptacle',
+      name: 'unknown receptacle',
+      matchConfidence: 'low',
+    }));
+    const analysis = e100Analysis([...matching, ...unresolved]);
+    analysis.legendTypeCounts = { A: 80 };
+    const result = countItemsFromAnalysis(analysis, 'Type A');
+    const serialized = JSON.stringify(result);
+    expect(serialized.length).toBeLessThan(10_000);
+    expect(result.unresolvedTruncated).toBe(true);
+    expect((result.unresolvedItems || []).length).toBeLessThanOrEqual(40);
+  });
 });
 
 describe('legend column split + extra keywords (fix 2)', () => {
@@ -155,22 +192,84 @@ describe('tile grid + reconcile (fix 4)', () => {
 });
 
 describe('quantity and missing location (fix 5)', () => {
-  it('honors quantity > 1 when mapping/counting items', () => {
-    const analysis = e100Analysis([
-      item('group', 'A', 10, 10, { quantity: 3 }),
-    ]);
-    analysis.legendTypeCounts = { A: 3 };
-    const result = countItemsFromAnalysis(analysis, 'Type A');
-    expect(result.total).toBe(3);
-    expect(result.matchingItems[0]?.quantity).toBe(3);
+  it('splits quantity 3 through real vision-native classification and counts 3', () => {
+    const [region] = generateOverlappingTileRegions(612, 792, 1, 1);
+    const mapped = mapTileItemToPage(item('group', 'A', 40, 40, {
+      quantity: 3,
+      legendTypeCode: 'A',
+      matchConfidence: 'high',
+    }), region, 612, 792);
+    expect(mapped).toHaveLength(3);
+    expect(mapped.every(row => row.quantity === 1)).toBe(true);
+    const legend = parseLegendFromTextLines(E100_LEGEND_LINES);
+    const classified = resolveLegendAwareCounting({
+      items: mapped,
+      legendEntries: legend,
+      trade: 'electrical',
+      applyTokenOverlapFallback: applyLegendAwareCounting,
+    });
+    expect(classified.legendTypeCounts.A).toBe(3);
+    const counted = countItemsFromAnalysis({
+      page: 1,
+      items: classified.items,
+      dimensions: [],
+      text: [],
+      symbols: [],
+      legendTypeCodes: legend.map(e => e.typeCode),
+      legendTypeCounts: classified.legendTypeCounts,
+      countReliability: classified.reliability,
+    }, 'Type A');
+    expect(counted.total).toBe(3);
   });
 
-  it('items noted as no location appear in unresolvedItems', () => {
+  it('items with locationMissing appear in unresolvedItems without a notes text match', () => {
     const analysis = e100Analysis([
-      item('ghost', 'A', 0, 0, { notes: 'no location' }),
+      item('ghost', 'A', 0, 0, { locationMissing: true }),
+      item('real', 'A', 12, 12, { notes: 'tag has no location label' }),
     ]);
-    analysis.legendTypeCounts = { A: 0 };
+    analysis.legendTypeCounts = { A: 1 };
     const result = countItemsFromAnalysis(analysis, 'Type A');
-    expect(result.unresolvedItems?.some(i => i.reason === 'no location')).toBe(true);
+    expect(result.unresolvedItems?.some(i => i.id === 'ghost' && i.reason === 'no location')).toBe(true);
+    expect(result.unresolvedItems?.some(i => i.id === 'real' && i.reason === 'no location')).toBe(false);
+  });
+});
+
+describe('tile reconcile ownership and absolute radius', () => {
+  it('never merges two same-tile fixtures 0.5in apart', () => {
+    const [region] = generateOverlappingTileRegions(36 * 72, 24 * 72, 2, 8);
+    const inch = 72;
+    const items = reconcileTileDetections([{
+      region,
+      result: {
+        page: 1,
+        items: [
+          item('a', 'A', 10, 10),
+          item('b', 'A', 10 + (0.5 * inch / region.width) * 100, 10),
+        ],
+        dimensions: [],
+        text: [],
+        symbols: [],
+      },
+    }], 36 * 72, 24 * 72);
+    expect(items.filter(row => !row.locationMissing)).toHaveLength(2);
+    expect(TILE_MERGE_RADIUS_PT).toBe(18);
+  });
+
+  it('keeps different-code symbols that are close together', () => {
+    const [region] = generateOverlappingTileRegions(612, 792, 1, 1);
+    const items = reconcileTileDetections([{
+      region,
+      result: {
+        page: 1,
+        items: [
+          item('a', 'A', 50, 50),
+          item('b', 'B', 50.2, 50.2),
+        ],
+        dimensions: [],
+        text: [],
+        symbols: [],
+      },
+    }], 612, 792);
+    expect(items).toHaveLength(2);
   });
 });

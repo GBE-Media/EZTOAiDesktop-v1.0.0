@@ -27,6 +27,8 @@ describe('generateOverlappingTileRegions', () => {
   it('computes a denser grid for a large sheet', () => {
     const small = visionTileGridForPage(612, 792);
     const large = visionTileGridForPage(36 * 72, 24 * 72);
-    expect(large.rows * large.cols).toBeGreaterThan(small.rows * small.cols);
+    expect(large.cols).toBeGreaterThan(large.rows);
+    expect(large.cols).toBeGreaterThan(small.cols);
+    expect(large.rows * large.cols).toBeLessThanOrEqual(16);
   });
 });

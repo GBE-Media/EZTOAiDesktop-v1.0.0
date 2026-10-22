@@ -180,6 +180,10 @@ export interface DetectedItem {
   evidence?: string;
   codeReference?: string;
   notes?: string;
+  /** True only when the model omitted coordinates (not inferred from notes text). */
+  locationMissing?: boolean;
+  /** Tile id that produced this detection, used for seam merge / ownership. */
+  sourceTileId?: string;
   /**
    * Vision-native legend classification: exact page legend type code, or
    * "no_confident_match". Validated in code against the page legend allow-list.

@@ -223,7 +223,7 @@ export function groupTextIntoColumnLines(
   items: TextItemWithBounds[],
   yTolerance: number = 5,
   gapFactor: number = 2.5,
-  minGap: number = 36,
+  minGap: number = 144,
 ): string[] {
   const lines = groupTextIntoLines(items, yTolerance);
   const texts: string[] = [];

@@ -84,8 +84,14 @@ function exportCanvasWithinLimit(
 }
 
 /**
- * Size a tile grid so that after a provider downscales each tile's short side
- * to ~providerShortSidePx, effective resolution is about targetDpi on the sheet.
+ * Size a tile grid so each tile's short side gets the most resolution under
+ * the same tile-count cap, following the page aspect ratio.
+ *
+ * DPI math (assumed, not confirmed): providers are treated as resizing each
+ * tile so its short side is `providerShortSidePx` (default 768). Then
+ * effectiveDpi ≈ providerShortSidePx / (tileShortSideInches).
+ * Example: 36×24in sheet, 4×4 tiles → tile 9×6in, short=6in, ≈128 DPI
+ * (not 150). 2×8 tiles → tile 4.5×12in, short=4.5in, ≈171 DPI under a 16-tile cap.
  */
 export function visionTileGridForPage(
   pageWidth: number,
@@ -99,21 +105,24 @@ export function visionTileGridForPage(
   const providerShortSidePx = options?.providerShortSidePx ?? 768;
   const targetDpi = options?.targetDpi ?? 150;
   const maxTiles = options?.maxTiles ?? 16;
-  const shortPts = Math.max(1, Math.min(pageWidth, pageHeight));
-  const longPts = Math.max(1, Math.max(pageWidth, pageHeight));
-  const alongShort = Math.max(1, Math.ceil((targetDpi * (shortPts / 72)) / providerShortSidePx));
-  const alongLong = Math.max(1, Math.ceil((targetDpi * (longPts / 72)) / providerShortSidePx));
-  let shortDiv = alongShort;
-  let longDiv = alongLong;
-  while (shortDiv * longDiv > maxTiles) {
-    if (longDiv >= shortDiv && longDiv > 1) longDiv -= 1;
-    else if (shortDiv > 1) shortDiv -= 1;
-    else break;
-  }
   const landscape = pageWidth >= pageHeight;
-  return landscape
-    ? { rows: shortDiv, cols: longDiv }
-    : { rows: longDiv, cols: shortDiv };
+  let best = { rows: 1, cols: 1, score: -Infinity };
+  for (let rows = 1; rows <= maxTiles; rows += 1) {
+    const cols = Math.max(1, Math.floor(maxTiles / rows));
+    if (landscape && cols < rows) continue;
+    if (!landscape && rows < cols) continue;
+    const tileW = pageWidth / cols;
+    const tileH = pageHeight / rows;
+    const shortPts = Math.min(tileW, tileH);
+    const dpi = providerShortSidePx / (shortPts / 72);
+    const aspectPage = pageWidth / Math.max(1, pageHeight);
+    const aspectGrid = cols / rows;
+    const aspectPenalty = Math.abs(Math.log(aspectGrid / Math.max(1e-6, aspectPage)));
+    const overshoot = dpi >= targetDpi ? (dpi - targetDpi) * 0.15 : (targetDpi - dpi);
+    const score = 1000 - overshoot - aspectPenalty * 30 - (rows * cols) * 0.5;
+    if (score > best.score) best = { rows, cols, score };
+  }
+  return { rows: best.rows, cols: best.cols };
 }
 
 /**

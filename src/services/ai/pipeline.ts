@@ -375,50 +375,59 @@ async function requestStructuredAnalysis(
   throw new Error(`Vision model returned invalid structured data for page ${page}`);
 }
 
-function mapTileItemToPage(
+/** Absolute merge radius in page points (~0.25" at 72pt/in). */
+export const TILE_MERGE_RADIUS_PT = 18;
+
+export function mapTileItemToPage(
   item: BlueprintAnalysisResult['items'][number],
   region: PageTileRegion,
   pageWidth: number,
   pageHeight: number
-): BlueprintAnalysisResult['items'][number] {
-  const localX = normalizePercent(item.location.x);
-  const localY = normalizePercent(item.location.y);
-  const pageX = region.x + (localX / 100) * region.width;
-  const pageY = region.y + (localY / 100) * region.height;
-  const bounds = item.boundingBox;
-
+): BlueprintAnalysisResult['items'] {
   const rawX = Number(item.location?.x);
   const rawY = Number(item.location?.y);
-  const missingLocation = !Number.isFinite(rawX) || !Number.isFinite(rawY);
+  const locationMissing = !Number.isFinite(rawX) || !Number.isFinite(rawY);
   const qty = Number(item.quantity);
+  const copies = Number.isFinite(qty) && qty > 1 ? Math.floor(qty) : 1;
+  const bounds = item.boundingBox;
+  const localX = locationMissing ? 0 : normalizePercent(item.location.x);
+  const localY = locationMissing ? 0 : normalizePercent(item.location.y);
+  const pageX = region.x + (localX / 100) * region.width;
+  const pageY = region.y + (localY / 100) * region.height;
+  const baseId = `${region.id}_${item.id}`;
 
-  return {
-    ...item,
-    id: `${region.id}_${item.id}`,
-    quantity: Number.isFinite(qty) && qty > 1 ? qty : 1,
-    notes: missingLocation
-      ? [item.notes, 'no location'].filter(Boolean).join(' — ')
-      : item.notes,
-    location: {
-      ...item.location,
-      x: (pageX / pageWidth) * 100,
-      y: (pageY / pageHeight) * 100,
-      width: item.location.width === undefined
+  return Array.from({ length: copies }, (_, k) => {
+    const jitterX = copies > 1 ? k * 2 : 0;
+    const jitterY = copies > 1 ? k * 2 : 0;
+    return {
+      ...item,
+      id: copies > 1 ? `${baseId}#${k + 1}` : baseId,
+      quantity: 1,
+      locationMissing,
+      sourceTileId: region.id,
+      location: locationMissing
+        ? { x: Number.NaN, y: Number.NaN }
+        : {
+          ...item.location,
+          x: ((pageX + jitterX) / pageWidth) * 100,
+          y: ((pageY + jitterY) / pageHeight) * 100,
+          width: item.location.width === undefined
+            ? undefined
+            : (item.location.width / 100) * region.width / pageWidth * 100,
+          height: item.location.height === undefined
+            ? undefined
+            : (item.location.height / 100) * region.height / pageHeight * 100,
+        },
+      boundingBox: locationMissing || !bounds
         ? undefined
-        : (item.location.width / 100) * region.width / pageWidth * 100,
-      height: item.location.height === undefined
-        ? undefined
-        : (item.location.height / 100) * region.height / pageHeight * 100,
-    },
-    boundingBox: bounds
-      ? {
+        : {
           x: ((region.x + (bounds.x / 100) * region.width) / pageWidth) * 100,
           y: ((region.y + (bounds.y / 100) * region.height) / pageHeight) * 100,
           width: ((bounds.width / 100) * region.width / pageWidth) * 100,
           height: ((bounds.height / 100) * region.height / pageHeight) * 100,
-        }
-      : undefined,
-  };
+        },
+    };
+  });
 }
 
 function isOwnedByTile(
@@ -445,14 +454,28 @@ function detectionIdentity(item: BlueprintAnalysisResult['items'][number]): stri
   return normalizedType(item.type);
 }
 
-function detectionsOverlap(
+function sameLegendIdentity(
   left: BlueprintAnalysisResult['items'][number],
-  right: BlueprintAnalysisResult['items'][number]
+  right: BlueprintAnalysisResult['items'][number],
 ): boolean {
-  if (detectionIdentity(left) !== detectionIdentity(right)) return false;
-  const dx = left.location.x - right.location.x;
-  const dy = left.location.y - right.location.y;
-  return Math.hypot(dx, dy) <= 1.5;
+  const leftCode = typeof left.legendTypeCode === 'string' ? left.legendTypeCode.trim() : '';
+  const rightCode = typeof right.legendTypeCode === 'string' ? right.legendTypeCode.trim() : '';
+  if (leftCode || rightCode) return leftCode === rightCode;
+  return detectionIdentity(left) === detectionIdentity(right);
+}
+
+function inOverlapBand(
+  item: BlueprintAnalysisResult['items'][number],
+  region: PageTileRegion,
+  pageWidth: number,
+  pageHeight: number,
+): boolean {
+  if (item.locationMissing) return false;
+  const pageX = (item.location.x / 100) * pageWidth;
+  const pageY = (item.location.y / 100) * pageHeight;
+  const inCrop = pageX >= region.x && pageX <= region.x + region.width
+    && pageY >= region.y && pageY <= region.y + region.height;
+  return inCrop && !isOwnedByTile(item, region, pageWidth, pageHeight);
 }
 
 export function reconcileTileDetections(
@@ -460,20 +483,61 @@ export function reconcileTileDetections(
   pageWidth: number,
   pageHeight: number
 ): BlueprintAnalysisResult['items'] {
-  const candidates = tileResults.flatMap(({ region, result }) =>
-    result.items.map(item => mapTileItemToPage(item, region, pageWidth, pageHeight))
-  );
-  const reconciled: BlueprintAnalysisResult['items'] = [];
-
-  candidates
-    .sort((a, b) => b.confidence - a.confidence)
-    .forEach(candidate => {
-      if (!reconciled.some(existing => detectionsOverlap(existing, candidate))) {
-        reconciled.push(candidate);
+  const regionById = new Map(tileResults.map(row => [row.region.id, row.region]));
+  const located: BlueprintAnalysisResult['items'] = [];
+  const missing: BlueprintAnalysisResult['items'] = [];
+  for (const { region, result } of tileResults) {
+    for (const item of result.items) {
+      for (const mapped of mapTileItemToPage(item, region, pageWidth, pageHeight)) {
+        if (mapped.locationMissing) missing.push(mapped);
+        else located.push(mapped);
       }
-    });
+    }
+  }
 
-  return reconciled;
+  const radiusPctX = (TILE_MERGE_RADIUS_PT / Math.max(1, pageWidth)) * 100;
+  const radiusPctY = (TILE_MERGE_RADIUS_PT / Math.max(1, pageHeight)) * 100;
+  const radiusPct = Math.hypot(radiusPctX, radiusPctY) > 0
+    ? Math.max(radiusPctX, radiusPctY)
+    : (TILE_MERGE_RADIUS_PT / Math.max(pageWidth, pageHeight)) * 100;
+
+  const sorted = [...located].sort((a, b) => b.confidence - a.confidence);
+  const clusters: BlueprintAnalysisResult['items'][] = [];
+
+  for (const candidate of sorted) {
+    const cluster = clusters.find(group => group.some((existing) => {
+      if (existing.sourceTileId && candidate.sourceTileId
+        && existing.sourceTileId === candidate.sourceTileId) {
+        return false;
+      }
+      if (!sameLegendIdentity(existing, candidate)) return false;
+      const dxPt = ((existing.location.x - candidate.location.x) / 100) * pageWidth;
+      const dyPt = ((existing.location.y - candidate.location.y) / 100) * pageHeight;
+      if (Math.hypot(dxPt, dyPt) > TILE_MERGE_RADIUS_PT) return false;
+      const existingRegion = existing.sourceTileId ? regionById.get(existing.sourceTileId) : undefined;
+      const candidateRegion = candidate.sourceTileId ? regionById.get(candidate.sourceTileId) : undefined;
+      const overlap = (existingRegion && inOverlapBand(existing, existingRegion, pageWidth, pageHeight))
+        || (candidateRegion && inOverlapBand(candidate, candidateRegion, pageWidth, pageHeight))
+        || (existingRegion && candidateRegion && (
+          inOverlapBand(candidate, existingRegion, pageWidth, pageHeight)
+          || inOverlapBand(existing, candidateRegion, pageWidth, pageHeight)
+        ));
+      return !!overlap;
+    }));
+    if (cluster) cluster.push(candidate);
+    else clusters.push([candidate]);
+  }
+
+  const reconciled = clusters.map((cluster) => {
+    const owned = cluster.find((item) => {
+      const region = item.sourceTileId ? regionById.get(item.sourceTileId) : undefined;
+      return region ? isOwnedByTile(item, region, pageWidth, pageHeight) : false;
+    });
+    return owned || cluster[0];
+  });
+
+  void radiusPct;
+  return [...reconciled, ...missing];
 }
 
 export interface MaximumAccuracyPageResult {
@@ -530,6 +594,7 @@ export async function analyzePageMaximumAccuracy(options: {
   if (legendEntries.length > 0) {
     console.info('[legend]', {
       page,
+      region: textEvidence.items?.length ? 'column-split page text' : 'context lines',
       count: legendEntries.length,
       codes: legendEntries.map((entry) => entry.typeCode),
     });
@@ -563,14 +628,23 @@ export async function analyzePageMaximumAccuracy(options: {
     };
     overview = {
       ...overview,
-      items: overview.items.map(item => mapTileItemToPage(item, overviewRegion, pageWidth, pageHeight)),
+      items: overview.items.flatMap(item => mapTileItemToPage(item, overviewRegion, pageWidth, pageHeight)),
     };
   }
 
   const tileResults: Array<{ region: PageTileRegion; result: BlueprintAnalysisResult }> = [];
   const failedTiles: string[] = [];
-  for (let index = 0; index < bundle.tiles.length; index += 1) {
-    const tile = bundle.tiles[index];
+  const tileConcurrency = 3;
+  const visionCallsBefore = 1 + bundle.tiles.length;
+  console.info('[analyzePage] vision calls', {
+    page,
+    overview: 1,
+    tiles: bundle.tiles.length,
+    before: visionCallsBefore,
+    afterConcurrentBatches: Math.ceil(bundle.tiles.length / tileConcurrency) + 1,
+  });
+  let completedTiles = 0;
+  const runTile = async (tile: (typeof bundle.tiles)[number], index: number) => {
     onProgress?.(
       `Analyzing page ${page} detail tile ${index + 1}/${bundle.tiles.length}...`,
       15 + Math.round(((index + 1) / bundle.tiles.length) * 60)
@@ -591,14 +665,29 @@ export async function analyzePageMaximumAccuracy(options: {
     } catch (error) {
       failedTiles.push(tile.region.id);
       console.warn('[analyzePage] tile failed', tile.region.id, error);
+    } finally {
+      completedTiles += 1;
+      void completedTiles;
     }
-  }
+  };
+  let nextTile = 0;
+  const workers = Array.from(
+    { length: Math.min(tileConcurrency, bundle.tiles.length) },
+    async () => {
+      while (nextTile < bundle.tiles.length) {
+        const index = nextTile;
+        nextTile += 1;
+        await runTile(bundle.tiles[index], index);
+      }
+    },
+  );
+  await Promise.all(workers);
 
   onProgress?.(`Reconciling page ${page} detections...`, 80);
   const tileItems = reconcileTileDetections(tileResults, pageWidth, pageHeight);
   const rawItems = tileItems.length > 0 ? tileItems : overview.items;
-  const locatedItems = rawItems.filter(item => !item.notes?.includes('no location'));
-  const missingLocationItems = rawItems.filter(item => item.notes?.includes('no location'));
+  const locatedItems = rawItems.filter(item => !item.locationMissing);
+  const missingLocationItems = rawItems.filter(item => !!item.locationMissing);
 
   // Primary: vision-native legendTypeCode fields. Secondary: token-overlap only when absent.
   const legendAware = resolveLegendAwareCounting({
@@ -621,11 +710,27 @@ export async function analyzePageMaximumAccuracy(options: {
     countReliability = countReliability === 'high' ? 'partial' : 'low';
   }
   if (tileItems.length > 0 && overview.items.length > 0) {
-    const delta = Math.abs(tileItems.length - overview.items.length);
-    const denom = Math.max(tileItems.length, overview.items.length);
-    if (denom > 0 && delta / denom > 0.35) {
+    const byType = (list: typeof tileItems) => {
+      const counts: Record<string, number> = {};
+      for (const item of list) {
+        if (item.locationMissing) continue;
+        const key = (item.legendTypeCode || item.type || 'unknown').trim() || 'unknown';
+        counts[key] = (counts[key] || 0) + 1;
+      }
+      return counts;
+    };
+    const tileByType = byType(tileItems);
+    const overviewByType = byType(overview.items);
+    const overflow: string[] = [];
+    for (const [type, overviewCount] of Object.entries(overviewByType)) {
+      const tileCount = tileByType[type] || 0;
+      if (overviewCount > tileCount + 1 && overviewCount > tileCount * 1.2) {
+        overflow.push(`${type}: overview ${overviewCount} > tiles ${tileCount}`);
+      }
+    }
+    if (overflow.length > 0) {
       extraNotes.push(
-        `Overview (${overview.items.length} items) and tiles (${tileItems.length} items) disagree; treating counts as less reliable.`,
+        `Overview found more of a type than tiles (${overflow.join('; ')}); tiles may have missed symbols.`,
       );
       if (countReliability === 'high') countReliability = 'partial';
     }

@@ -271,8 +271,7 @@ export function clearPageAnalysisCache(docId?: string): void {
   }
 }
 
-export const COUNT_ITEM_LIST_CHAR_BUDGET = 9_000;
-/** Stay under sanitizeToolOutput's 50-item array slice so JSON stays parseable. */
+export const COUNT_ITEM_LIST_CHAR_BUDGET = 10_000;
 export const COUNT_ITEM_ARRAY_MAX = 50;
 
 export type CompactCountItemRow = {
@@ -327,6 +326,13 @@ const QUERY_FILLER = new Set([
   'units', 'unit', 'signs', 'sign', 'and', 'the', 'a', 'an', 'of', 'for',
 ]);
 
+const QUERY_COMMON_ENGLISH = new Set([
+  ...QUERY_FILLER,
+  'how', 'many', 'are', 'is', 'on', 'in', 'at', 'to', 'from', 'with',
+  'sheet', 'page', 'drawing', 'plan', 'this', 'that', 'what', 'which',
+  'count', 'counted', 'please', 'list', 'there', 'here', 'all',
+]);
+
 function tokenizeQuery(query: string): string[] {
   return query
     .toLowerCase()
@@ -335,16 +341,62 @@ function tokenizeQuery(query: string): string[] {
     .filter(Boolean);
 }
 
+type QueryToken = { raw: string; lower: string };
+
+function tokenizeQueryRaw(query: string): QueryToken[] {
+  const tokens: QueryToken[] = [];
+  const re = /[A-Za-z0-9/-]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(query))) {
+    tokens.push({ raw: match[0], lower: match[0].toLowerCase() });
+  }
+  return tokens;
+}
+
+function treatAsCodeA(
+  token: QueryToken,
+  index: number,
+  tokens: QueryToken[],
+  known: Map<string, string>,
+): boolean {
+  if (!known.has('a')) return false;
+  if (token.lower !== 'a') return false;
+  if (token.raw === 'A') return true;
+  const prev = tokens[index - 1]?.lower;
+  const next = tokens[index + 1]?.lower;
+  if (prev === 'type' || prev === 'and' || next === 'and') return true;
+  if (prev && known.has(prev) && prev !== 'a') return true;
+  if (next && known.has(next) && next !== 'a') return true;
+  return false;
+}
+
+function isQueryFiller(
+  token: QueryToken,
+  index: number,
+  tokens: QueryToken[],
+  known: Map<string, string>,
+): boolean {
+  if (treatAsCodeA(token, index, tokens, known)) return false;
+  if (known.has(token.lower) && token.lower.length >= 3) return false;
+  return QUERY_FILLER.has(token.lower);
+}
+
 /** Whole-token equality only — never substring (so "A" does not match "and"). */
-export function typeKeyMatchesQuery(typeKey: string, query: string): boolean {
+export function typeKeyMatchesQuery(typeKey: string, query: string, knownCodes: string[] = []): boolean {
   if (!query.trim()) return true;
   const key = typeKey.toLowerCase();
-  return tokenizeQuery(query).some(token => token === key);
+  const known = new Map(knownCodes.map(code => [code.toLowerCase(), code]));
+  const tokens = tokenizeQueryRaw(query);
+  return tokens.some((token, index) => {
+    if (isQueryFiller(token, index, tokens, known)) return false;
+    return token.lower === key;
+  });
 }
 
 /**
  * Legend codes named in the query: "Type A", "A-type", "type A fixtures", "EX1".
- * Filler words are ignored when collecting codes.
+ * Filler words are ignored when collecting codes, except "A" when capitalized
+ * or next to "type" / "and" / another legend code.
  */
 export function parseMatchedLegendCodes(query: string, knownCodes: string[]): string[] {
   if (!query.trim() || knownCodes.length === 0) return [];
@@ -361,12 +413,38 @@ export function parseMatchedLegendCodes(query: string, knownCodes: string[]): st
     if (canonical) matched.add(canonical);
   }
 
-  for (const token of tokenizeQuery(query)) {
-    if (QUERY_FILLER.has(token)) continue;
-    const canonical = known.get(token);
+  const tokens = tokenizeQueryRaw(query);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (isQueryFiller(token, i, tokens, known)) continue;
+    const canonical = known.get(token.lower);
     if (canonical) matched.add(canonical);
   }
   return [...matched];
+}
+
+function filteredDescriptionWords(query: string): string[] {
+  return tokenizeQuery(query).filter(token => (
+    token.length >= 3
+    && !QUERY_COMMON_ENGLISH.has(token)
+    && token.length > 1
+  ));
+}
+
+function typeDescriptionMatchesQuery(
+  typeKey: string,
+  query: string,
+  items: DetectedItem[],
+): boolean {
+  const words = filteredDescriptionWords(query);
+  if (words.length === 0) return false;
+  const hay = items
+    .filter(item => (item.legendTypeCode || item.type || '').toLowerCase() === typeKey.toLowerCase())
+    .map(item => `${item.type || ''} ${item.name || ''}`)
+    .join(' ')
+    .toLowerCase();
+  if (!hay.trim()) return false;
+  return words.some(word => hay.includes(word));
 }
 
 function itemMatchesQuery(item: DetectedItem, query: string, matchedCodes: string[]): boolean {
@@ -375,12 +453,7 @@ function itemMatchesQuery(item: DetectedItem, query: string, matchedCodes: strin
     const code = (item.legendTypeCode || item.type || '').toLowerCase();
     return matchedCodes.some(m => m.toLowerCase() === code);
   }
-  const hayTokens = tokenizeQuery(`${item.type || ''} ${item.name || ''}`);
-  const qTokens = tokenizeQuery(query).filter(token => !QUERY_FILLER.has(token));
-  if (qTokens.length === 0) {
-    return tokenizeQuery(query).some(token => hayTokens.includes(token));
-  }
-  return qTokens.every(token => hayTokens.includes(token) || typeKeyMatchesQuery(item.type, token));
+  return false;
 }
 
 function round1(value: number): number {
@@ -570,14 +643,24 @@ export function countItemsFromAnalysis(
     }
   } else {
     for (const [type, count] of Object.entries(allTypeCounts)) {
-      if (typeKeyMatchesQuery(type, q)) {
+      if (typeKeyMatchesQuery(type, q, knownCodes)) {
         matchingTypeCounts[type] = count;
+      }
+    }
+    if (Object.keys(matchingTypeCounts).length === 0) {
+      for (const [type, count] of Object.entries(allTypeCounts)) {
+        if (typeDescriptionMatchesQuery(type, q, items)) {
+          matchingTypeCounts[type] = count;
+        }
       }
     }
   }
 
   const legendCodes = analysis.legendTypeCodes || knownCodes;
-  const matchingItems = items.filter(item => itemMatchesQuery(item, q, matchedCodes));
+  const noParsedCodes = Boolean(q && matchedCodes.length === 0);
+  const matchingItems = noParsedCodes
+    ? []
+    : items.filter(item => itemMatchesQuery(item, q, matchedCodes));
   const total = Object.values(matchingTypeCounts).reduce((sum, n) => sum + n, 0);
 
   const reliability = analysis.countReliability;

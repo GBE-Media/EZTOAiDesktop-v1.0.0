@@ -53,6 +53,7 @@ const NOISE_CODES = new Set([
   'TYPE', 'LED', 'NEC', 'PDF', 'DWG', 'REV', 'SHEET', 'SCALE', 'DATE',
   'DRAWING', 'PLAN', 'FLOOR', 'ROOM', 'NOTE', 'NOTES', 'SEE', 'PER',
   'AND', 'THE', 'FOR', 'WITH', 'FROM', 'TO', 'OF', 'IN', 'ON',
+  'AFF', 'GFI', 'GFCI', 'WP', 'TYP', 'NIC', 'EC',
 ]);
 
 function normalizeCode(raw: string): string {
