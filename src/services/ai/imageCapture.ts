@@ -84,6 +84,39 @@ function exportCanvasWithinLimit(
 }
 
 /**
+ * Size a tile grid so that after a provider downscales each tile's short side
+ * to ~providerShortSidePx, effective resolution is about targetDpi on the sheet.
+ */
+export function visionTileGridForPage(
+  pageWidth: number,
+  pageHeight: number,
+  options?: {
+    providerShortSidePx?: number;
+    targetDpi?: number;
+    maxTiles?: number;
+  },
+): { rows: number; cols: number } {
+  const providerShortSidePx = options?.providerShortSidePx ?? 768;
+  const targetDpi = options?.targetDpi ?? 150;
+  const maxTiles = options?.maxTiles ?? 16;
+  const shortPts = Math.max(1, Math.min(pageWidth, pageHeight));
+  const longPts = Math.max(1, Math.max(pageWidth, pageHeight));
+  const alongShort = Math.max(1, Math.ceil((targetDpi * (shortPts / 72)) / providerShortSidePx));
+  const alongLong = Math.max(1, Math.ceil((targetDpi * (longPts / 72)) / providerShortSidePx));
+  let shortDiv = alongShort;
+  let longDiv = alongLong;
+  while (shortDiv * longDiv > maxTiles) {
+    if (longDiv >= shortDiv && longDiv > 1) longDiv -= 1;
+    else if (shortDiv > 1) shortDiv -= 1;
+    else break;
+  }
+  const landscape = pageWidth >= pageHeight;
+  return landscape
+    ? { rows: shortDiv, cols: longDiv }
+    : { rows: longDiv, cols: shortDiv };
+}
+
+/**
  * Build overlapping tile crops in PDF-point coordinates. Ownership cells do
  * not overlap; expanded crop bounds provide context around boundary symbols.
  */
@@ -243,8 +276,10 @@ export async function capturePageVisionBundle(
   const overviewScale = options.overviewScale ?? getOptimalScale(pageWidth, pageHeight);
   const tileScale = options.tileScale ?? 3;
   const maxImageBytes = options.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES;
-
   const analysisRegion = options.region || { x: 0, y: 0, width: pageWidth, height: pageHeight };
+  const autoGrid = visionTileGridForPage(analysisRegion.width, analysisRegion.height);
+  const rows = options.rows ?? autoGrid.rows;
+  const cols = options.cols ?? autoGrid.cols;
   const overviewSource = await renderPageForOcr(pdfDoc, pageNumber, Math.round(overviewScale * 72));
   const overviewScaleX = overviewSource.width / Math.max(1, pageWidth);
   const overviewScaleY = overviewSource.height / Math.max(1, pageHeight);
@@ -277,8 +312,8 @@ export async function capturePageVisionBundle(
   const regions = generateOverlappingTileRegions(
     analysisRegion.width,
     analysisRegion.height,
-    options.rows,
-    options.cols,
+    rows,
+    cols,
     options.overlapRatio
   ).map(region => ({
     ...region,

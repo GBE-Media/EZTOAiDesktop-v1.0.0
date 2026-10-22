@@ -13,6 +13,7 @@ import {
 import {
   getTextContentWithBounds,
   groupTextIntoLines,
+  groupTextIntoColumnLines,
   renderPageForOcr,
   type TextItemWithBounds,
 } from '@/lib/pdfLoader';
@@ -83,6 +84,10 @@ const KEYWORDS = [
   'SYMBOL',
   'OUTLET',
   'RECEPTACLE',
+  'EXIT',
+  'EMERGENCY',
+  'SWITCH',
+  'SWITCHES',
 ];
 
 const buildTextContext = (lines: string[]): string => {
@@ -382,10 +387,18 @@ function mapTileItemToPage(
   const pageY = region.y + (localY / 100) * region.height;
   const bounds = item.boundingBox;
 
+  const rawX = Number(item.location?.x);
+  const rawY = Number(item.location?.y);
+  const missingLocation = !Number.isFinite(rawX) || !Number.isFinite(rawY);
+  const qty = Number(item.quantity);
+
   return {
     ...item,
     id: `${region.id}_${item.id}`,
-    quantity: 1,
+    quantity: Number.isFinite(qty) && qty > 1 ? qty : 1,
+    notes: missingLocation
+      ? [item.notes, 'no location'].filter(Boolean).join(' — ')
+      : item.notes,
     location: {
       ...item.location,
       x: (pageX / pageWidth) * 100,
@@ -426,11 +439,17 @@ function normalizedType(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ');
 }
 
+function detectionIdentity(item: BlueprintAnalysisResult['items'][number]): string {
+  const code = typeof item.legendTypeCode === 'string' ? item.legendTypeCode.trim() : '';
+  if (code) return code.toUpperCase();
+  return normalizedType(item.type);
+}
+
 function detectionsOverlap(
   left: BlueprintAnalysisResult['items'][number],
   right: BlueprintAnalysisResult['items'][number]
 ): boolean {
-  if (normalizedType(left.type) !== normalizedType(right.type)) return false;
+  if (detectionIdentity(left) !== detectionIdentity(right)) return false;
   const dx = left.location.x - right.location.x;
   const dy = left.location.y - right.location.y;
   return Math.hypot(dx, dy) <= 1.5;
@@ -442,9 +461,7 @@ export function reconcileTileDetections(
   pageHeight: number
 ): BlueprintAnalysisResult['items'] {
   const candidates = tileResults.flatMap(({ region, result }) =>
-    result.items
-      .map(item => mapTileItemToPage(item, region, pageWidth, pageHeight))
-      .filter(item => isOwnedByTile(item, region, pageWidth, pageHeight))
+    result.items.map(item => mapTileItemToPage(item, region, pageWidth, pageHeight))
   );
   const reconciled: BlueprintAnalysisResult['items'] = [];
 
@@ -503,11 +520,20 @@ export async function analyzePageMaximumAccuracy(options: {
     ? ''
     : `${textEvidence.source === 'ocr' ? 'OCR' : 'Native PDF'} text evidence:\n${textEvidence.context}`;
 
-  // Legend-aware: extract type codes from THIS page's schedule/legend text before vision.
-  const textLines = textEvidence.context
-    ? textEvidence.context.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-    : [];
-  const legendEntries = visibleOnly ? [] : parseLegendFromTextLines(textLines);
+  // Legend-aware: parse the FULL page text (column-split), not the trimmed vision context.
+  const legendSourceLines = textEvidence.items?.length
+    ? groupTextIntoColumnLines(textEvidence.items)
+    : (textEvidence.context
+      ? textEvidence.context.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+      : []);
+  const legendEntries = visibleOnly ? [] : parseLegendFromTextLines(legendSourceLines);
+  if (legendEntries.length > 0) {
+    console.info('[legend]', {
+      page,
+      count: legendEntries.length,
+      codes: legendEntries.map((entry) => entry.typeCode),
+    });
+  }
   const legendPrompt = buildLegendClassificationPrompt(legendEntries);
 
   const commonContext = [
@@ -542,41 +568,68 @@ export async function analyzePageMaximumAccuracy(options: {
   }
 
   const tileResults: Array<{ region: PageTileRegion; result: BlueprintAnalysisResult }> = [];
+  const failedTiles: string[] = [];
   for (let index = 0; index < bundle.tiles.length; index += 1) {
     const tile = bundle.tiles[index];
     onProgress?.(
       `Analyzing page ${page} detail tile ${index + 1}/${bundle.tiles.length}...`,
       15 + Math.round(((index + 1) / bundle.tiles.length) * 60)
     );
-    const result = await requestStructuredAnalysis(
-      tile.base64,
-      trade,
-      `${commonContext}\n\nDETAIL TILE ${tile.region.id}: Find every physical instance visible in this crop. ` +
-      'Return one item per physical symbol with quantity 1, center location and boundingBox in 0-100 coordinates relative to this tile, confidence, and visual evidence. ' +
-      (legendEntries.length
-        ? 'For each item include legendTypeCode (from the allowed legend list or "no_confident_match"), matchConfidence ("high"|"medium"|"low"), and matchReasoning. '
-        : '') +
-      'Do not count schedule/legend rows as installed items.',
-      page
-    );
-    tileResults.push({ region: tile.region, result });
+    try {
+      const result = await requestStructuredAnalysis(
+        tile.base64,
+        trade,
+        `${commonContext}\n\nDETAIL TILE ${tile.region.id}: Find every physical instance visible in this crop. ` +
+        'Return one item per physical symbol with quantity 1, center location and boundingBox in 0-100 coordinates relative to this tile, confidence, and visual evidence. ' +
+        (legendEntries.length
+          ? 'For each item include legendTypeCode (from the allowed legend list or "no_confident_match"), matchConfidence ("high"|"medium"|"low"), and matchReasoning. '
+          : '') +
+        'Do not count schedule/legend rows as installed items.',
+        page
+      );
+      tileResults.push({ region: tile.region, result });
+    } catch (error) {
+      failedTiles.push(tile.region.id);
+      console.warn('[analyzePage] tile failed', tile.region.id, error);
+    }
   }
 
   onProgress?.(`Reconciling page ${page} detections...`, 80);
   const tileItems = reconcileTileDetections(tileResults, pageWidth, pageHeight);
   const rawItems = tileItems.length > 0 ? tileItems : overview.items;
+  const locatedItems = rawItems.filter(item => !item.notes?.includes('no location'));
+  const missingLocationItems = rawItems.filter(item => item.notes?.includes('no location'));
 
   // Primary: vision-native legendTypeCode fields. Secondary: token-overlap only when absent.
   const legendAware = resolveLegendAwareCounting({
-    items: rawItems,
+    items: locatedItems,
     legendEntries,
     trade,
     applyTokenOverlapFallback: applyLegendAwareCounting,
   });
-  const items = legendAware.items;
+  const items = [...legendAware.items, ...missingLocationItems];
   const typeCounts = legendEntries.length > 0
     ? legendAware.legendTypeCounts
     : legendAware.typeCounts;
+  const extraNotes: string[] = [];
+  let countReliability = legendAware.reliability;
+  if (missingLocationItems.length > 0) {
+    extraNotes.push(`${missingLocationItems.length} detection(s) had no location and were counted as unresolved.`);
+  }
+  if (failedTiles.length > 0) {
+    extraNotes.push(`Tile(s) failed: ${failedTiles.join(', ')}. Counts may be incomplete.`);
+    countReliability = countReliability === 'high' ? 'partial' : 'low';
+  }
+  if (tileItems.length > 0 && overview.items.length > 0) {
+    const delta = Math.abs(tileItems.length - overview.items.length);
+    const denom = Math.max(tileItems.length, overview.items.length);
+    if (denom > 0 && delta / denom > 0.35) {
+      extraNotes.push(
+        `Overview (${overview.items.length} items) and tiles (${tileItems.length} items) disagree; treating counts as less reliable.`,
+      );
+      if (countReliability === 'high') countReliability = 'partial';
+    }
+  }
   const questions = [
     ...(overview.questions || []),
     ...tileResults.flatMap(({ result }) => result.questions || []),
@@ -637,8 +690,8 @@ ${JSON.stringify(items.map(item => ({
       typeCounts,
       legendTypeCodes: legendEntries.map((e) => e.typeCode),
       legendTypeCounts: legendAware.legendTypeCounts,
-      countReliability: legendAware.reliability,
-      countVerificationNotes: legendAware.verification.notes,
+      countReliability,
+      countVerificationNotes: [...legendAware.verification.notes, ...extraNotes],
       questions: Array.from(new Set([...questions, ...verifiedQuestions])),
       evidence: Array.from(new Set([...evidence, ...verifiedEvidence])),
     },

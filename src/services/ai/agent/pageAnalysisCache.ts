@@ -313,29 +313,74 @@ export interface PageItemCountResult {
   nextUnresolvedOffset?: number;
   hasMoreUnresolved?: boolean;
   analysisRef?: PageAnalysisRef;
+  matchedCodes?: string[];
+  unresolvedCountByType?: Record<string, number>;
+  unresolvedTruncated?: boolean;
   countReliability?: 'high' | 'partial' | 'low';
   legendTypeCodes?: string[];
   verificationNotes?: string[];
   message?: string;
 }
 
-function itemMatchesQuery(item: DetectedItem, query: string): boolean {
-  if (!query) return true;
-  const hay = `${item.type || ''} ${item.name || ''}`.toLowerCase();
-  const q = query.toLowerCase().trim();
-  if (hay.includes(q)) return true;
-  const tokens = q.split(/\s+/).filter(token => token.length >= 2);
-  if (tokens.length === 0) return hay.includes(q);
-  return tokens.every(token => hay.includes(token));
+const QUERY_FILLER = new Set([
+  'type', 'types', 'fixture', 'fixtures', 'light', 'lights', 'only',
+  'units', 'unit', 'signs', 'sign', 'and', 'the', 'a', 'an', 'of', 'for',
+]);
+
+function tokenizeQuery(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9/-]+/)
+    .map(token => token.trim())
+    .filter(Boolean);
 }
 
-function typeKeyMatchesQuery(typeKey: string, query: string): boolean {
-  if (!query) return true;
+/** Whole-token equality only — never substring (so "A" does not match "and"). */
+export function typeKeyMatchesQuery(typeKey: string, query: string): boolean {
+  if (!query.trim()) return true;
   const key = typeKey.toLowerCase();
-  const q = query.toLowerCase().trim();
-  if (key.includes(q) || q.includes(key)) return true;
-  const tokens = q.split(/\s+/).filter(token => token.length >= 2);
-  return tokens.some(token => key.includes(token));
+  return tokenizeQuery(query).some(token => token === key);
+}
+
+/**
+ * Legend codes named in the query: "Type A", "A-type", "type A fixtures", "EX1".
+ * Filler words are ignored when collecting codes.
+ */
+export function parseMatchedLegendCodes(query: string, knownCodes: string[]): string[] {
+  if (!query.trim() || knownCodes.length === 0) return [];
+  const known = new Map(knownCodes.map(code => [code.toLowerCase(), code]));
+  const matched = new Set<string>();
+  const lower = query.toLowerCase();
+
+  const typeForms = [
+    ...lower.matchAll(/\btype\s+([a-z][a-z0-9/-]*)\b/g),
+    ...lower.matchAll(/\b([a-z][a-z0-9/-]*)-type\b/g),
+  ];
+  for (const match of typeForms) {
+    const canonical = known.get(match[1]);
+    if (canonical) matched.add(canonical);
+  }
+
+  for (const token of tokenizeQuery(query)) {
+    if (QUERY_FILLER.has(token)) continue;
+    const canonical = known.get(token);
+    if (canonical) matched.add(canonical);
+  }
+  return [...matched];
+}
+
+function itemMatchesQuery(item: DetectedItem, query: string, matchedCodes: string[]): boolean {
+  if (!query) return true;
+  if (matchedCodes.length > 0) {
+    const code = (item.legendTypeCode || item.type || '').toLowerCase();
+    return matchedCodes.some(m => m.toLowerCase() === code);
+  }
+  const hayTokens = tokenizeQuery(`${item.type || ''} ${item.name || ''}`);
+  const qTokens = tokenizeQuery(query).filter(token => !QUERY_FILLER.has(token));
+  if (qTokens.length === 0) {
+    return tokenizeQuery(query).some(token => hayTokens.includes(token));
+  }
+  return qTokens.every(token => hayTokens.includes(token) || typeKeyMatchesQuery(item.type, token));
 }
 
 function round1(value: number): number {
@@ -377,13 +422,38 @@ function compactDocLocation(
   return { x: round1(point.x), y: round1(point.y) };
 }
 
-function itemIsUnresolvedForCounts(item: DetectedItem): { unresolved: boolean; reason?: string } {
-  const code = typeof item.legendTypeCode === 'string' ? item.legendTypeCode : '';
-  if (code && code.trim() === NO_CONFIDENT_MATCH) {
+export type UnresolvedCountReason =
+  | 'no location'
+  | 'no_confident_match'
+  | 'low confidence'
+  | 'invalid legend code'
+  | 'missing legend code';
+
+export function itemIsUnresolvedForCounts(
+  item: DetectedItem,
+  legendTypeCodes?: string[] | null,
+): { unresolved: boolean; reason?: UnresolvedCountReason } {
+  if (item.locationMissing) {
+    return { unresolved: true, reason: 'no location' };
+  }
+  const code = typeof item.legendTypeCode === 'string' ? item.legendTypeCode.trim() : '';
+  if (code === NO_CONFIDENT_MATCH) {
     return { unresolved: true, reason: 'no_confident_match' };
   }
   if (normalizeMatchConfidence(item.matchConfidence) === 'low') {
     return { unresolved: true, reason: 'low confidence' };
+  }
+  if (!code) {
+    return { unresolved: true, reason: 'missing legend code' };
+  }
+  if (legendTypeCodes && legendTypeCodes.length > 0) {
+    const allowed = new Set(legendTypeCodes.map(c => c.trim().toLowerCase()));
+    if (!allowed.has(code.toLowerCase())) {
+      return { unresolved: true, reason: 'invalid legend code' };
+    }
+  }
+  if (!Number.isFinite(item.location?.x) || !Number.isFinite(item.location?.y)) {
+    return { unresolved: true, reason: 'no location' };
   }
   return { unresolved: false };
 }
@@ -483,28 +553,39 @@ export function countItemsFromAnalysis(
 ): PageItemCountResult {
   const q = query.trim();
   const items = analysis.items || [];
-  const matchingItems = items.filter(item => itemMatchesQuery(item, q));
   // Prefer legend-grounded counts when present (includes zero-count legend types).
   const allTypeCounts = {
     ...(analysis.legendTypeCounts && Object.keys(analysis.legendTypeCounts).length > 0
       ? analysis.legendTypeCounts
       : analysis.typeCounts || {}),
   };
+  const knownCodes = Object.keys(allTypeCounts);
+  const matchedCodes = q ? parseMatchedLegendCodes(q, knownCodes) : [];
   const matchingTypeCounts: Record<string, number> = {};
-  for (const [type, count] of Object.entries(allTypeCounts)) {
-    if (typeKeyMatchesQuery(type, q)) {
-      matchingTypeCounts[type] = count;
+  if (!q) {
+    Object.assign(matchingTypeCounts, allTypeCounts);
+  } else if (matchedCodes.length > 0) {
+    for (const code of matchedCodes) {
+      matchingTypeCounts[code] = allTypeCounts[code] ?? 0;
+    }
+  } else {
+    for (const [type, count] of Object.entries(allTypeCounts)) {
+      if (typeKeyMatchesQuery(type, q)) {
+        matchingTypeCounts[type] = count;
+      }
     }
   }
 
-  const totalFromCounts = Object.values(matchingTypeCounts).reduce((sum, n) => sum + n, 0);
-  const totalFromItems = matchingItems.reduce(
-    (sum, item) => sum + (typeof item.quantity === 'number' && item.quantity > 0 ? item.quantity : 1),
-    0,
-  );
+  const legendCodes = analysis.legendTypeCodes || knownCodes;
+  const matchingItems = items.filter(item => itemMatchesQuery(item, q, matchedCodes));
+  const total = Object.values(matchingTypeCounts).reduce((sum, n) => sum + n, 0);
 
   const reliability = analysis.countReliability;
-  const verificationNotes = analysis.countVerificationNotes || [];
+  const verificationNotes = [...(analysis.countVerificationNotes || [])];
+  const namedNoCode = q && matchedCodes.length === 0 && Object.keys(matchingTypeCounts).length === 0;
+  if (namedNoCode) {
+    verificationNotes.unshift(`No known legend codes in query "${q}"; counted 0 (not a fuzzy match).`);
+  }
   const reliabilityNote = reliability
     ? ` Count reliability: ${reliability}.`
     : '';
@@ -519,13 +600,18 @@ export function countItemsFromAnalysis(
     page: analysis.page,
   });
   const codeFilter = typeof options?.code === 'string' ? options.code.trim() : '';
-  const classified = matchingItems.map((item) => {
-    const flag = itemIsUnresolvedForCounts(item);
-    const loc = compactDocLocation(item, pageGeometry, options?.crop);
+  const classified = items.map((item) => {
+    const flag = itemIsUnresolvedForCounts(item, legendCodes);
+    const loc = item.locationMissing ? undefined : compactDocLocation(item, pageGeometry, options?.crop);
     return { item, flag, loc };
   });
-  const confirmed = classified.filter(row => !row.flag.unresolved);
+  const confirmed = classified.filter(row => !row.flag.unresolved && matchingItems.includes(row.item));
   const unresolved = classified.filter(row => row.flag.unresolved);
+  const unresolvedCountByType: Record<string, number> = {};
+  for (const row of unresolved) {
+    const code = row.item.legendTypeCode || row.item.type || 'unknown';
+    unresolvedCountByType[code] = (unresolvedCountByType[code] || 0) + 1;
+  }
   const matchingRows = confirmed
     .filter(({ item }) => {
       if (!codeFilter) return true;
@@ -577,11 +663,14 @@ export function countItemsFromAnalysis(
     page: analysis.page,
     query: q,
     source: options?.source || 'cache',
-    total: totalFromCounts > 0 ? totalFromCounts : totalFromItems,
+    total,
     matchingTypeCounts,
     allTypeCounts,
+    matchedCodes: matchedCodes.length ? matchedCodes : undefined,
     matchingItems: packed.matchingItems,
     unresolvedItems: packed.unresolvedItems,
+    unresolvedCountByType,
+    unresolvedTruncated: packed.unresolvedOmitted > 0 || undefined,
     truncated: truncated || undefined,
     returnedItems,
     omittedItems,
@@ -597,13 +686,15 @@ export function countItemsFromAnalysis(
     countReliability: reliability,
     legendTypeCodes: analysis.legendTypeCodes,
     verificationNotes,
-    message: (q
-      ? `Counted items matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
-      : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`)
-      + reliabilityNote
-      + legendNote
-      + (verificationNotes.length ? ` ${verificationNotes[0]}` : '')
-      + (truncated
+    message: (namedNoCode
+      ? verificationNotes[0]
+      : (q
+        ? `Counted items matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
+        : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`))
+      + (namedNoCode ? '' : reliabilityNote)
+      + (namedNoCode ? '' : legendNote)
+      + (!namedNoCode && verificationNotes.length ? ` ${verificationNotes[0]}` : '')
+      + (!namedNoCode && truncated
         ? ` Returned ${returnedItems} item row(s); omitted ${omittedItems}.`
           + (hasMore
             ? ` Pass offset=${nextOffset ?? offset} (or code) to page through remaining matching items.`

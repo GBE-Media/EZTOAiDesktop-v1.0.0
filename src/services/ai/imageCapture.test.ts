@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateOverlappingTileRegions } from './imageCapture';
+import { generateOverlappingTileRegions, visionTileGridForPage } from './imageCapture';
 
 describe('generateOverlappingTileRegions', () => {
   it('creates a 3x3 grid with non-overlapping ownership cells', () => {
@@ -22,5 +22,11 @@ describe('generateOverlappingTileRegions', () => {
     expect(regions[0].y).toBe(0);
     expect(regions[8].x + regions[8].width).toBeCloseTo(900);
     expect(regions[8].y + regions[8].height).toBeCloseTo(600);
+  });
+
+  it('computes a denser grid for a large sheet', () => {
+    const small = visionTileGridForPage(612, 792);
+    const large = visionTileGridForPage(36 * 72, 24 * 72);
+    expect(large.rows * large.cols).toBeGreaterThan(small.rows * small.cols);
   });
 });
