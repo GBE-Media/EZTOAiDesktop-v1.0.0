@@ -382,6 +382,59 @@ describe('itemIds placement uses cached DocPoints', () => {
     expect(result.markups).toHaveLength(1);
     expect(result.dropped.some(d => d.reason === 'duplicate itemId')).toBe(true);
   });
+
+  it('drops invalid-code and no-location items even as review markers', () => {
+    const items: DetectedItem[] = [
+      {
+        id: 'ok',
+        type: 'A',
+        trade: 'electrical',
+        name: 'A',
+        quantity: 1,
+        location: { x: 10, y: 10 },
+        confidence: 0.9,
+        legendTypeCode: 'A',
+        matchConfidence: 'high',
+      },
+      {
+        id: 'bad-code',
+        type: 'ZZZ',
+        trade: 'electrical',
+        name: 'ZZZ',
+        quantity: 1,
+        location: { x: 20, y: 20 },
+        confidence: 0.9,
+        legendTypeCode: 'ZZZ',
+        matchConfidence: 'high',
+      },
+      {
+        id: 'ghost',
+        type: 'A',
+        trade: 'electrical',
+        name: 'A',
+        quantity: 1,
+        location: { x: Number.NaN, y: Number.NaN },
+        confidence: 0.9,
+        legendTypeCode: 'A',
+        matchConfidence: 'high',
+        locationMissing: true,
+      },
+    ];
+    const result = placementMarkupsFromCachedItemIds({
+      itemIds: ['ok', 'bad-code', 'ghost'],
+      page: 1,
+      includeReviewMarkers: true,
+      idPrefix: 'c',
+      defaultStyle,
+      pageWidth: 612,
+      pageHeight: 792,
+      items,
+      legendTypeCodes: ['A'],
+    });
+    expect(result.markups.map(row => row.linkedItemId)).toEqual(['ok']);
+    expect(result.dropped.some(d => d.itemId === 'bad-code')).toBe(true);
+    expect(result.dropped.some(d => d.itemId === 'ghost' && d.reason === 'no location')).toBe(true);
+  });
 });
 
 describe('count_page_items compact DocPoints', () => {

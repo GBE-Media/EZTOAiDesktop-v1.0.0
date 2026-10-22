@@ -17,9 +17,12 @@ import { normalizeAgentMarkupPayload } from './normalizeAgentMarkupPayload';
 import { createAgentToolContext } from '../agent/createToolContext';
 import {
   clearPageAnalysisCache,
+  countItemsFromAnalysis,
   getLatestFullPageAnalysis,
   setCachedAnalyze,
 } from '../agent/pageAnalysisCache';
+import { generateOverlappingTileRegions } from '../imageCapture';
+import { reconcileTileDetections } from '../pipeline';
 import type { DetectedItem } from '../providers/types';
 import type { ApprovalRequest } from '@/types/assistant';
 
@@ -469,5 +472,116 @@ describe('itemIds analysisRef + duplicate markup ids', () => {
     expect(execution.placed).toBe(0);
     expect(execution.error).toMatch(/re-analyzed after counting/);
     expect(pageMarkups('doc-a')).toHaveLength(0);
+  });
+
+  it('count then place_markups(itemIds) on a rotated page places exactly the counted items', async () => {
+    const fakePdf = {
+      getPage: async () => ({
+        rotate: 90,
+        getViewport: ({ scale }: { scale: number }) => ({
+          width: 792 * scale,
+          height: 612 * scale,
+        }),
+      }),
+    };
+    useCanvasStore.getState().setPdfDocument('doc-rot', fakePdf, 1, 612, 792);
+    const page = createPageGeometry({ pageNumber: 1, docWidth: 612, docHeight: 792, rotationDeg: 90 });
+    useCanvasStore.getState().cachePageGeometries(new Map([[1, page]]));
+    const countedItems: DetectedItem[] = [
+      item('a1'),
+      item('a2'),
+      { ...item('a3'), location: { x: 40, y: 50 } },
+    ];
+    const revision = useCanvasStore.getState().pdfDocuments['doc-rot']?.contentRevision ?? 0;
+    seedAnalysis('doc-rot', 1, countedItems, revision);
+    const analysisRef = getLatestFullPageAnalysis('doc-rot', 1, revision)?.analysisRef;
+    const counted = countItemsFromAnalysis({
+      page: 1,
+      items: countedItems,
+      dimensions: [],
+      text: [],
+      symbols: [],
+      legendTypeCodes: ['A'],
+      legendTypeCounts: { A: 3 },
+    }, 'Type A', { pageGeometry: page, analysisRef });
+    expect(counted.total).toBe(3);
+    expect(counted.matchingItems).toHaveLength(3);
+    useAIChatStore.getState().addApproval(approval({
+      itemIds: counted.matchingItems.map(row => row.id),
+      page: 1,
+      analysisRef,
+    }));
+    await handleApprovalDecision('appr-1', 'approved', {
+      pageWidth: 612,
+      pageHeight: 792,
+      defaultStyle,
+      setPipelineStatus: () => {},
+      createEditorToolContext: (runId: string, messageId: string) => createAgentToolContext({
+        runId,
+        messageId,
+        trade: 'electrical' as const,
+        placeMarkups: () => ({ placed: 0 }),
+      }),
+      resumeAfterApproval: (async () => ({
+        runId: 'run-1',
+        messageId: 'msg-1',
+        status: 'completed',
+        agentResult: { status: 'completed', assistantMessage: 'ok' },
+      })) as never,
+    });
+    const markups = pageMarkups('doc-rot');
+    expect(markups).toHaveLength(3);
+    expect(new Set(markups.map(m => m.id)).size).toBe(3);
+  });
+
+  it('rejects merged-away seam duplicate ids and places the survivor once', async () => {
+    const pageW = 720;
+    const pageH = 720;
+    const regions = generateOverlappingTileRegions(pageW, pageH, 2, 2);
+    const left = regions[0];
+    const right = regions[1];
+    const pageX = 360;
+    const pageY = 120;
+    const local = (region: typeof left) => ({
+      x: ((pageX - region.x) / region.width) * 100,
+      y: ((pageY - region.y) / region.height) * 100,
+    });
+    const reconciled = reconcileTileDetections([
+      {
+        region: left,
+        result: {
+          page: 1,
+          items: [{ ...item('seam-l'), location: local(left) }],
+          dimensions: [],
+          text: [],
+          symbols: [],
+        },
+      },
+      {
+        region: right,
+        result: {
+          page: 1,
+          items: [{ ...item('seam-r'), location: local(right) }],
+          dimensions: [],
+          text: [],
+          symbols: [],
+        },
+      },
+    ], pageW, pageH);
+    const survivors = reconciled.filter(row => !row.locationMissing);
+    expect(survivors).toHaveLength(1);
+    const survivor = survivors[0];
+    seedDoc('doc-a');
+    const revision = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
+    seedAnalysis('doc-a', 1, survivors, revision);
+    const analysisRef = getLatestFullPageAnalysis('doc-a', 1, revision)?.analysisRef;
+    const mergedAway = survivor.id.includes('seam-l') ? `${right.id}_seam-r` : `${left.id}_seam-l`;
+    const execution = await executeOnStore({
+      itemIds: [mergedAway, survivor.id],
+      page: 1,
+      analysisRef,
+    }, 'appr-seam');
+    expect(pageMarkups('doc-a')).toHaveLength(1);
+    expect(execution.dropped.some(d => d.itemId === mergedAway && /not in cached page analysis/.test(d.reason))).toBe(true);
   });
 });

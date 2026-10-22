@@ -65,6 +65,32 @@ describe('E-100 count query matching (fix 1)', () => {
     expect(result.countReliability).toBe('high');
   });
 
+  it('Type A combined: 9 DocPoint matchingItems and low-confidence A in unresolvedItems', () => {
+    const withLow = [
+      ...items.filter(row => row.legendTypeCode !== 'A'),
+      ...Array.from({ length: 9 }, (_, i) => item(`a${i}`, 'A', 10, 10 + i)),
+      item('a-low', 'A', 12, 12, { matchConfidence: 'low', confidence: 0.3 }),
+    ];
+    const counted = countItemsFromAnalysis(e100Analysis(withLow), 'Type A', {
+      pageWidth: 612,
+      pageHeight: 792,
+      analysisRef: {
+        docId: 'doc-a',
+        page: 1,
+        revision: 0,
+        analyzedAt: 't',
+        analysisId: 'id-1',
+      },
+    });
+    expect(counted.total).toBe(9);
+    expect(counted.matchedCodes).toEqual(['A']);
+    expect(counted.matchingItems).toHaveLength(9);
+    expect(counted.matchingItems.every(row => typeof row.x === 'number' && typeof row.y === 'number')).toBe(true);
+    expect(counted.matchingItems[0].x).toBeCloseTo(61.2, 5);
+    expect(counted.unresolvedItems?.some(row => row.id === 'a-low')).toBe(true);
+    expect(counted.analysisRef?.analysisId).toBe('id-1');
+  });
+
   it('Type B light fixtures only → 5, not B+S', () => {
     expect(countItemsFromAnalysis(analysis, 'Type B light fixtures only').total).toBe(5);
   });
@@ -135,10 +161,22 @@ describe('unresolved list caps', () => {
     }));
     const analysis = e100Analysis([...matching, ...unresolved]);
     analysis.legendTypeCounts = { A: 80 };
-    const result = countItemsFromAnalysis(analysis, 'Type A');
+    const result = countItemsFromAnalysis(analysis, 'Type A', {
+      pageWidth: 612,
+      pageHeight: 792,
+      analysisRef: {
+        docId: 'doc-a',
+        page: 1,
+        revision: 0,
+        analyzedAt: 't',
+        analysisId: 'id-1',
+      },
+    });
     expect(result.matchingItems.length).toBe(80);
     expect(result.unresolvedOmitted).toBeGreaterThan(0);
     expect(JSON.stringify(result).length).toBeLessThan(10_000);
+    expect(result.analysisRef?.analysisId).toBe('id-1');
+    expect(result.matchingItems[0].x).toBeCloseTo(61.9, 5);
   });
 });
 

@@ -45,6 +45,7 @@ export type CachedPageItemsLookup = {
   items: DetectedItem[];
   pageGeometry: PageGeometry | null;
   analysisRef?: PageAnalysisRef;
+  legendTypeCodes?: string[];
   error?: string;
 };
 
@@ -120,6 +121,7 @@ export function lookupCachedPageItems(options: {
     items: cached.analysis.items,
     pageGeometry: stored,
     analysisRef: cached.analysisRef,
+    legendTypeCodes: cached.analysis.legendTypeCodes,
   };
 }
 
@@ -141,6 +143,7 @@ export function placementMarkupsFromCachedItemIds(options: {
   analysisRef?: unknown;
   skipAnalysisRefCheck?: boolean;
   crop?: DisplayCrop;
+  legendTypeCodes?: string[];
 }): {
   markups: PlacementMarkup[];
   dropped: CachedItemLookupDrop[];
@@ -157,6 +160,7 @@ export function placementMarkupsFromCachedItemIds(options: {
             docHeight: options.pageHeight,
           })
           : null),
+      legendTypeCodes: options.legendTypeCodes,
     }
     : lookupCachedPageItems({ page: options.page, analysisRef: options.analysisRef });
   if (resolved.error && !options.items) {
@@ -180,7 +184,7 @@ export function placementMarkupsFromCachedItemIds(options: {
       dropped.push({ itemId, reason: 'not in cached page analysis' });
       return;
     }
-    const flag = itemIsUnresolvedForCounts(item);
+    const flag = itemIsUnresolvedForCounts(item, resolved.legendTypeCodes || options.legendTypeCodes);
     if (item.locationMissing || flag.reason === 'no location') {
       dropped.push({ itemId, reason: 'no location' });
       return;
