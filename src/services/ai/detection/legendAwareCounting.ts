@@ -54,15 +54,36 @@ const NOISE_CODES = new Set([
   'DRAWING', 'PLAN', 'FLOOR', 'ROOM', 'NOTE', 'NOTES', 'SEE', 'PER',
   'AND', 'THE', 'FOR', 'WITH', 'FROM', 'TO', 'OF', 'IN', 'ON',
   'AFF', 'GFI', 'GFCI', 'WP', 'TYP', 'NIC', 'EC',
+  'BKR', 'CKT', 'LTG', 'MCB',
 ]);
+
+export type LegendTextItem = {
+  str: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+const SCHEDULE_HEADER_RE =
+  /^(LIGHTING\s+FIXTURE\s+SCHEDULE|LUMINAIRE\s+SCHEDULE|FIXTURE\s+SCHEDULE|SYMBOL\s+LEGEND|LEGEND)\b/i;
 
 function normalizeCode(raw: string): string {
   return raw.trim().toUpperCase().replace(/\s+/g, '');
 }
 
+function isRejectedScheduleToken(code: string): boolean {
+  if (/^RM\d+$/i.test(code)) return true;
+  if (/^\d{3,4}[A-Z]?$/i.test(code)) return true;
+  if (/^(LP|PP)-\d/i.test(code)) return true;
+  if (/^PANEL/i.test(code)) return true;
+  return false;
+}
+
 function isPlausibleTypeCode(code: string): boolean {
   if (!code || code.length > 12) return false;
   if (NOISE_CODES.has(code)) return false;
+  if (isRejectedScheduleToken(code)) return false;
   // Require at least one letter; allow digits and / -
   if (!/^[A-Z]{1,3}\d*(?:[/-][A-Z0-9]+)*$/.test(code)) return false;
   // Pure single letters A–Z are OK (fixture types); reject very generic 2+ letter words without digits/separators unless short
@@ -135,6 +156,85 @@ export function parseLegendFromTextLines(lines: string[]): LegendEntry[] {
   }
 
   return [...entries.values()].sort((a, b) => b.typeCode.length - a.typeCode.length || a.typeCode.localeCompare(b.typeCode));
+}
+
+function groupLegendSourceRows(items: LegendTextItem[], yTolerance = 5): LegendTextItem[][] {
+  const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x);
+  const rows: LegendTextItem[][] = [];
+  let current: LegendTextItem[] = [];
+  let currentY = 0;
+  for (const item of sorted) {
+    if (current.length > 0 && Math.abs(item.y - currentY) > yTolerance) {
+      rows.push(current);
+      current = [];
+    }
+    current.push(item);
+    currentY = item.y;
+  }
+  if (current.length > 0) rows.push(current);
+  return rows;
+}
+
+function rowText(row: LegendTextItem[]): string {
+  return [...row].sort((a, b) => a.x - b.x).map(item => item.str).join(' ').replace(/\s+/g, ' ').trim();
+}
+
+function rowExtent(row: LegendTextItem[]): { x0: number; x1: number; y: number } {
+  const xs0 = row.map(item => item.x);
+  const xs1 = row.map(item => item.x + item.width);
+  return { x0: Math.min(...xs0), x1: Math.max(...xs1), y: Math.min(...row.map(item => item.y)) };
+}
+
+/**
+ * Parse only the schedule/legend block (header + aligned column), using source
+ * rows rather than merged lines. Falls back to parseLegendFromTextLines.
+ */
+export function parseLegendFromPageItems(items: LegendTextItem[]): LegendEntry[] {
+  const rows = groupLegendSourceRows(items);
+  const headerIndex = rows.findIndex(row => SCHEDULE_HEADER_RE.test(rowText(row)));
+  if (headerIndex < 0) {
+    console.info('[legend] no schedule header found; falling back to full-page line parse');
+    return parseLegendFromTextLines(rows.map(rowText).filter(Boolean));
+  }
+
+  const header = rowExtent(rows[headerIndex]);
+  let x0 = header.x0;
+  let x1 = header.x1;
+  const blockRows: LegendTextItem[][] = [];
+  let prevY = header.y;
+  const medianHeight = rows
+    .map(row => Math.max(...row.map(item => item.height || 8)))
+    .sort((a, b) => a - b)[Math.floor(rows.length / 2)] || 10;
+
+  for (let i = headerIndex + 1; i < rows.length; i += 1) {
+    const text = rowText(rows[i]);
+    if (SCHEDULE_HEADER_RE.test(text)) break;
+    const extent = rowExtent(rows[i]);
+    if (extent.y - prevY > medianHeight * 3.5) break;
+    const overlap = Math.min(x1, extent.x1) - Math.max(x0, extent.x0);
+    const headerWidth = Math.max(1, x1 - x0);
+    if (overlap < headerWidth * 0.2 && extent.x0 > x1 + 36) {
+      prevY = extent.y;
+      continue;
+    }
+    const inBlock = rows[i].filter(item => item.x < x1 + 48 && item.x + item.width > x0 - 24);
+    if (inBlock.length === 0) {
+      prevY = extent.y;
+      continue;
+    }
+    const blockExtent = rowExtent(inBlock);
+    x0 = Math.min(x0, blockExtent.x0);
+    x1 = Math.max(x1, Math.min(blockExtent.x1, x1 + 200));
+    blockRows.push(inBlock);
+    prevY = extent.y;
+  }
+
+  if (blockRows.length === 0) {
+    console.info('[legend] no schedule header found; falling back to full-page line parse');
+    return parseLegendFromTextLines(rows.map(rowText).filter(Boolean));
+  }
+
+  return parseLegendFromTextLines(blockRows.map(rowText).filter(Boolean));
 }
 
 /** Sort codes longest-first so B-NL wins over B, A/EM/NL over A. */

@@ -34,6 +34,7 @@ import {
 } from './placement/parseChatMarkupPointer';
 import {
   applyLegendAwareCounting,
+  parseLegendFromPageItems,
   parseLegendFromTextLines,
 } from './detection/legendAwareCounting';
 import {
@@ -288,6 +289,18 @@ function normalizePercent(value: unknown): number {
   return Math.max(0, Math.min(100, number));
 }
 
+function usablePercent(value: unknown): number | undefined {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return undefined;
+  return Math.max(0, Math.min(100, number));
+}
+
+function normalizeQuantity(value: unknown): number {
+  const number = Number(value);
+  if (Number.isFinite(number) && number > 1) return Math.min(50, Math.floor(number));
+  return 1;
+}
+
 export function normalizeAnalysis(
   raw: unknown,
   page: number,
@@ -300,6 +313,9 @@ export function normalizeAnalysis(
   const items = data.items.map((candidate, index) => {
     const location = (candidate.location || {}) as Record<string, unknown>;
     const bounds = (candidate.boundingBox || {}) as Record<string, unknown>;
+    const x = usablePercent(location.x);
+    const y = usablePercent(location.y);
+    const locationMissing = x === undefined || y === undefined;
     return {
       id: typeof candidate.id === 'string' ? candidate.id : `detected_${page}_${index}`,
       type: typeof candidate.type === 'string' ? candidate.type : 'unknown',
@@ -307,10 +323,11 @@ export function normalizeAnalysis(
       name: typeof candidate.name === 'string'
         ? candidate.name
         : (typeof candidate.type === 'string' ? candidate.type : 'Unknown item'),
-      quantity: 1,
+      quantity: normalizeQuantity(candidate.quantity),
+      locationMissing,
       location: {
-        x: normalizePercent(location.x),
-        y: normalizePercent(location.y),
+        x: locationMissing ? Number.NaN : x,
+        y: locationMissing ? Number.NaN : y,
         width: Number.isFinite(Number(location.width)) ? normalizePercent(location.width) : undefined,
         height: Number.isFinite(Number(location.height)) ? normalizePercent(location.height) : undefined,
       },
@@ -386,9 +403,9 @@ export function mapTileItemToPage(
 ): BlueprintAnalysisResult['items'] {
   const rawX = Number(item.location?.x);
   const rawY = Number(item.location?.y);
-  const locationMissing = !Number.isFinite(rawX) || !Number.isFinite(rawY);
+  const locationMissing = item.locationMissing === true || !Number.isFinite(rawX) || !Number.isFinite(rawY);
   const qty = Number(item.quantity);
-  const copies = Number.isFinite(qty) && qty > 1 ? Math.floor(qty) : 1;
+  const copies = Number.isFinite(qty) && qty > 1 ? Math.min(50, Math.floor(qty)) : 1;
   const bounds = item.boundingBox;
   const localX = locationMissing ? 0 : normalizePercent(item.location.x);
   const localY = locationMissing ? 0 : normalizePercent(item.location.y);
@@ -430,18 +447,31 @@ export function mapTileItemToPage(
   });
 }
 
+function regionOwnsPoint(
+  region: PageTileRegion,
+  pageX: number,
+  pageY: number,
+  pageWidth: number,
+  pageHeight: number,
+): boolean {
+  const x0 = region.ownership.x;
+  const y0 = region.ownership.y;
+  const x1 = region.ownership.x + region.ownership.width;
+  const y1 = region.ownership.y + region.ownership.height;
+  const xOk = pageX >= x0 && (x1 >= pageWidth - 1e-6 ? pageX <= pageWidth : pageX < x1);
+  const yOk = pageY >= y0 && (y1 >= pageHeight - 1e-6 ? pageY <= pageHeight : pageY < y1);
+  return xOk && yOk;
+}
+
 function isOwnedByTile(
   item: BlueprintAnalysisResult['items'][number],
   region: PageTileRegion,
   pageWidth: number,
   pageHeight: number
 ): boolean {
-  const pageX = (item.location.x / 100) * pageWidth;
-  const pageY = (item.location.y / 100) * pageHeight;
-  const right = region.ownership.x + region.ownership.width;
-  const bottom = region.ownership.y + region.ownership.height;
-  return pageX >= region.ownership.x && pageX <= right &&
-    pageY >= region.ownership.y && pageY <= bottom;
+  const point = pagePoint(item, pageWidth, pageHeight);
+  if (!point) return false;
+  return regionOwnsPoint(region, point.x, point.y, pageWidth, pageHeight);
 }
 
 function normalizedType(value: string): string {
@@ -478,16 +508,43 @@ function inOverlapBand(
   return inCrop && !isOwnedByTile(item, region, pageWidth, pageHeight);
 }
 
+const OWNER_LINK_RADIUS_PT = 72;
+
+function regionIndex(region: PageTileRegion): number {
+  return region.row * 1000 + region.col;
+}
+
+function pagePoint(
+  item: BlueprintAnalysisResult['items'][number],
+  pageWidth: number,
+  pageHeight: number,
+): { x: number; y: number } | null {
+  if (item.locationMissing || !Number.isFinite(item.location?.x) || !Number.isFinite(item.location?.y)) {
+    return null;
+  }
+  return {
+    x: (item.location.x / 100) * pageWidth,
+    y: (item.location.y / 100) * pageHeight,
+  };
+}
+
 export function reconcileTileDetections(
   tileResults: Array<{ region: PageTileRegion; result: BlueprintAnalysisResult }>,
   pageWidth: number,
   pageHeight: number
 ): BlueprintAnalysisResult['items'] {
-  const regionById = new Map(tileResults.map(row => [row.region.id, row.region]));
+  const orderedTiles = [...tileResults].sort((a, b) => {
+    const byRegion = regionIndex(a.region) - regionIndex(b.region);
+    if (byRegion !== 0) return byRegion;
+    return a.region.id.localeCompare(b.region.id);
+  });
+  const regionById = new Map(orderedTiles.map(row => [row.region.id, row.region]));
+  const regions = orderedTiles.map(row => row.region);
   const located: BlueprintAnalysisResult['items'] = [];
   const missing: BlueprintAnalysisResult['items'] = [];
-  for (const { region, result } of tileResults) {
-    for (const item of result.items) {
+  for (const { region, result } of orderedTiles) {
+    const mappedItems = [...result.items].sort((a, b) => a.id.localeCompare(b.id));
+    for (const item of mappedItems) {
       for (const mapped of mapTileItemToPage(item, region, pageWidth, pageHeight)) {
         if (mapped.locationMissing) missing.push(mapped);
         else located.push(mapped);
@@ -495,16 +552,37 @@ export function reconcileTileDetections(
     }
   }
 
-  const radiusPctX = (TILE_MERGE_RADIUS_PT / Math.max(1, pageWidth)) * 100;
-  const radiusPctY = (TILE_MERGE_RADIUS_PT / Math.max(1, pageHeight)) * 100;
-  const radiusPct = Math.hypot(radiusPctX, radiusPctY) > 0
-    ? Math.max(radiusPctX, radiusPctY)
-    : (TILE_MERGE_RADIUS_PT / Math.max(pageWidth, pageHeight)) * 100;
+  located.sort((a, b) => {
+    const ra = a.sourceTileId ? regionById.get(a.sourceTileId) : undefined;
+    const rb = b.sourceTileId ? regionById.get(b.sourceTileId) : undefined;
+    const byRegion = regionIndex(ra || { row: 0, col: 0, id: '', x: 0, y: 0, width: 0, height: 0, ownership: { x: 0, y: 0, width: 0, height: 0 } })
+      - regionIndex(rb || { row: 0, col: 0, id: '', x: 0, y: 0, width: 0, height: 0, ownership: { x: 0, y: 0, width: 0, height: 0 } });
+    if (byRegion !== 0) return byRegion;
+    return a.id.localeCompare(b.id);
+  });
 
-  const sorted = [...located].sort((a, b) => b.confidence - a.confidence);
+  const dropOutsiders = located.filter((item) => {
+    const region = item.sourceTileId ? regionById.get(item.sourceTileId) : undefined;
+    if (region && isOwnedByTile(item, region, pageWidth, pageHeight)) return true;
+    const point = pagePoint(item, pageWidth, pageHeight);
+    if (!point) return true;
+    const owner = regions.find(candidate => regionOwnsPoint(candidate, point.x, point.y, pageWidth, pageHeight));
+    if (!owner) return true;
+    let nearest = Infinity;
+    for (const other of located) {
+      if (other === item) continue;
+      if (other.sourceTileId !== owner.id) continue;
+      if (!sameLegendIdentity(other, item)) continue;
+      if (!isOwnedByTile(other, owner, pageWidth, pageHeight)) continue;
+      const otherPoint = pagePoint(other, pageWidth, pageHeight);
+      if (!otherPoint) continue;
+      nearest = Math.min(nearest, Math.hypot(otherPoint.x - point.x, otherPoint.y - point.y));
+    }
+    return !(Number.isFinite(nearest) && nearest <= OWNER_LINK_RADIUS_PT);
+  });
+
   const clusters: BlueprintAnalysisResult['items'][] = [];
-
-  for (const candidate of sorted) {
+  for (const candidate of dropOutsiders) {
     const cluster = clusters.find(group => group.some((existing) => {
       if (existing.sourceTileId && candidate.sourceTileId
         && existing.sourceTileId === candidate.sourceTileId) {
@@ -536,7 +614,7 @@ export function reconcileTileDetections(
     return owned || cluster[0];
   });
 
-  void radiusPct;
+  missing.sort((a, b) => a.id.localeCompare(b.id));
   return [...reconciled, ...missing];
 }
 
@@ -590,7 +668,11 @@ export async function analyzePageMaximumAccuracy(options: {
     : (textEvidence.context
       ? textEvidence.context.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
       : []);
-  const legendEntries = visibleOnly ? [] : parseLegendFromTextLines(legendSourceLines);
+  const legendEntries = visibleOnly
+    ? []
+    : (textEvidence.items?.length
+      ? parseLegendFromPageItems(textEvidence.items)
+      : parseLegendFromTextLines(legendSourceLines));
   if (legendEntries.length > 0) {
     console.info('[legend]', {
       page,
@@ -684,6 +766,11 @@ export async function analyzePageMaximumAccuracy(options: {
   await Promise.all(workers);
 
   onProgress?.(`Reconciling page ${page} detections...`, 80);
+  tileResults.sort((a, b) => {
+    const byRegion = (a.region.row * 1000 + a.region.col) - (b.region.row * 1000 + b.region.col);
+    if (byRegion !== 0) return byRegion;
+    return a.region.id.localeCompare(b.region.id);
+  });
   const tileItems = reconcileTileDetections(tileResults, pageWidth, pageHeight);
   const rawItems = tileItems.length > 0 ? tileItems : overview.items;
   const locatedItems = rawItems.filter(item => !item.locationMissing);

@@ -105,9 +105,9 @@ describe('E-100 count query matching (fix 1)', () => {
 });
 
 describe('unresolved list caps', () => {
-  it('serializes 80 matching + 300 unresolved under 10k chars', () => {
+  it('lists 80 matching + 40 unresolved then stays under 10k with accurate omitted counts', () => {
     const matching = Array.from({ length: 80 }, (_, i) => item(`ok-${i}`, 'A', 10, 10 + i));
-    const unresolved = Array.from({ length: 300 }, (_, i) => item(`u-${i}`, 'R', 20, 20, {
+    const unresolved = Array.from({ length: 40 }, (_, i) => item(`u-${i}`, 'R', 20, 20, {
       legendTypeCode: undefined,
       type: 'receptacle',
       name: 'unknown receptacle',
@@ -116,10 +116,13 @@ describe('unresolved list caps', () => {
     const analysis = e100Analysis([...matching, ...unresolved]);
     analysis.legendTypeCounts = { A: 80 };
     const result = countItemsFromAnalysis(analysis, 'Type A');
+    expect(result.matchingItems.length).toBe(80);
+    expect(result.unresolvedItems).toHaveLength(40);
     const serialized = JSON.stringify(result);
     expect(serialized.length).toBeLessThan(10_000);
-    expect(result.unresolvedTruncated).toBe(true);
-    expect((result.unresolvedItems || []).length).toBeLessThanOrEqual(40);
+    expect(result.omittedItems).toBe(0);
+    expect(result.matchingOmitted).toBe(0);
+    expect(result.unresolvedOmitted).toBe(0);
   });
 });
 
@@ -162,6 +165,21 @@ describe('tile grid + reconcile (fix 4)', () => {
     const grid = visionTileGridForPage(36 * 72, 24 * 72);
     expect(grid.rows * grid.cols).toBeGreaterThan(9);
     expect(grid.rows * grid.cols).toBeLessThanOrEqual(16);
+  });
+
+  it('reports tile count and DPI for letter, 11x17, 24x36 and 30x42', () => {
+    const dpi = (w: number, h: number, grid: { rows: number; cols: number }) => (
+      768 / (Math.min(w / grid.cols, h / grid.rows) / 72)
+    );
+    const letter = visionTileGridForPage(612, 792);
+    const tabloid = visionTileGridForPage(792, 1224);
+    const archD = visionTileGridForPage(24 * 72, 36 * 72);
+    const archE1 = visionTileGridForPage(30 * 72, 42 * 72);
+    expect(letter.rows * letter.cols).toBeLessThanOrEqual(4);
+    expect(tabloid.rows * tabloid.cols).toBeLessThanOrEqual(6);
+    expect(dpi(36 * 72, 24 * 72, visionTileGridForPage(36 * 72, 24 * 72))).toBeGreaterThan(125);
+    expect(dpi(24 * 72, 36 * 72, archD)).toBeGreaterThan(100);
+    expect(dpi(30 * 72, 42 * 72, archE1)).toBeGreaterThan(90);
   });
 
   it('keeps overlapping-tile boundary copies and merges by legendTypeCode + distance', () => {
@@ -253,6 +271,49 @@ describe('tile reconcile ownership and absolute radius', () => {
     }], 36 * 72, 24 * 72);
     expect(items.filter(row => !row.locationMissing)).toHaveLength(2);
     expect(TILE_MERGE_RADIUS_PT).toBe(18);
+  });
+
+  it('collapses a 4-tile corner to 1 at 0 / 0.2 / 0.4 / 0.6in error', () => {
+    const pageW = 720;
+    const pageH = 720;
+    const regions = generateOverlappingTileRegions(pageW, pageH, 2, 2);
+    const createResult = (items: DetectedItem[]): BlueprintAnalysisResult => ({
+      page: 1, items, dimensions: [], text: [], symbols: [],
+    });
+    for (const errIn of [0, 0.2, 0.4, 0.6]) {
+      const err = errIn * 72;
+      const items = reconcileTileDetections(regions.map((region, index) => {
+        const pageX = 360 + err;
+        const pageY = 360 + err;
+        const localX = ((pageX - region.x) / region.width) * 100;
+        const localY = ((pageY - region.y) / region.height) * 100;
+        return {
+          region,
+          result: createResult([item(`corner-${index}`, 'A', localX, localY)]),
+        };
+      }), pageW, pageH);
+      expect(items.filter(row => !row.locationMissing)).toHaveLength(1);
+    }
+  });
+
+  it('keeps two real same-code fixtures 0.5in apart across a seam', () => {
+    const pageW = 720;
+    const pageH = 720;
+    const regions = generateOverlappingTileRegions(pageW, pageH, 2, 2);
+    const left = regions[0];
+    const right = regions[1];
+    const inch = 0.5 * 72;
+    const leftPt = { x: 360 - inch / 2, y: 120 };
+    const rightPt = { x: 360 + inch / 2, y: 120 };
+    const local = (region: typeof left, pt: { x: number; y: number }) => ({
+      x: ((pt.x - region.x) / region.width) * 100,
+      y: ((pt.y - region.y) / region.height) * 100,
+    });
+    const items = reconcileTileDetections([
+      { region: left, result: { page: 1, items: [item('l', 'A', local(left, leftPt).x, local(left, leftPt).y)], dimensions: [], text: [], symbols: [] } },
+      { region: right, result: { page: 1, items: [item('r', 'A', local(right, rightPt).x, local(right, rightPt).y)], dimensions: [], text: [], symbols: [] } },
+    ], pageW, pageH);
+    expect(items.filter(row => !row.locationMissing)).toHaveLength(2);
   });
 
   it('keeps different-code symbols that are close together', () => {

@@ -660,7 +660,8 @@ export function countItemsFromAnalysis(
   const noParsedCodes = Boolean(q && matchedCodes.length === 0);
   const matchingItems = noParsedCodes
     ? []
-    : items.filter(item => itemMatchesQuery(item, q, matchedCodes));
+    : items.filter(item => itemMatchesQuery(item, q, matchedCodes)
+      && !itemIsUnresolvedForCounts(item, legendCodes).unresolved);
   const total = Object.values(matchingTypeCounts).reduce((sum, n) => sum + n, 0);
 
   const reliability = analysis.countReliability;
@@ -716,75 +717,97 @@ export function countItemsFromAnalysis(
   const offset = typeof options?.offset === 'number' && Number.isFinite(options.offset)
     ? Math.max(0, Math.floor(options.offset))
     : 0;
-  const section = options?.section === 'unresolved' ? 'unresolved' : 'matching';
-  const packed = packItemLists({
-    matching: matchingRows,
-    unresolved: unresolvedRows,
-    matchingOffset: section === 'matching' ? offset : 0,
-    unresolvedOffset: section === 'unresolved' ? offset : 0,
-    packMatching: section === 'matching',
-    packUnresolved: section === 'unresolved' || (section === 'matching' && offset === 0),
-    limit: options?.limit,
-  });
-  const omittedItems = packed.matchingOmitted + packed.unresolvedOmitted;
-  const returnedItems = packed.matchingReturned + packed.unresolvedReturned;
-  const truncated = omittedItems > 0;
-  const matchingStart = section === 'matching' ? offset : 0;
-  const unresolvedStart = section === 'unresolved' ? offset : 0;
-  const hasMore = section === 'matching'
-    && matchingStart + packed.matchingReturned < matchingRows.length;
-  const nextOffset = hasMore ? matchingStart + packed.matchingReturned : undefined;
-  const hasMoreUnresolved = packed.unresolvedReturned > 0 || section === 'unresolved' || offset === 0
-    ? unresolvedStart + packed.unresolvedReturned < unresolvedRows.length
-    : false;
-  const nextUnresolvedOffset = hasMoreUnresolved
-    ? unresolvedStart + packed.unresolvedReturned
+  const limit = typeof options?.limit === 'number' && Number.isFinite(options.limit)
+    ? Math.max(0, Math.floor(options.limit))
     : undefined;
-
-  return {
-    status: 'completed',
-    page: analysis.page,
-    query: q,
-    source: options?.source || 'cache',
-    total,
-    matchingTypeCounts,
-    allTypeCounts,
-    matchedCodes: matchedCodes.length ? matchedCodes : undefined,
-    matchingItems: packed.matchingItems,
-    unresolvedItems: packed.unresolvedItems,
-    unresolvedCountByType,
-    unresolvedTruncated: packed.unresolvedOmitted > 0 || undefined,
-    truncated: truncated || undefined,
-    returnedItems,
-    omittedItems,
-    matchingReturned: packed.matchingReturned,
-    matchingOmitted: packed.matchingOmitted,
-    unresolvedReturned: packed.unresolvedReturned,
-    unresolvedOmitted: packed.unresolvedOmitted,
-    nextOffset: hasMore ? nextOffset : undefined,
-    hasMore: hasMore || undefined,
-    nextUnresolvedOffset,
-    hasMoreUnresolved: hasMoreUnresolved || undefined,
-    analysisRef: options?.analysisRef,
-    countReliability: reliability,
-    legendTypeCodes: analysis.legendTypeCodes,
-    verificationNotes,
-    message: (namedNoCode
-      ? verificationNotes[0]
-      : (q
-        ? `Counted items matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
-        : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`))
-      + (namedNoCode ? '' : reliabilityNote)
-      + (namedNoCode ? '' : legendNote)
-      + (!namedNoCode && verificationNotes.length ? ` ${verificationNotes[0]}` : '')
-      + (!namedNoCode && truncated
-        ? ` Returned ${returnedItems} item row(s); omitted ${omittedItems}.`
-          + (hasMore
-            ? ` Pass offset=${nextOffset ?? offset} (or code) to page through remaining matching items.`
-            : '')
-          + (hasMoreUnresolved
-            ? ` Pass section=unresolved offset=${nextUnresolvedOffset ?? 0} to page through remaining unresolved items.`
-            : '')
-        : ''),
+  const section = options?.section === 'unresolved' ? 'unresolved' : 'matching';
+  const matchingWindow = section === 'matching'
+    ? matchingRows.slice(offset, limit != null ? offset + limit : undefined)
+    : [];
+  const unresolvedWindow = section === 'unresolved'
+    ? unresolvedRows.slice(offset, limit != null ? offset + limit : undefined)
+    : (section === 'matching' && offset === 0 ? unresolvedRows : []);
+  let matchingPacked = matchingWindow;
+  let unresolvedPacked = unresolvedWindow;
+  const packResult = () => {
+    const matchingOmitted = Math.max(0, matchingRows.length - (section === 'matching' ? offset : 0) - matchingPacked.length);
+    const unresolvedOmitted = Math.max(0, unresolvedRows.length
+      - (section === 'unresolved' ? offset : 0)
+      - unresolvedPacked.length);
+    const omittedItems = matchingOmitted + unresolvedOmitted;
+    const returnedItems = matchingPacked.length + unresolvedPacked.length;
+    const truncated = omittedItems > 0;
+    const matchingStart = section === 'matching' ? offset : 0;
+    const unresolvedStart = section === 'unresolved' ? offset : 0;
+    const hasMore = section === 'matching'
+      && matchingStart + matchingPacked.length < matchingRows.length;
+    const nextOffset = hasMore ? matchingStart + matchingPacked.length : undefined;
+    const hasMoreUnresolved = unresolvedStart + unresolvedPacked.length < unresolvedRows.length
+      && (section === 'unresolved' || offset === 0);
+    const nextUnresolvedOffset = hasMoreUnresolved
+      ? unresolvedStart + unresolvedPacked.length
+      : undefined;
+    return {
+      status: 'completed' as const,
+      page: analysis.page,
+      query: q,
+      source: options?.source || 'cache',
+      total,
+      matchingTypeCounts,
+      allTypeCounts,
+      matchedCodes: matchedCodes.length ? matchedCodes : undefined,
+      matchingItems: matchingPacked,
+      unresolvedItems: unresolvedPacked,
+      unresolvedCountByType,
+      unresolvedTruncated: unresolvedOmitted > 0 || undefined,
+      truncated: truncated || undefined,
+      returnedItems,
+      omittedItems,
+      matchingReturned: matchingPacked.length,
+      matchingOmitted,
+      unresolvedReturned: unresolvedPacked.length,
+      unresolvedOmitted,
+      nextOffset: hasMore ? nextOffset : undefined,
+      hasMore: hasMore || undefined,
+      nextUnresolvedOffset,
+      hasMoreUnresolved: hasMoreUnresolved || undefined,
+      analysisRef: options?.analysisRef,
+      countReliability: reliability,
+      legendTypeCodes: analysis.legendTypeCodes,
+      verificationNotes,
+      message: (namedNoCode
+        ? verificationNotes[0]
+        : (q
+          ? `Counted items matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
+          : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`))
+        + (namedNoCode ? '' : reliabilityNote)
+        + (namedNoCode ? '' : legendNote)
+        + (!namedNoCode && verificationNotes.length ? ` ${verificationNotes[0]}` : '')
+        + (!namedNoCode && truncated
+          ? ` Returned ${returnedItems} item row(s); omitted ${omittedItems}.`
+            + (hasMore
+              ? ` Pass offset=${nextOffset ?? offset} (or code) to page through remaining matching items.`
+              : '')
+            + (hasMoreUnresolved
+              ? ` Pass section=unresolved offset=${nextUnresolvedOffset ?? 0} to page through remaining unresolved items.`
+              : '')
+          : ''),
+    };
   };
+  while (JSON.stringify(packResult()).length >= 10_000 && (matchingPacked.length + unresolvedPacked.length) > 0) {
+    if (unresolvedPacked.length > 0) {
+      unresolvedPacked = unresolvedPacked.length === 1
+        ? []
+        : unresolvedPacked.slice(0, Math.max(0, Math.floor(unresolvedPacked.length / 2)));
+      continue;
+    }
+    if (matchingPacked.length > 0) {
+      matchingPacked = matchingPacked.length === 1
+        ? []
+        : matchingPacked.slice(0, Math.max(0, Math.floor(matchingPacked.length / 2)));
+      continue;
+    }
+    break;
+  }
+  return packResult();
 }

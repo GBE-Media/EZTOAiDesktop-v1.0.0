@@ -31,4 +31,17 @@ describe('generateOverlappingTileRegions', () => {
     expect(large.cols).toBeGreaterThan(small.cols);
     expect(large.rows * large.cols).toBeLessThanOrEqual(16);
   });
+
+  it('caps letter and 11x17 while keeping ~138 DPI on 36x24', () => {
+    const dpi = (w: number, h: number, grid: { rows: number; cols: number }) => (
+      768 / (Math.min(w / grid.cols, h / grid.rows) / 72)
+    );
+    const letter = visionTileGridForPage(612, 792);
+    const tabloid = visionTileGridForPage(17 * 72, 11 * 72);
+    const eSize = visionTileGridForPage(36 * 72, 24 * 72);
+    expect(letter.rows * letter.cols).toBeLessThanOrEqual(4);
+    expect(tabloid.rows * tabloid.cols).toBeLessThanOrEqual(6);
+    expect(dpi(36 * 72, 24 * 72, eSize)).toBeGreaterThan(125);
+    expect(dpi(36 * 72, 24 * 72, eSize)).toBeLessThan(155);
+  });
 });

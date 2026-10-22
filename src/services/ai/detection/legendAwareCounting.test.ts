@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import {
   applyLegendAwareCounting,
   formatLegendPromptBlock,
   normalizeTypeAgainstLegend,
+  parseLegendFromPageItems,
   parseLegendFromTextLines,
   rawTypeCountsFromItems,
 } from './legendAwareCounting';
@@ -200,5 +201,74 @@ describe('legend-aware fixture counting', () => {
     expect(legend.length).toBeGreaterThanOrEqual(12);
     expect(legend.some((e) => e.typeCode === 'B-NL')).toBe(true);
     expect(legend.some((e) => e.typeCode === 'A/EM/NL')).toBe(true);
+  });
+});
+
+function scheduleItems(wordLevel: boolean) {
+  const items: Array<{ str: string; x: number; y: number; width: number; height: number }> = [
+    { str: 'LIGHTING', x: 20, y: 40, width: 70, height: 10 },
+    { str: 'FIXTURE', x: 95, y: 40, width: 60, height: 10 },
+    { str: 'SCHEDULE', x: 160, y: 40, width: 80, height: 10 },
+  ];
+  for (let i = 1; i <= 30; i += 1) {
+    const y = 40 + i * 14;
+    const code = `T${i}`;
+    items.push({ str: 'TYPE', x: 20, y, width: 28, height: 10 });
+    items.push({ str: code, x: 52, y, width: 22, height: 10 });
+    items.push({ str: '-', x: 78, y, width: 8, height: 10 });
+    const desc = `2x4 RECESSED LED TROFFER ROW ${i}`;
+    if (wordLevel) {
+      desc.split(' ').forEach((word, index) => {
+        items.push({ str: word, x: 95 + index * 38, y, width: 36, height: 10 });
+      });
+    } else {
+      items.push({ str: desc, x: 95, y, width: 220, height: 10 });
+    }
+    items.push({ str: `RM${100 + i}`, x: 520, y, width: 40, height: 10 });
+    items.push({ str: 'PLAN TEXT', x: 570, y, width: 70, height: 10 });
+  }
+  items.push({ str: 'PANEL', x: 20, y: 520, width: 40, height: 10 });
+  items.push({ str: 'SCHEDULE', x: 65, y: 520, width: 70, height: 10 });
+  items.push({ str: 'LP-1', x: 20, y: 534, width: 30, height: 10 });
+  items.push({ str: 'BKR', x: 55, y: 534, width: 24, height: 10 });
+  items.push({ str: 'CKT', x: 85, y: 534, width: 24, height: 10 });
+  items.push({ str: 'LTG', x: 115, y: 534, width: 24, height: 10 });
+  items.push({ str: 'MCB', x: 145, y: 534, width: 24, height: 10 });
+  items.push({ str: 'RM', x: 180, y: 534, width: 20, height: 10 });
+  return items;
+}
+
+describe('schedule-block legend parsing', () => {
+  it('parses 30/30 codes with descriptions when plan text shares the rows', () => {
+    const legend = parseLegendFromPageItems(scheduleItems(false));
+    expect(legend).toHaveLength(30);
+    for (let i = 1; i <= 30; i += 1) {
+      const entry = legend.find(row => row.typeCode === `T${i}`);
+      expect(entry).toBeTruthy();
+      expect(entry?.description).toMatch(/TROFFER ROW/);
+    }
+    expect(legend.some(row => /^RM/i.test(row.typeCode))).toBe(false);
+  });
+
+  it('parses 30/30 codes from word-level OCR text', () => {
+    const legend = parseLegendFromPageItems(scheduleItems(true));
+    expect(legend).toHaveLength(30);
+    expect(legend.every(row => /TROFFER/.test(row.description))).toBe(true);
+  });
+
+  it('adds zero codes from a panel schedule on the same page', () => {
+    const legend = parseLegendFromPageItems(scheduleItems(false));
+    expect(legend.some(row => ['LP-1', 'BKR', 'CKT', 'LTG', 'MCB', 'RM'].includes(row.typeCode))).toBe(false);
+  });
+
+  it('falls back without crashing when no header is found', () => {
+    const spy = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const legend = parseLegendFromPageItems([
+      { str: 'ROOM', x: 10, y: 10, width: 40, height: 8 },
+      { str: '101', x: 55, y: 10, width: 20, height: 8 },
+    ]);
+    expect(Array.isArray(legend)).toBe(true);
+    expect(spy.mock.calls.some(call => String(call[0]).includes('no schedule header'))).toBe(true);
+    spy.mockRestore();
   });
 });

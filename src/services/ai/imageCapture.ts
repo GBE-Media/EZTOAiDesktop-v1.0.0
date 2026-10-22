@@ -104,23 +104,30 @@ export function visionTileGridForPage(
 ): { rows: number; cols: number } {
   const providerShortSidePx = options?.providerShortSidePx ?? 768;
   const targetDpi = options?.targetDpi ?? 150;
-  const maxTiles = options?.maxTiles ?? 16;
+  const shortIn = Math.min(pageWidth, pageHeight) / 72;
+  const longIn = Math.max(pageWidth, pageHeight) / 72;
+  const sheetCap = longIn <= 11.5 && shortIn <= 8.6
+    ? 4
+    : (longIn <= 17.5 && shortIn <= 11.5 ? 6 : 16);
+  const maxTiles = Math.min(options?.maxTiles ?? 16, sheetCap);
   const landscape = pageWidth >= pageHeight;
   let best = { rows: 1, cols: 1, score: -Infinity };
   for (let rows = 1; rows <= maxTiles; rows += 1) {
-    const cols = Math.max(1, Math.floor(maxTiles / rows));
-    if (landscape && cols < rows) continue;
-    if (!landscape && rows < cols) continue;
-    const tileW = pageWidth / cols;
-    const tileH = pageHeight / rows;
-    const shortPts = Math.min(tileW, tileH);
-    const dpi = providerShortSidePx / (shortPts / 72);
-    const aspectPage = pageWidth / Math.max(1, pageHeight);
-    const aspectGrid = cols / rows;
-    const aspectPenalty = Math.abs(Math.log(aspectGrid / Math.max(1e-6, aspectPage)));
-    const overshoot = dpi >= targetDpi ? (dpi - targetDpi) * 0.15 : (targetDpi - dpi);
-    const score = 1000 - overshoot - aspectPenalty * 30 - (rows * cols) * 0.5;
-    if (score > best.score) best = { rows, cols, score };
+    for (let cols = 1; cols <= maxTiles; cols += 1) {
+      if (rows * cols > maxTiles) continue;
+      if (landscape && cols < rows) continue;
+      if (!landscape && rows < cols) continue;
+      const tileW = pageWidth / cols;
+      const tileH = pageHeight / rows;
+      const shortPts = Math.min(tileW, tileH);
+      const dpi = providerShortSidePx / (shortPts / 72);
+      const aspectPage = pageWidth / Math.max(1, pageHeight);
+      const aspectGrid = cols / rows;
+      const aspectPenalty = Math.abs(Math.log(aspectGrid / Math.max(1e-6, aspectPage)));
+      const overshoot = dpi >= targetDpi ? (dpi - targetDpi) * 0.15 : (targetDpi - dpi) * 1.5;
+      const score = 1000 - overshoot - aspectPenalty * 50 - (rows * cols) * 2;
+      if (score > best.score) best = { rows, cols, score };
+    }
   }
   return { rows: best.rows, cols: best.cols };
 }
