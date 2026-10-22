@@ -1,4 +1,6 @@
 import type { BlueprintAnalysisResult, DetectedItem } from '../providers/types';
+import { NO_CONFIDENT_MATCH, normalizeMatchConfidence } from '../detection/visionLegendClassification';
+import { detectionPctToDocPointerFields } from '../placement/parseChatMarkupPointer';
 
 /** Compact analyze_page payload stored for reuse (no overview images). */
 export interface CachedAnalyzePageResult {
@@ -253,9 +255,21 @@ export interface PageItemCountResult {
     type: string;
     name: string;
     quantity: number;
-    location?: DetectedItem['location'];
+    location?: { x: number; y: number };
     confidence?: number;
+    legendTypeCode?: string;
+    matchConfidence?: DetectedItem['matchConfidence'];
+    unresolved?: boolean;
+    code?: string;
   }>;
+  unresolvedItems?: Array<{
+    id: string;
+    code?: string;
+    reason: string;
+    x?: number;
+    y?: number;
+  }>;
+  truncated?: boolean;
   countReliability?: 'high' | 'partial' | 'low';
   legendTypeCodes?: string[];
   verificationNotes?: string[];
@@ -281,10 +295,34 @@ function typeKeyMatchesQuery(typeKey: string, query: string): boolean {
   return tokens.some(token => key.includes(token));
 }
 
+function compactDocLocation(
+  item: DetectedItem,
+  pageWidth?: number,
+  pageHeight?: number,
+): { x: number; y: number } | undefined {
+  const loc = item.location;
+  if (!loc || !Number.isFinite(loc.x) || !Number.isFinite(loc.y)) return undefined;
+  if (pageWidth && pageHeight && pageWidth > 0 && pageHeight > 0) {
+    return detectionPctToDocPointerFields(loc, item.boundingBox, pageWidth, pageHeight).point;
+  }
+  return { x: loc.x, y: loc.y };
+}
+
+function itemIsUnresolvedForCounts(item: DetectedItem): { unresolved: boolean; reason?: string } {
+  const code = typeof item.legendTypeCode === 'string' ? item.legendTypeCode : '';
+  if (code && code.trim() === NO_CONFIDENT_MATCH) {
+    return { unresolved: true, reason: 'no_confident_match' };
+  }
+  if (normalizeMatchConfidence(item.matchConfidence) === 'low') {
+    return { unresolved: true, reason: 'low confidence' };
+  }
+  return { unresolved: false };
+}
+
 export function countItemsFromAnalysis(
   analysis: BlueprintAnalysisResult,
   query: string,
-  options?: { source?: 'cache' | 'fresh_analysis' },
+  options?: { source?: 'cache' | 'fresh_analysis'; pageWidth?: number; pageHeight?: number },
 ): PageItemCountResult {
   const q = query.trim();
   const items = analysis.items || [];
@@ -317,22 +355,47 @@ export function countItemsFromAnalysis(
     ? ` Legend-grounded types: ${analysis.legendTypeCodes.join(', ')}.`
     : ' No page legend types extracted — treat per-type counts as provisional.';
 
+  const classified = matchingItems.map((item) => {
+    const flag = itemIsUnresolvedForCounts(item);
+    const loc = compactDocLocation(item, options?.pageWidth, options?.pageHeight);
+    return { item, flag, loc };
+  });
+  const confirmed = classified.filter(row => !row.flag.unresolved);
+  const unresolved = classified.filter(row => row.flag.unresolved);
+  const MAX_ITEMS = 80;
+  const truncated = confirmed.length + unresolved.length > MAX_ITEMS;
+
   return {
     status: 'completed',
     page: analysis.page,
     query: q,
     source: options?.source || 'cache',
-    total: totalFromCounts > 0 ? totalFromCounts : totalFromItems,
+    total: totalFromCounts > 0 ? totalFromCounts : confirmed.reduce(
+      (sum, row) => sum + (typeof row.item.quantity === 'number' && row.item.quantity > 0 ? row.item.quantity : 1),
+      0,
+    ),
     matchingTypeCounts,
     allTypeCounts,
-    matchingItems: matchingItems.slice(0, 50).map(item => ({
+    matchingItems: confirmed.slice(0, MAX_ITEMS).map(({ item, loc }) => ({
       id: item.id,
       type: item.type,
       name: item.name,
       quantity: typeof item.quantity === 'number' ? item.quantity : 1,
-      location: item.location,
+      location: loc,
       confidence: item.confidence,
+      legendTypeCode: item.legendTypeCode,
+      matchConfidence: item.matchConfidence,
+      unresolved: false,
+      code: item.legendTypeCode || item.type,
     })),
+    unresolvedItems: unresolved.slice(0, MAX_ITEMS).map(({ item, loc, flag }) => ({
+      id: item.id,
+      code: item.legendTypeCode || item.type,
+      reason: flag.reason || 'unresolved',
+      x: loc?.x,
+      y: loc?.y,
+    })),
+    truncated: truncated || undefined,
     countReliability: reliability,
     legendTypeCodes: analysis.legendTypeCodes,
     verificationNotes,
@@ -341,6 +404,7 @@ export function countItemsFromAnalysis(
       : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`)
       + reliabilityNote
       + legendNote
-      + (verificationNotes.length ? ` ${verificationNotes[0]}` : ''),
+      + (verificationNotes.length ? ` ${verificationNotes[0]}` : '')
+      + (truncated ? ' Item list truncated to keep tool output compact.' : ''),
   };
 }

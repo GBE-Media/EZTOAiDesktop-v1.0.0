@@ -45,6 +45,17 @@ describe('parseChatMarkupPointerRow', () => {
     expect(pointer).toBeNull();
   });
 
+  it('accepts PlacementMarkup points[] as the target DocPoint', () => {
+    const pointer = parseChatMarkupPointerRow({
+      type: 'count-marker',
+      page: 1,
+      points: [{ x: 88.5, y: 120 }],
+      label: 'EX1',
+    }, { defaultRef: 1, pageWidth: 612, pageHeight: 792 });
+    expect(pointer?.point).toEqual({ x: 88.5, y: 120 });
+    expect(pointer?.label).toBe('EX1');
+  });
+
   it('accepts top-level x/y as DocPoints when point object is omitted', () => {
     const pointer = parseChatMarkupPointerRow({
       ref: 4,

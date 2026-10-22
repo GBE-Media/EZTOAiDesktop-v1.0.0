@@ -103,7 +103,12 @@ interface AIChatState {
   finishRun: (runId: string, status?: AssistantRun['status'], error?: string) => void;
   cancelRun: (runId: string) => void;
   addApproval: (approval: ApprovalRequest) => void;
-  resolveApproval: (approvalId: string, status: ApprovalRequest['status'], error?: string) => void;
+  resolveApproval: (
+    approvalId: string,
+    status: ApprovalRequest['status'],
+    error?: string,
+    executionResult?: ApprovalRequest['executionResult'],
+  ) => void;
   addClarification: (clarification: ClarificationRequest) => void;
   resolveClarification: (
     clarificationId: string,
@@ -363,7 +368,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
     approvals: { ...state.approvals, [approval.id]: approval },
   })),
 
-  resolveApproval: (approvalId, status, error) => set(state => {
+  resolveApproval: (approvalId, status, error, executionResult) => set(state => {
     const approval = state.approvals[approvalId];
     if (!approval) return state;
     return {
@@ -373,6 +378,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
           ...approval,
           status,
           error,
+          executionResult: executionResult ?? approval.executionResult,
           resolvedAt: new Date().toISOString(),
         },
       },

@@ -44,6 +44,44 @@ describe('ApprovalCard preview', () => {
     expect(html).toContain('Preview');
   });
 
+  it('renders error text on failure with a copy control', () => {
+    const html = renderToStaticMarkup(
+      <ApprovalCardView
+        approval={{
+          ...baseApproval,
+          status: 'failed',
+          error: '0 of 26 markers had usable coordinates (row 1: no point/points)',
+        }}
+      />,
+    );
+    expect(html).toContain('data-testid="approval-error"');
+    expect(html).toContain('0 of 26 markers had usable coordinates');
+    expect(html).toContain('Copy');
+  });
+
+  it('renders an execution summary on success including dropped rows', () => {
+    const html = renderToStaticMarkup(
+      <ApprovalCardView
+        approval={{
+          ...baseApproval,
+          status: 'executed',
+          executionResult: {
+            status: 'partial',
+            placed: 25,
+            autoCommitted: 25,
+            needsConfirmation: 0,
+            reviewQueued: 0,
+            dropped: [{ index: 0, reason: 'no point/points' }],
+          },
+        }}
+      />,
+    );
+    expect(html).toContain('data-testid="approval-result"');
+    expect(html).toContain('placed 25');
+    expect(html).toContain('dropped 1');
+    expect(html).toContain('no point/points');
+  });
+
   it('omits the preview section when preview is absent', () => {
     const html = renderToStaticMarkup(<ApprovalCardView approval={baseApproval} />);
     expect(html).toContain('Place document markups');

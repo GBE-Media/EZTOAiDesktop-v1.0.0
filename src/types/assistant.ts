@@ -76,6 +76,16 @@ export interface ApprovalRequest {
   createdAt: string;
   resolvedAt?: string;
   error?: string;
+  executionResult?: {
+    status?: 'ok' | 'partial' | 'failed' | string;
+    placed?: number;
+    autoCommitted?: number;
+    needsConfirmation?: number;
+    reviewQueued?: number;
+    dropped?: Array<{ index?: number; itemId?: string; reason: string }>;
+    error?: string;
+    perMarker?: Array<{ index?: number; itemId?: string; reason: string }>;
+  };
   /**
    * Provider-facing tool call id from the model that requested this mutation
    * (OpenAI tool_call_id / Anthropic tool_use_id). Distinct from `id`, which is

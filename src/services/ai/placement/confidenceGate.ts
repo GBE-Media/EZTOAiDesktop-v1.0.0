@@ -27,6 +27,9 @@ export function partitionMarkupsByConfidence(
   const review: PageMarkupPair[] = [];
 
   for (const item of markups) {
+    if (!item?.markup) {
+      continue;
+    }
     let band = confidencePlacementBand(item.markup.aiConfidence);
     // Global "Confirm" placement mode can only make auto stricter, never weaker.
     if (options?.forceConfirm && band === 'auto') band = 'confirm';

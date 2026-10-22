@@ -224,7 +224,10 @@ interface CanvasActions {
   
   // AI markup actions
   addAIMarkup: (page: number, markup: CanvasMarkup, pending?: boolean) => void;
-  addAIMarkupBatch: (markups: Array<{ page: number; markup: CanvasMarkup }>, pending?: boolean) => void;
+  addAIMarkupBatch: (
+    markups: Array<{ page: number; markup: CanvasMarkup }>,
+    pending?: boolean,
+  ) => { ok: boolean; placed: number; reason?: string };
   confirmAIMarkup: (page: number, id: string) => void;
   confirmAllAIMarkups: () => void;
   rejectAIMarkup: (page: number, id: string) => void;
@@ -1383,10 +1386,14 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   
   addAIMarkupBatch: (markups, pending = true) => {
     const state = get();
-    if (!state.activeDocId) return;
+    if (!state.activeDocId) {
+      return { ok: false, placed: 0, reason: 'No active document' };
+    }
     
     const docData = state.pdfDocuments[state.activeDocId];
-    if (!docData) return;
+    if (!docData) {
+      return { ok: false, placed: 0, reason: 'No active document' };
+    }
     
     const affectedPages = [...new Set(markups.map(item => item.page))];
     const beforeByPage = Object.fromEntries(
@@ -1446,6 +1453,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
       })),
       state.activeDocId,
     );
+    return { ok: true, placed: markups.length };
   },
   
   confirmAIMarkup: (page, id) => {

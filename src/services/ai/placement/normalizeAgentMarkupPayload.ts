@@ -10,7 +10,11 @@ import {
   loadPageGeometries,
   type PdfDocumentLike,
 } from './loadPageGeometries';
-import { parseChatMarkupPointerRow } from './parseChatMarkupPointer';
+import {
+  describeMissingCoordinates,
+  parseChatMarkupPointerRow,
+  readDocPointsArray,
+} from './parseChatMarkupPointer';
 import { resolvePageAnchors } from './resolvePageAnchors';
 import { CONFIDENCE_REVIEW, type GeometryAnchor, type PageCalibration, type PageGeometry, type VerificationResult } from './types';
 import { verifyPlacementMarkupsByPage } from './verifyPlacementsByPage';
@@ -27,6 +31,42 @@ function cacheLoadedPageGeometries(geometryByPage: Map<number, PageGeometry>): v
 /** Logged/reported when a pointer is dropped because legacy pct needs page size. */
 export const POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE =
   'could not determine placement — missing page size';
+
+export type NormalizeDroppedRow = { index: number; reason: string };
+
+export type NormalizeAgentMarkupResult = {
+  markups: Array<{ page: number; markup: CanvasMarkup }>;
+  dropped: NormalizeDroppedRow[];
+  inputCount: number;
+};
+
+const PLACEMENT_TYPES = new Set<PlacementMarkup['type']>([
+  'count-marker',
+  'rectangle',
+  'measurement-length',
+  'measurement-area',
+  'polyline',
+  'polygon',
+  'text',
+  'callout',
+]);
+
+function isLegacyMarkupPair(item: unknown): item is { page: number; markup: CanvasMarkup } {
+  if (!item || typeof item !== 'object') return false;
+  const row = item as { markup?: unknown };
+  return !!row.markup && typeof row.markup === 'object';
+}
+
+function looksLikePlacementMarkupRow(row: Record<string, unknown>): boolean {
+  return Array.isArray(row.points);
+}
+
+function coercePlacementType(raw: unknown): PlacementMarkup['type'] {
+  if (typeof raw === 'string' && PLACEMENT_TYPES.has(raw as PlacementMarkup['type'])) {
+    return raw as PlacementMarkup['type'];
+  }
+  return 'count-marker';
+}
 
 export type NormalizeAgentMarkupOptions = {
   payload: unknown;
@@ -173,9 +213,10 @@ function convertUnverifiableBatch(options: {
  */
 export async function normalizeAgentMarkupPayload(
   options: NormalizeAgentMarkupOptions,
-): Promise<Array<{ page: number; markup: CanvasMarkup }>> {
+): Promise<NormalizeAgentMarkupResult> {
+  const empty: NormalizeAgentMarkupResult = { markups: [], dropped: [], inputCount: 0 };
   const raw = options.payload;
-  if (!raw) return [];
+  if (!raw) return empty;
 
   const asArray = Array.isArray(raw)
     ? raw
@@ -189,17 +230,20 @@ export async function normalizeAgentMarkupPayload(
             ? (raw as { pointers: unknown[] }).pointers
             : null;
 
-  if (!asArray || asArray.length === 0) return [];
+  if (!asArray || asArray.length === 0) return empty;
 
   const resolveAnchors = options.resolveAnchors
     || ((page: PageGeometry, pageNumber: number) => resolvePageAnchors({ page, pageNumber }));
 
-  const first = asArray[0] as Record<string, unknown>;
-  if (first && typeof first === 'object' && first.markup) {
-    const legacy = asArray.filter((item): item is { page: number; markup: CanvasMarkup } => {
-      const row = item as { page?: number; markup?: CanvasMarkup };
-      return !!row?.markup;
-    });
+  const dropped: NormalizeDroppedRow[] = [];
+  const wrap = (markups: Array<{ page: number; markup: CanvasMarkup }>): NormalizeAgentMarkupResult => ({
+    markups,
+    dropped,
+    inputCount: asArray.length,
+  });
+
+  if (asArray.every(isLegacyMarkupPair)) {
+    const legacy = asArray as Array<{ page: number; markup: CanvasMarkup }>;
     if (legacy.length > 0) {
       const pageNumbers = legacy.map(item => item.page || item.markup.page || options.page);
       const { geometryByPage, failedPages } = await loadPageGeometries({
@@ -251,23 +295,26 @@ export async function normalizeAgentMarkupPayload(
           idPrefix: options.idPrefix,
         }),
       ];
-      return withMessageId(converted, options.messageId);
+      return wrap(withMessageId(converted, options.messageId));
     }
   }
 
-  const rawPointerRows = asArray
-    .map((item, index) => {
-      if (!item || typeof item !== 'object') return null;
-      const row = item as Record<string, unknown>;
-      const pageRaw = row.page;
-      const pageNumber = typeof pageRaw === 'number' && Number.isFinite(pageRaw) && pageRaw > 0
-        ? pageRaw
-        : options.page;
-      return { row, index, pageNumber };
-    })
-    .filter((item): item is { row: Record<string, unknown>; index: number; pageNumber: number } => !!item);
+  const rawPointerRows: Array<{ row: Record<string, unknown>; index: number; pageNumber: number }> = [];
+  for (let index = 0; index < asArray.length; index += 1) {
+    const item = asArray[index];
+    if (!item || typeof item !== 'object') {
+      dropped.push({ index, reason: 'row is not an object' });
+      continue;
+    }
+    const row = item as Record<string, unknown>;
+    const pageRaw = row.page;
+    const pageNumber = typeof pageRaw === 'number' && Number.isFinite(pageRaw) && pageRaw > 0
+      ? pageRaw
+      : options.page;
+    rawPointerRows.push({ row, index, pageNumber });
+  }
 
-  if (rawPointerRows.length === 0) return [];
+  if (rawPointerRows.length === 0) return wrap([]);
 
   const pageNumbers = rawPointerRows.map(item => item.pageNumber);
   const { geometryByPage, failedPages } = await loadPageGeometries({
@@ -284,16 +331,73 @@ export async function normalizeAgentMarkupPayload(
 
   const verifiablePointers: ChatMarkupPointer[] = [];
   const unverifiablePointers: ChatMarkupPointer[] = [];
+  const directPlacements: PlacementMarkup[] = [];
+  const unverifiableDirect: PlacementMarkup[] = [];
+
+  const defaultStyle: PlacementMarkup['style'] = {
+    strokeColor: options.defaultStyle.strokeColor,
+    fillColor: options.defaultStyle.fillColor,
+    strokeWidth: options.defaultStyle.strokeWidth,
+    fontSize: options.defaultStyle.fontSize,
+    fontFamily: options.defaultStyle.fontFamily,
+  };
+
+  const rejectRow = (index: number, reason: string) => {
+    dropped.push({ index, reason });
+    console.warn('[normalizeAgentMarkupPayload]', `row ${index + 1}: ${reason}`);
+  };
+
+  const toDirectPlacement = (
+    row: Record<string, unknown>,
+    index: number,
+    pageNumber: number,
+    points: NonNullable<ReturnType<typeof readDocPointsArray>>,
+  ): PlacementMarkup => ({
+    id: typeof row.id === 'string' && row.id.trim()
+      ? row.id
+      : `${options.idPrefix}_${coercePlacementType(row.type)}_${index + 1}`,
+    type: coercePlacementType(row.type),
+    page: pageNumber,
+    points,
+    style: defaultStyle,
+    label: typeof row.label === 'string' ? row.label : undefined,
+    content: typeof row.content === 'string' ? row.content : undefined,
+    productId: typeof row.productId === 'string' && row.productId.trim() ? row.productId : undefined,
+    linkedItemId: typeof row.linkedItemId === 'string' ? row.linkedItemId : undefined,
+    confidence: typeof row.confidence === 'number' && Number.isFinite(row.confidence)
+      ? Math.max(0, Math.min(1, row.confidence))
+      : 0.85,
+    pending: false,
+    aiNote: typeof row.aiNote === 'string' ? row.aiNote : undefined,
+  });
 
   for (const { row, index, pageNumber } of rawPointerRows) {
-    if (failedPages.has(pageNumber) || !geometryByPage.has(pageNumber)) {
-      // DocPoint-native parse only — never invent {x:0,y:0} for rejected legacy pct.
+    const geometryFailed = failedPages.has(pageNumber) || !geometryByPage.has(pageNumber);
+
+    if (looksLikePlacementMarkupRow(row)) {
+      const points = readDocPointsArray(row.points);
+      if (!points) {
+        rejectRow(index, describeMissingCoordinates(row));
+        continue;
+      }
+      const placement = toDirectPlacement(row, index, pageNumber, points);
+      if (geometryFailed) {
+        unverifiableDirect.push({
+          ...placement,
+          aiNote: appendGeometryFailureNote(placement.aiNote),
+          confidence: geometryFailureConfidence(CONFIDENCE_REVIEW),
+          pending: true,
+        });
+      } else {
+        directPlacements.push(placement);
+      }
+      continue;
+    }
+
+    if (geometryFailed) {
       const parsed = parseChatMarkupPointerRow(row, { defaultRef: index + 1 });
       if (!parsed) {
-        console.warn(
-          '[normalizeAgentMarkupPayload]',
-          `${POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE} (ref=${row.ref ?? index + 1}, page=${pageNumber})`,
-        );
+        rejectRow(index, describeMissingCoordinates(row));
         continue;
       }
       unverifiablePointers.push({
@@ -312,10 +416,7 @@ export async function normalizeAgentMarkupPayload(
       pageHeight: page.docHeight,
     });
     if (!parsed) {
-      console.warn(
-        '[normalizeAgentMarkupPayload]',
-        `${POINTER_REJECTED_MISSING_PAGE_SIZE_NOTE} (ref=${row.ref ?? index + 1}, page=${pageNumber})`,
-      );
+      rejectRow(index, describeMissingCoordinates(row));
       continue;
     }
     verifiablePointers.push({
@@ -333,7 +434,7 @@ export async function normalizeAgentMarkupPayload(
     byPage.set(pageNumber, group);
   }
 
-  const placementMarkups: PlacementMarkup[] = [];
+  const placementMarkups: PlacementMarkup[] = [...directPlacements];
   for (const [pageNumber, group] of byPage) {
     const page = geometryByPage.get(pageNumber)!;
     const placements = chatPointersToGreenPlacements({
@@ -348,7 +449,7 @@ export async function normalizeAgentMarkupPayload(
 
   // Geometry load failed but pointer had real DocPoints: review-only stub.
   // Rejected/null parses are already dropped above — never fabricate (0,0) for those.
-  const unverifiableMarkups: PlacementMarkup[] = [];
+  const unverifiableMarkups: PlacementMarkup[] = [...unverifiableDirect];
   for (const pointer of unverifiablePointers) {
     const pageNumber = pointer.page ?? options.page;
     // Without trusted page size, do not invent placement from page-1 dims.
@@ -391,7 +492,7 @@ export async function normalizeAgentMarkupPayload(
     }),
   ];
 
-  return withMessageId(converted, options.messageId);
+  return wrap(withMessageId(converted, options.messageId));
 }
 
 /**

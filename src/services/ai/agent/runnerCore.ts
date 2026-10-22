@@ -369,20 +369,32 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
     });
   } else {
     emitAgentTrace(options.runId, 'approval_granted', { approvalId: options.approval.id });
-    const completed: AssistantToolResult = {
-      status: 'completed',
-      summary: `Approved and executed: ${options.approval.description}`,
-      output: options.executionResult ?? { executed: true },
-    };
+    const exec = options.executionResult && typeof options.executionResult === 'object'
+      ? options.executionResult as { status?: string; error?: string }
+      : undefined;
+    const executionFailed = exec?.status === 'failed';
+    const completed: AssistantToolResult = executionFailed
+      ? {
+          status: 'failed',
+          summary: exec?.error || `Placement failed: ${options.approval.description}`,
+          output: options.executionResult,
+        }
+      : {
+          status: 'completed',
+          summary: `Approved and executed: ${options.approval.description}`,
+          output: options.executionResult ?? { executed: true },
+        };
     appendApprovalOutcomeMessage(session, options.approval, completed);
     session.actionsTaken.push({
       toolId: options.approval.toolId,
       title: options.approval.title,
       summary: completed.summary,
-      status: 'completed',
+      status: executionFailed ? 'failed' : 'completed',
     });
 
-    const verifyResults = await runVerificationTools(options.approval.toolId, toolContext);
+    const verifyResults = executionFailed
+      ? []
+      : await runVerificationTools(options.approval.toolId, toolContext);
     for (const verify of verifyResults) {
       const def = getAssistantTool(options.approval.toolId);
       const verifyName = def?.verifyWith?.[0] || 'verify';

@@ -123,10 +123,19 @@ export const placeMarkupsSchema = z.preprocess(
     markups: z.array(placeMarkupItemSchema).min(1).optional(),
     pointers: z.array(chatMarkupPointerSchema).min(1).optional(),
     callouts: z.array(chatMarkupPointerSchema).min(1).optional(),
+    /** Cached count_page_items ids — executor looks up DocPoints; model coords are ignored. */
+    itemIds: z.array(z.string().min(1)).min(1).optional(),
+    page: z.number().int().positive().optional(),
+    includeReviewMarkers: z.boolean().optional(),
   }).refine(
-    (value) => Boolean(value.markups?.length || value.pointers?.length || value.callouts?.length),
-    { message: 'place_markups requires markups, pointers, or callouts' },
-  ).describe('At least one of markups, pointers, or callouts must be provided.'),
+    (value) => Boolean(
+      value.markups?.length
+      || value.pointers?.length
+      || value.callouts?.length
+      || value.itemIds?.length,
+    ),
+    { message: 'place_markups requires markups, pointers, callouts, or itemIds' },
+  ).describe('At least one of markups, pointers, callouts, or itemIds must be provided.'),
 );
 
 export const proposeCalloutsSchema = z.preprocess(
@@ -258,6 +267,16 @@ export const applyMaterialCountAdjustmentsSchema = z.object({
 export function approvalPayloadFromPlaceMarkups(
   input: z.infer<typeof placeMarkupsSchema>,
 ): unknown {
+  if (input.itemIds?.length) {
+    return {
+      itemIds: input.itemIds,
+      page: input.page,
+      includeReviewMarkers: input.includeReviewMarkers,
+      markups: input.markups,
+      pointers: input.pointers,
+      callouts: input.callouts,
+    };
+  }
   return input.markups || input.pointers || input.callouts;
 }
 

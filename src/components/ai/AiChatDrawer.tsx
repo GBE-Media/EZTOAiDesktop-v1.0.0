@@ -35,6 +35,7 @@ import {
   usePlacementDebugStore,
   verifyPlacementMarkupsWithGeometryGate,
 } from '@/services/ai/placement';
+import { executePlaceMarkupsApproval } from '@/services/ai/placement/executePlaceMarkupsApproval';
 import { useEditorStore } from '@/store/editorStore';
 import { useProductSync } from '@/hooks/useProductSync';
 import { ChatMessage } from './ChatMessage';
@@ -250,30 +251,29 @@ export function AgentAssistantDrawer() {
       const canvas = useCanvasStore.getState();
       const docId = canvas.activeDocId;
       const pdf = docId ? canvas.pdfDocuments[docId] : null;
-      const markups = await normalizeAgentMarkupPayload({
-        payload,
+      return executePlaceMarkupsApproval({
+        approval: {
+          id: `direct_${messageId}`,
+          runId,
+          messageId,
+          toolId: 'place_markups',
+          title: 'Place document markups',
+          description: 'Place proposed markups on the document',
+          status: 'approved',
+          payload,
+          undoable: true,
+          createdAt: new Date().toISOString(),
+        },
         page: canvas.getCurrentPage() || 1,
         pageWidth: pdf?.originalPageWidth || pageWidth,
         pageHeight: pdf?.originalPageHeight || pageHeight,
-        idPrefix: `agent_${messageId}`,
-        messageId,
         defaultStyle,
         pdfDocument: pdf?.pdfDocument || null,
-      });
-      if (!markups.length) return { placed: 0 };
-      const gated = commitMarkupsByConfidence({
-        markups,
-        forceConfirm: placementMode === 'confirm',
+        placementMode,
         addAIMarkupBatch,
         setPendingPlacements,
         getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
       });
-      return {
-        placed: gated.placed,
-        autoCommitted: gated.auto,
-        needsConfirmation: gated.confirm,
-        reviewQueued: gated.review,
-      };
     },
     navigateToPage: (page, bounds) => {
       const canvas = useCanvasStore.getState();
@@ -738,8 +738,8 @@ export function AgentAssistantDrawer() {
             defaultStyle,
             pdfDocument: docData?.pdfDocument || null,
           });
-          if (normalized.length > 0) {
-            setPendingMarkups(normalized);
+          if (normalized.markups.length > 0) {
+            setPendingMarkups(normalized.markups);
             setPendingAssistantId(assistantMsgId);
           }
         }
@@ -1050,47 +1050,18 @@ export function AgentAssistantDrawer() {
           const canvas = useCanvasStore.getState();
           const docId = canvas.activeDocId;
           const pdf = docId ? canvas.pdfDocuments[docId] : null;
-          const markups = await normalizeAgentMarkupPayload({
-            payload: approval.payload,
+          executionResult = await executePlaceMarkupsApproval({
+            approval,
             page: canvas.getCurrentPage() || 1,
             pageWidth: pdf?.originalPageWidth || pageWidth,
             pageHeight: pdf?.originalPageHeight || pageHeight,
-            idPrefix: `agent_${approval.messageId}`,
-            messageId: approval.messageId,
             defaultStyle,
             pdfDocument: pdf?.pdfDocument || null,
+            placementMode,
+            addAIMarkupBatch,
+            setPendingPlacements,
+            getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
           });
-          if (markups.length === 0 && Array.isArray(approval.payload)) {
-            // Pipeline path: payload already CanvasMarkup pairs
-            const legacy = approval.payload as Array<{ page: number; markup: CanvasMarkup }>;
-            const gated = commitMarkupsByConfidence({
-              markups: legacy,
-              forceConfirm: placementMode === 'confirm',
-              addAIMarkupBatch,
-              setPendingPlacements,
-              getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
-            });
-            executionResult = {
-              placed: gated.placed,
-              autoCommitted: gated.auto,
-              needsConfirmation: gated.confirm,
-              reviewQueued: gated.review,
-            };
-          } else {
-            const gated = commitMarkupsByConfidence({
-              markups,
-              forceConfirm: placementMode === 'confirm',
-              addAIMarkupBatch,
-              setPendingPlacements,
-              getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
-            });
-            executionResult = {
-              placed: gated.placed,
-              autoCommitted: gated.auto,
-              needsConfirmation: gated.confirm,
-              reviewQueued: gated.review,
-            };
-          }
         } else {
           const toolContext = createAgentToolContext({
             runId: approval.runId,
@@ -1101,15 +1072,31 @@ export function AgentAssistantDrawer() {
           executionResult = await executeApprovedAssistantAction(approval, toolContext);
         }
 
-        store.resolveApproval(approval.id, 'executed');
+        const placedResult = executionResult && typeof executionResult === 'object'
+          ? executionResult as { status?: string; error?: string }
+          : undefined;
+        if (placedResult?.status === 'failed') {
+          store.resolveApproval(
+            approval.id,
+            'failed',
+            placedResult.error || 'Placement failed',
+            placedResult,
+          );
+        } else {
+          store.resolveApproval(
+            approval.id,
+            'executed',
+            placedResult?.status === 'partial' ? placedResult.error : undefined,
+            placedResult,
+          );
+        }
 
         void continueAgent('approved', executionResult);
       } catch (error) {
-        store.resolveApproval(
-          approval.id,
-          'failed',
-          error instanceof Error ? error.message : String(error)
-        );
+        const message = error instanceof Error ? error.message : String(error);
+        const failedResult = { status: 'failed' as const, error: message, placed: 0 };
+        store.resolveApproval(approval.id, 'failed', message, failedResult);
+        void continueAgent('approved', failedResult);
       }
       })();
     };

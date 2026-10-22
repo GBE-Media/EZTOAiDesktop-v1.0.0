@@ -1,4 +1,4 @@
-import { Check, ShieldCheck, X } from 'lucide-react';
+import { Check, Copy, ShieldCheck, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
@@ -39,6 +39,26 @@ export function formatApprovalPreview(preview: unknown): string | null {
       .join(' · ');
   }
   return null;
+}
+
+export function formatExecutionSummary(result: NonNullable<ApprovalRequest['executionResult']>): string {
+  const parts = [
+    `placed ${result.placed ?? 0}`,
+    `auto-committed ${result.autoCommitted ?? 0}`,
+    `needs confirmation ${result.needsConfirmation ?? 0}`,
+    `review-queued ${result.reviewQueued ?? 0}`,
+  ];
+  const dropped = result.dropped?.length ?? 0;
+  if (dropped > 0) {
+    const reasons = (result.dropped || [])
+      .slice(0, 4)
+      .map((row) => row.reason)
+      .join('; ');
+    parts.push(`dropped ${dropped}${reasons ? ` (${reasons})` : ''}`);
+  }
+  if (result.status === 'partial') parts.unshift('partial');
+  if (result.status === 'failed' && result.error) parts.unshift(result.error);
+  return parts.join(' · ');
 }
 
 export function ApprovalCardView({
@@ -84,7 +104,33 @@ export function ApprovalCardView({
           </Button>
         </div>
       ) : (
-        <div className="mt-2 text-[11px] capitalize text-muted-foreground">{approval.status}</div>
+        <div className="mt-2 space-y-2">
+          <div className="text-[11px] capitalize text-muted-foreground">{approval.status}</div>
+          {approval.status === 'failed' && approval.error && (
+            <div
+              data-testid="approval-error"
+              className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5"
+            >
+              <p className="line-clamp-3 min-w-0 flex-1 text-[11px] text-red-600">{approval.error}</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 shrink-0 px-1.5 text-[10px]"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(approval.error || '');
+                }}
+              >
+                <Copy className="mr-1 h-3 w-3" /> Copy
+              </Button>
+            </div>
+          )}
+          {(approval.status === 'executed' || approval.executionResult) && approval.executionResult && (
+            <div data-testid="approval-result" className="rounded-md border border-emerald-500/20 bg-background/60 px-2 py-1.5 text-[11px] text-foreground/90">
+              {formatExecutionSummary(approval.executionResult)}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

@@ -406,7 +406,11 @@ async function defaultCountPageItems(
   const contentRevision = pdfData?.contentRevision ?? 0;
   const cached = getLatestFullPageAnalysis(docId, page, contentRevision);
   if (cached?.analysis) {
-    return countItemsFromAnalysis(cached.analysis, query, { source: 'cache' });
+    return countItemsFromAnalysis(cached.analysis, query, {
+      source: 'cache',
+      pageWidth: pdfData?.originalPageWidth,
+      pageHeight: pdfData?.originalPageHeight,
+    });
   }
 
   // Cache miss: ALWAYS run a broad, unprompted full-page analysis, then filter
@@ -428,7 +432,11 @@ async function defaultCountPageItems(
     };
   }
 
-  return countItemsFromAnalysis(analyzed.analysis, query, { source: 'fresh_analysis' });
+  return countItemsFromAnalysis(analyzed.analysis, query, {
+    source: 'fresh_analysis',
+    pageWidth: pdfData?.originalPageWidth,
+    pageHeight: pdfData?.originalPageHeight,
+  });
 }
 
 /**

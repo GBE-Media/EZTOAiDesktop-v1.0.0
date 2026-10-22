@@ -145,6 +145,7 @@ const coreTools: AssistantToolDefinition[] = [
     description:
       'Count or filter fixtures/symbols already detected on a page (by type/name query such as "light", "Type A", "receptacle"). '
       + 'Uses a cached broad (unprompted) full-page analysis when available; otherwise runs one broad analyze_page then filters client-side. '
+      + 'Returns compact items with id, code, DocPoint x/y (not 0–100 percents), and confidence for place_markups.itemIds. '
       + 'Prefer this over repeatedly calling analyze_page for counting questions.',
     risk: 'read',
     requiresConfirmation: false,
@@ -268,10 +269,14 @@ const coreTools: AssistantToolDefinition[] = [
     id: 'place_markups',
     title: 'Place document markups',
     description:
-      'Place verified document markups (DocPoint coordinates) after user approval. '
+      'Place verified document markups after user approval. Preferred row shape is PlacementMarkup: '
+      + '{type, page, points:[{x,y}] as PDF DocPoints, label, optional productId}. '
+      + 'ChatMarkupPointer {point, ref} is still accepted. '
+      + 'For count markers: call count_page_items first, then place_markups with itemIds '
+      + '(cached DocPoints; do not invent coordinates). Optional includeReviewMarkers places '
+      + 'unresolved/low-confidence items as visually distinct unconfirmed markers. '
       + 'Optional productId on count-marker/measurement rows binds the real catalog product '
-      + '(from search_catalog confidentMatches) the same way the Products panel count tool does. '
-      + 'Omit productId when search_catalog returns noConfidentMatch.',
+      + '(from search_catalog confidentMatches). Omit productId when noConfidentMatch.',
     undoable: true,
     risk: 'write',
     verifyWith: ['inspect_markups'],
