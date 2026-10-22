@@ -78,7 +78,7 @@ export function commitMarkupsByConfidence(options: {
   addAIMarkupBatch: (
     markups: PageMarkupPair[],
     pending?: boolean,
-  ) => { ok: boolean; placed: number; reason?: string } | void;
+  ) => { ok: boolean; placed: number; reason?: string; markups?: PageMarkupPair[] } | void;
   setPendingPlacements: (rows: PendingPlacementRow[]) => void;
   getPendingPlacements?: () => PendingPlacementRow[];
 }): {
@@ -92,16 +92,29 @@ export function commitMarkupsByConfidence(options: {
     forceConfirm: options.forceConfirm,
   });
 
-  const runBatch = (batch: PageMarkupPair[], pending: boolean): string | undefined => {
-    if (batch.length === 0) return undefined;
+  const runBatch = (batch: PageMarkupPair[], pending: boolean): {
+    failedReason?: string;
+    markups: PageMarkupPair[];
+  } => {
+    if (batch.length === 0) return { markups: [] };
     const result = options.addAIMarkupBatch(batch, pending);
     if (result && typeof result === 'object' && result.ok === false) {
-      return result.reason || 'Could not place markups (no active document)';
+      return {
+        failedReason: result.reason || 'Could not place markups (no active document)',
+        markups: [],
+      };
     }
-    return undefined;
+    const placed = result && typeof result === 'object' && Array.isArray(result.markups)
+      ? result.markups
+      : batch;
+    return { markups: placed };
   };
 
-  const failedReason = runBatch(auto, false) || runBatch(confirm, true);
+  const autoResult = runBatch(auto, false);
+  const confirmResult = autoResult.failedReason
+    ? { failedReason: autoResult.failedReason, markups: [] as PageMarkupPair[] }
+    : runBatch(confirm, true);
+  const failedReason = autoResult.failedReason || confirmResult.failedReason;
   if (failedReason) {
     return {
       auto: 0,
@@ -113,7 +126,7 @@ export function commitMarkupsByConfidence(options: {
   }
 
   const pendingRows: PendingPlacementRow[] = [
-    ...confirm.map(({ page, markup }) => ({
+    ...confirmResult.markups.map(({ page, markup }) => ({
       id: markup.id,
       type: markup.type,
       page: markup.page || page,

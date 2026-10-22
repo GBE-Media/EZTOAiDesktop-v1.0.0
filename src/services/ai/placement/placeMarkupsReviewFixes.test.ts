@@ -5,7 +5,12 @@ import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { createPageGeometry } from './coords';
 import { executePlaceMarkupsApproval, newDirectPlaceMarkupsApprovalId } from './executePlaceMarkupsApproval';
-import { resolveMarkupDrawAppearance } from '@/components/editor/markupDrawAppearance';
+import {
+  countMarkerCaption,
+  resolveMarkupDrawAppearance,
+} from '@/components/editor/markupDrawAppearance';
+import { commitMarkupsByConfidence } from './confidenceGate';
+import { useProductStore } from '@/store/productStore';
 import { summarizeMarkupsForChat } from '../contextSummary';
 import { handleApprovalDecision, resetApprovalInFlightForTests } from './handleApprovalDecision';
 import { normalizeAgentMarkupPayload } from './normalizeAgentMarkupPayload';
@@ -336,6 +341,42 @@ describe('itemIds analysisRef + duplicate markup ids', () => {
     expect(new Set(markups.map(m => m.id)).size).toBe(2);
   });
 
+  it('pending rows and product links use the re-ID after a colliding batch', () => {
+    seedDoc('doc-a');
+    useProductStore.getState().loadFromDatabase({
+      'prod-a': {
+        id: 'prod-a',
+        name: 'Fixture A',
+        type: 'product',
+        parentId: null,
+        children: [],
+        expanded: false,
+        unitOfMeasure: 'ea',
+      },
+    }, ['prod-a']);
+    const existing = countMarker('dup', { x: 10, y: 20 });
+    useCanvasStore.getState().addAIMarkupBatch([{ page: 1, markup: existing }], false);
+    let pendingIds: string[] = [];
+    const incoming = countMarker('dup', { x: 40, y: 50, productId: 'prod-a', aiConfidence: 0.6 });
+    commitMarkupsByConfidence({
+      markups: [{ page: 1, markup: incoming }],
+      addAIMarkupBatch: (rows, pending) => useCanvasStore.getState().addAIMarkupBatch(rows, pending),
+      setPendingPlacements: rows => {
+        pendingIds = rows.map(row => row.id);
+      },
+      getPendingPlacements: () => [],
+    });
+    const markups = pageMarkups('doc-a');
+    expect(markups[0].id).toBe('dup');
+    expect((markups[0] as CountMarkerMarkup).productId).toBeUndefined();
+    const placed = markups[1];
+    expect(placed.id).not.toBe('dup');
+    expect(pendingIds).toEqual([placed.id]);
+    const linked = useProductStore.getState().getMeasurementByMarkupId(placed.id);
+    expect(linked?.productId).toBe('prod-a');
+    expect(useProductStore.getState().getMeasurementByMarkupId('dup')).toBeNull();
+  });
+
   it('review markers are drawn on the canvas, amber dashed, and excluded from totals', async () => {
     seedDoc('doc-a');
     const revision = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
@@ -377,6 +418,7 @@ describe('itemIds analysisRef + duplicate markup ids', () => {
     expect(markups[0].reviewMarker).toBe(true);
     expect(markups[0].aiPending).toBe(true);
     expect(markups[0].label).toBe('?');
+    expect(countMarkerCaption(markups[0])).toBe('?');
     const appearance = resolveMarkupDrawAppearance({ markup: markups[0], scale: 1 });
     expect(appearance.strokeStyle).toBe('#f59e0b');
     expect(appearance.lineDash).toEqual([6, 4]);
@@ -386,6 +428,9 @@ describe('itemIds analysisRef + duplicate markup ids', () => {
     const confirmed = pageMarkups('doc-a')[0];
     expect(confirmed.reviewMarker).toBe(false);
     expect(confirmed.aiPending).toBe(false);
+    expect(confirmed.label).not.toBe('?');
+    expect(confirmed.style.strokeColor).toBe('#10b981');
+    expect(countMarkerCaption(confirmed)).toBeNull();
     expect(summarizeMarkupsForChat({ 1: [confirmed] }, 1)).toMatch(/count-marker/);
     expect(resolveMarkupDrawAppearance({ markup: confirmed, scale: 1 }).strokeStyle).toBeUndefined();
   });

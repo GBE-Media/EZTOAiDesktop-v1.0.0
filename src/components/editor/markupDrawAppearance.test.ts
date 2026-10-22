@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { resolveMarkupDrawAppearance } from './markupDrawAppearance';
+import {
+  confirmedCountMarkerFields,
+  countMarkerCaption,
+  resolveMarkupDrawAppearance,
+} from './markupDrawAppearance';
 import type { CanvasMarkup } from '@/types/markup';
 
 const base: CanvasMarkup = {
@@ -54,5 +58,25 @@ describe('resolveMarkupDrawAppearance', () => {
       pendingBadge: false,
     });
     expect(resolveMarkupDrawAppearance({ markup: base }).pendingBadge).toBe(false);
+  });
+
+  it('review count-marker draw path includes "?" and confirmed markers drop it', () => {
+    const review = {
+      ...base,
+      type: 'count-marker' as const,
+      reviewMarker: true,
+      label: '?',
+      x: 10,
+      y: 20,
+      number: 1,
+      groupId: 'g',
+    };
+    expect(countMarkerCaption(review)).toBe('?');
+    const confirmed = { ...review, ...confirmedCountMarkerFields(review) };
+    expect(confirmed.reviewMarker).toBe(false);
+    expect(confirmed.label).toBeUndefined();
+    expect(confirmed.style.strokeColor).toBe('#10b981');
+    expect(countMarkerCaption(confirmed)).toBeNull();
+    expect(resolveMarkupDrawAppearance({ markup: confirmed as CanvasMarkup }).strokeStyle).toBeUndefined();
   });
 });

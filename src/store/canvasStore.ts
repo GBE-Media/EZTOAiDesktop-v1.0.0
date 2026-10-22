@@ -15,6 +15,7 @@ import {
 } from '@/services/ai/placement/pageCalibration';
 import { buildMeasurementFromMarkup } from '@/services/ai/catalog/measurementFromMarkup';
 import { attachProductsForPlacedMarkups } from '@/services/ai/catalog/linkPlacedProducts';
+import { confirmedCountMarkerFields } from '@/components/editor/markupDrawAppearance';
 import { extractVectorPaths, nearestPointOnLine, type DocumentSnapData, type DocumentLine } from '@/lib/pdfVectorExtractor';
 import { clearPageAnalysisCache } from '@/services/ai/agent/pageAnalysisCache';
 
@@ -227,7 +228,12 @@ interface CanvasActions {
   addAIMarkupBatch: (
     markups: Array<{ page: number; markup: CanvasMarkup }>,
     pending?: boolean,
-  ) => { ok: boolean; placed: number; reason?: string };
+  ) => {
+    ok: boolean;
+    placed: number;
+    reason?: string;
+    markups?: Array<{ page: number; markup: CanvasMarkup }>;
+  };
   confirmAIMarkup: (page: number, id: string) => void;
   confirmAllAIMarkups: () => void;
   rejectAIMarkup: (page: number, id: string) => void;
@@ -1419,6 +1425,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
 
     // Group markups by page
     const markupsByPage = { ...docData.markupsByPage };
+    const placed: Array<{ page: number; markup: CanvasMarkup }> = [];
     
     for (const { page, markup } of markups) {
       const aiMarkup = {
@@ -1433,6 +1440,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
         markupsByPage[page] = [];
       }
       markupsByPage[page] = [...markupsByPage[page], aiMarkup];
+      placed.push({ page, markup: aiMarkup });
     }
 
     useHistoryStore.getState().pushHistory({
@@ -1461,23 +1469,19 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
 
     // Mirror manual count/measure: productId on markup → productStore measurement link.
     attachProductsForPlacedMarkups(
-      markups
-        .filter(({ markup }) => !markup.reviewMarker)
-        .map(({ page, markup }) => ({
-          page,
-          markup: {
-            ...markup,
-            aiGenerated: true,
-            aiPending: typeof markup.aiPending === 'boolean' ? markup.aiPending : pending,
-          } as CanvasMarkup,
-        })),
+      placed.filter(({ markup }) => !markup.reviewMarker),
       state.activeDocId,
     );
-    return { ok: true, placed: markups.length };
+    return { ok: true, placed: placed.length, markups: placed };
   },
   
   confirmAIMarkup: (page, id) => {
-    get().updateMarkup(page, id, { aiPending: false, reviewMarker: false });
+    const state = get();
+    const docId = state.activeDocId;
+    const existing = docId
+      ? (state.pdfDocuments[docId]?.markupsByPage[page] || []).find(row => row.id === id)
+      : undefined;
+    get().updateMarkup(page, id, confirmedCountMarkerFields(existing));
   },
   
   confirmAllAIMarkups: () => {
@@ -1493,7 +1497,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
       const page = parseInt(pageNum);
       markupsByPage[page] = markupsByPage[page].map(markup =>
         (markup.aiPending || markup.reviewMarker)
-          ? { ...markup, aiPending: false, reviewMarker: false }
+          ? { ...markup, ...confirmedCountMarkerFields(markup) } as CanvasMarkup
           : markup
       );
     }

@@ -28,7 +28,7 @@ import type {
   StampPreset,
 } from '@/types/markup';
 import { TextEditOverlay } from './TextEditOverlay';
-import { resolveMarkupDrawAppearance } from './markupDrawAppearance';
+import { countMarkerCaption, resolveMarkupDrawAppearance } from './markupDrawAppearance';
 import {
   computeAreaMeasurementFromPoints,
   computeLengthMeasurement,
@@ -728,6 +728,17 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           ctx.arc(m.x, m.y, radius + 4, 0, Math.PI * 2);
           ctx.stroke();
           ctx.setLineDash([]);
+        }
+
+        const caption = countMarkerCaption(markup);
+        if (caption) {
+          ctx.fillStyle = pendingAppearance.strokeStyle || markup.style.strokeColor;
+          ctx.font = 'bold 12px Arial';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(caption, m.x, m.y);
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'alphabetic';
         }
         break;
       }
