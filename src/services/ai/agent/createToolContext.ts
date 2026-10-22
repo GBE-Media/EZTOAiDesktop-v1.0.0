@@ -26,6 +26,7 @@ import {
 } from './pageAnalysisCache';
 import {
   activateEditorToolOnCanvas,
+  ensurePageGeometry,
   executeDeleteMarkups,
   executeUpdateMarkups,
 } from './markupMutations';
@@ -385,6 +386,13 @@ async function defaultCountPageItems(
     ? raw.page
     : null;
   const query = typeof raw.query === 'string' ? raw.query.trim() : '';
+  const offset = typeof raw.offset === 'number' && Number.isInteger(raw.offset) && raw.offset >= 0
+    ? raw.offset
+    : undefined;
+  const limit = typeof raw.limit === 'number' && Number.isInteger(raw.limit) && raw.limit > 0
+    ? raw.limit
+    : undefined;
+  const code = typeof raw.code === 'string' ? raw.code.trim() : '';
 
   if (page == null) {
     return {
@@ -405,11 +413,15 @@ async function defaultCountPageItems(
   const pdfData = canvas.pdfDocuments[docId];
   const contentRevision = pdfData?.contentRevision ?? 0;
   const cached = getLatestFullPageAnalysis(docId, page, contentRevision);
+  const pageGeometry = await ensurePageGeometry(page);
   if (cached?.analysis) {
     return countItemsFromAnalysis(cached.analysis, query, {
       source: 'cache',
-      pageWidth: pdfData?.originalPageWidth,
-      pageHeight: pdfData?.originalPageHeight,
+      pageGeometry,
+      analysisRef: cached.analysisRef,
+      offset,
+      limit,
+      code: code || undefined,
     });
   }
 
@@ -432,10 +444,14 @@ async function defaultCountPageItems(
     };
   }
 
+  const latest = getLatestFullPageAnalysis(docId, page, contentRevision);
   return countItemsFromAnalysis(analyzed.analysis, query, {
     source: 'fresh_analysis',
-    pageWidth: pdfData?.originalPageWidth,
-    pageHeight: pdfData?.originalPageHeight,
+    pageGeometry,
+    analysisRef: latest?.analysisRef || analyzed.analysisRef,
+    offset,
+    limit,
+    code: code || undefined,
   });
 }
 

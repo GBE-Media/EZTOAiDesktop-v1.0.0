@@ -75,6 +75,7 @@ export interface ApprovalRequest {
   undoable: boolean;
   createdAt: string;
   resolvedAt?: string;
+  executing?: boolean;
   error?: string;
   executionResult?: {
     status?: 'ok' | 'partial' | 'failed' | string;

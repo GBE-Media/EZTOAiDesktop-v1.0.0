@@ -96,4 +96,19 @@ describe('confidence placement gating (Phase 4 Step 3)', () => {
     expect(confirm.map(item => item.markup.id)).toEqual(['high']);
     expect(review.map(item => item.markup.id)).toEqual(['low']);
   });
+
+  it('does not write pending placements when the canvas batch fails', () => {
+    let pendingWrites = 0;
+    const result = commitMarkupsByConfidence({
+      markups: [{ page: 1, markup: markup('mid', 0.6) }],
+      addAIMarkupBatch: () => ({ ok: false, placed: 0, reason: 'No active document' }),
+      setPendingPlacements: () => {
+        pendingWrites += 1;
+      },
+      getPendingPlacements: () => [],
+    });
+    expect(result.failedReason).toMatch(/No active document/);
+    expect(result.placed).toBe(0);
+    expect(pendingWrites).toBe(0);
+  });
 });

@@ -1,5 +1,6 @@
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
 import type { ApprovalRequest } from '@/types/assistant';
+import { isPageAnalysisRef } from '../agent/pageAnalysisRef';
 import { commitMarkupsByConfidence } from './confidenceGate';
 import { normalizeAgentMarkupPayload, type NormalizeDroppedRow } from './normalizeAgentMarkupPayload';
 import { placementMarkupsFromCachedItemIds } from './cachedCountMarkers';
@@ -65,15 +66,41 @@ export async function executePlaceMarkupsApproval(options: {
   const dropped: MarkupExecutionResult['dropped'] = [];
 
   if (itemIds.length > 0) {
-    const page = (payload && typeof payload === 'object' && typeof (payload as { page?: unknown }).page === 'number')
-      ? (payload as { page: number }).page
-      : options.page;
+    const rec = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+    if (typeof rec.page !== 'number' || !Number.isInteger(rec.page) || rec.page <= 0) {
+      const reason = 'place_markups with itemIds requires page';
+      return {
+        status: 'failed',
+        placed: 0,
+        autoCommitted: 0,
+        needsConfirmation: 0,
+        reviewQueued: 0,
+        dropped: itemIds.map(itemId => ({ itemId, reason })),
+        error: reason,
+        perMarker: itemIds.map(itemId => ({ itemId, reason })),
+      };
+    }
+    if (!isPageAnalysisRef(rec.analysisRef)) {
+      const reason = 'place_markups with itemIds requires analysisRef';
+      return {
+        status: 'failed',
+        placed: 0,
+        autoCommitted: 0,
+        needsConfirmation: 0,
+        reviewQueued: 0,
+        dropped: itemIds.map(itemId => ({ itemId, reason })),
+        error: reason,
+        perMarker: itemIds.map(itemId => ({ itemId, reason })),
+      };
+    }
+    const page = rec.page;
     const fromCache = placementMarkupsFromCachedItemIds({
       itemIds,
       page,
       includeReviewMarkers: includeReview,
       idPrefix: `agent_${options.approval.messageId}`,
       defaultStyle: options.defaultStyle,
+      analysisRef: rec.analysisRef,
     });
     for (const drop of fromCache.dropped) {
       dropped.push({ itemId: drop.itemId, reason: drop.reason });
@@ -149,20 +176,15 @@ export async function executePlaceMarkupsApproval(options: {
     };
   }
 
-  const batchResults: Array<{ ok: boolean; placed: number; reason?: string }> = [];
   const gated = commitMarkupsByConfidence({
     markups,
     forceConfirm: options.placementMode === 'confirm',
-    addAIMarkupBatch: (batch, pending) => {
-      const result = options.addAIMarkupBatch(batch, pending);
-      if (result && typeof result === 'object') batchResults.push(result);
-    },
+    addAIMarkupBatch: options.addAIMarkupBatch,
     setPendingPlacements: options.setPendingPlacements,
     getPendingPlacements: options.getPendingPlacements,
   });
 
-  const failedBatch = batchResults.find(row => row.ok === false);
-  if (failedBatch) {
+  if (gated.failedReason) {
     return {
       status: 'failed',
       placed: 0,
@@ -170,7 +192,7 @@ export async function executePlaceMarkupsApproval(options: {
       needsConfirmation: 0,
       reviewQueued: 0,
       dropped,
-      error: failedBatch.reason || 'Could not place markups (no active document)',
+      error: gated.failedReason,
       perMarker: dropped,
     };
   }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ApprovalCardView, formatApprovalPreview } from './ApprovalCard';
+import { ApprovalCardView, formatApprovalPreview, formatExecutionSummary } from './ApprovalCard';
 import type { ApprovalRequest } from '@/types/assistant';
 
 const baseApproval: ApprovalRequest = {
@@ -79,7 +79,34 @@ describe('ApprovalCard preview', () => {
     expect(html).toContain('data-testid="approval-result"');
     expect(html).toContain('placed 25');
     expect(html).toContain('dropped 1');
-    expect(html).toContain('no point/points');
+    expect(html).toContain('row 1: no point/points');
+    expect(html).toContain('data-testid="approval-dropped"');
+  });
+
+  it('disables approve while executing and does not repeat the failure reason', () => {
+    const html = renderToStaticMarkup(
+      <ApprovalCardView
+        approval={{
+          ...baseApproval,
+          executing: true,
+        }}
+      />,
+    );
+    expect(html).toMatch(/disabled/);
+    expect(html).toContain('Placing');
+
+    const summary = formatExecutionSummary({
+      status: 'failed',
+      placed: 0,
+      error: '0 of 26 markers had usable coordinates (row 1: no point/points)',
+      dropped: [
+        { index: 0, reason: 'no point/points' },
+        { index: 0, reason: 'no point/points' },
+        { itemId: 'a1', reason: 'not in cached page analysis' },
+      ],
+    });
+    expect(summary).not.toContain('0 of 26 markers');
+    expect(summary).toContain('dropped 3');
   });
 
   it('omits the preview section when preview is absent', () => {

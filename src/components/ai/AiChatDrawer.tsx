@@ -36,6 +36,7 @@ import {
   verifyPlacementMarkupsWithGeometryGate,
 } from '@/services/ai/placement';
 import { executePlaceMarkupsApproval } from '@/services/ai/placement/executePlaceMarkupsApproval';
+import { handleApprovalDecision } from '@/services/ai/placement/handleApprovalDecision';
 import { useEditorStore } from '@/store/editorStore';
 import { useProductSync } from '@/hooks/useProductSync';
 import { ChatMessage } from './ChatMessage';
@@ -59,7 +60,6 @@ import {
 } from '@/services/ai/assistantOrchestrator';
 import type { EvidenceCitation } from '@/types/assistant';
 import {
-  executeApprovedAssistantAction,
   proposeAssistantMutation,
 } from '@/services/ai/tools/registry';
 import {
@@ -68,7 +68,6 @@ import {
   createAgentToolContext,
   labelForAgentStatus,
   registerAllAgentTools,
-  resumeTaskAfterApproval,
   resumeTaskAfterClarification,
   startAgentTask,
   startPipelineTask,
@@ -978,131 +977,19 @@ export function AgentAssistantDrawer() {
 
   useEffect(() => {
     const handleApproval = (event: Event) => {
-      void (async () => {
       const detail = (event as CustomEvent<{ approvalId: string; decision: 'approved' | 'rejected' }>).detail;
-      const store = useAIChatStore.getState();
-      const approval = store.approvals[detail.approvalId];
-      if (!approval || approval.status !== 'pending') return;
-
-      const continueAgent = async (decision: 'approved' | 'rejected', executionResult?: unknown) => {
-        const toolContext = createEditorToolContext(approval.runId, approval.messageId);
-        try {
-          setPipelineStatus({ isRunning: true, message: 'Continuing assistant…', progress: 60 });
-          const orchestrated = await resumeTaskAfterApproval({
-            runId: approval.runId,
-            approval,
-            decision,
-            toolContext,
-            executionResult,
-          });
-          const result = orchestrated.agentResult;
-          if (!result) return;
-          const assistantMessage = result.assistantMessage || 'The assistant could not continue this task.';
-          if (orchestrated.errorCode === 'SESSION_EXPIRED') {
-            store.finishRun(approval.runId, 'completed');
-            const existing = store.messages.find(message => message.id === approval.messageId);
-            const placed = (executionResult as { placed?: number } | undefined)?.placed;
-            store.updateMessage(approval.messageId, {
-              content: `${existing?.content || ''}\n\n${
-                decision === 'rejected'
-                  ? 'Callout placement was declined. The document was not changed.'
-                  : `✓ ${typeof placed === 'number'
-                      ? `Placed ${placed} callout${placed === 1 ? '' : 's'}`
-                      : 'Approved action executed'
-                    }. Use Undo to revert this batch.`
-              }`,
-              isLoading: false,
-            });
-            return;
-          }
-          store.updateMessage(approval.messageId, {
-            content: assistantMessage,
-            isLoading: false,
-            error: result.status === 'failed' ? assistantMessage : undefined,
-          });
-          if (result.status === 'failed') {
-            store.finishRun(approval.runId, 'error', assistantMessage);
-          }
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          store.updateMessage(approval.messageId, {
-            isLoading: false,
-            error: errorMessage,
-          });
-          store.finishRun(approval.runId, 'error', errorMessage);
-        } finally {
-          setPipelineStatus({ isRunning: false, progress: 0, message: '' });
-        }
-      };
-
-      if (detail.decision === 'rejected') {
-        store.resolveApproval(approval.id, 'rejected');
-        void continueAgent('rejected');
-        return;
-      }
-
-      try {
-        let executionResult: unknown;
-        if (
-          approval.toolId === 'place_markups'
-          || approval.toolId === 'propose_callouts'
-        ) {
-          const canvas = useCanvasStore.getState();
-          const docId = canvas.activeDocId;
-          const pdf = docId ? canvas.pdfDocuments[docId] : null;
-          executionResult = await executePlaceMarkupsApproval({
-            approval,
-            page: canvas.getCurrentPage() || 1,
-            pageWidth: pdf?.originalPageWidth || pageWidth,
-            pageHeight: pdf?.originalPageHeight || pageHeight,
-            defaultStyle,
-            pdfDocument: pdf?.pdfDocument || null,
-            placementMode,
-            addAIMarkupBatch,
-            setPendingPlacements,
-            getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
-          });
-        } else {
-          const toolContext = createAgentToolContext({
-            runId: approval.runId,
-            messageId: approval.messageId,
-            trade: store.selectedTrade,
-            placeMarkups: () => ({ placed: 0 }),
-          });
-          executionResult = await executeApprovedAssistantAction(approval, toolContext);
-        }
-
-        const placedResult = executionResult && typeof executionResult === 'object'
-          ? executionResult as { status?: string; error?: string }
-          : undefined;
-        if (placedResult?.status === 'failed') {
-          store.resolveApproval(
-            approval.id,
-            'failed',
-            placedResult.error || 'Placement failed',
-            placedResult,
-          );
-        } else {
-          store.resolveApproval(
-            approval.id,
-            'executed',
-            placedResult?.status === 'partial' ? placedResult.error : undefined,
-            placedResult,
-          );
-        }
-
-        void continueAgent('approved', executionResult);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const failedResult = { status: 'failed' as const, error: message, placed: 0 };
-        store.resolveApproval(approval.id, 'failed', message, failedResult);
-        void continueAgent('approved', failedResult);
-      }
-      })();
+      void handleApprovalDecision(detail.approvalId, detail.decision, {
+        pageWidth,
+        pageHeight,
+        defaultStyle,
+        placementMode,
+        setPipelineStatus,
+        createEditorToolContext,
+      });
     };
     window.addEventListener('bidveraai:approval', handleApproval);
     return () => window.removeEventListener('bidveraai:approval', handleApproval);
-  }, [addAIMarkupBatch, createEditorToolContext, defaultStyle, pageHeight, pageWidth, placementMode, setPendingPlacements, setPipelineStatus]);
+  }, [createEditorToolContext, defaultStyle, pageHeight, pageWidth, placementMode, setPipelineStatus]);
 
   useEffect(() => {
     const handleClarification = (event: Event) => {

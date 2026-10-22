@@ -145,7 +145,8 @@ const coreTools: AssistantToolDefinition[] = [
     description:
       'Count or filter fixtures/symbols already detected on a page (by type/name query such as "light", "Type A", "receptacle"). '
       + 'Uses a cached broad (unprompted) full-page analysis when available; otherwise runs one broad analyze_page then filters client-side. '
-      + 'Returns compact items with id, code, DocPoint x/y (not 0–100 percents), and confidence for place_markups.itemIds. '
+      + 'Returns compact items with id, code, DocPoint x/y (not 0–100 percents), analysisRef, and optional confidence. '
+      + 'If truncated, pass offset/limit or code to page through remaining itemIds. '
       + 'Prefer this over repeatedly calling analyze_page for counting questions.',
     risk: 'read',
     requiresConfirmation: false,
@@ -153,6 +154,12 @@ const coreTools: AssistantToolDefinition[] = [
     schema: z.object({
       page: z.number().int().positive(),
       query: z.string().min(1).describe('Fixture/symbol type or name to count, e.g. "light" or "Type A"'),
+      offset: z.number().int().nonnegative().optional()
+        .describe('Skip this many matching items (use nextOffset from a truncated result).'),
+      limit: z.number().int().positive().max(50).optional()
+        .describe('Max matching item rows to return (default fills the size budget, cap 50).'),
+      code: z.string().min(1).optional()
+        .describe('Return only matching items with this legend type code.'),
     }),
     execute: async (context, input) => {
       if (!context.countPageItems) {
@@ -272,9 +279,10 @@ const coreTools: AssistantToolDefinition[] = [
       'Place verified document markups after user approval. Preferred row shape is PlacementMarkup: '
       + '{type, page, points:[{x,y}] as PDF DocPoints, label, optional productId}. '
       + 'ChatMarkupPointer {point, ref} is still accepted. '
-      + 'For count markers: call count_page_items first, then place_markups with itemIds '
-      + '(cached DocPoints; do not invent coordinates). Optional includeReviewMarkers places '
-      + 'unresolved/low-confidence items as visually distinct unconfirmed markers. '
+      + 'For count markers: call count_page_items first, then place_markups with itemIds, page, '
+      + 'and the analysisRef from that result (cached DocPoints; do not invent coordinates). '
+      + 'Optional includeReviewMarkers places unresolved/low-confidence items as visually distinct '
+      + 'unconfirmed markers (dashed, “?”, excluded from confirmed counts). '
       + 'Optional productId on count-marker/measurement rows binds the real catalog product '
       + '(from search_catalog confidentMatches). Omit productId when noConfidentMatch.',
     undoable: true,

@@ -353,17 +353,19 @@ export async function normalizeAgentMarkupPayload(
     pageNumber: number,
     points: NonNullable<ReturnType<typeof readDocPointsArray>>,
   ): PlacementMarkup => ({
-    id: typeof row.id === 'string' && row.id.trim()
-      ? row.id
-      : `${options.idPrefix}_${coercePlacementType(row.type)}_${index + 1}`,
+    id: `${options.idPrefix}_${coercePlacementType(row.type)}_${index + 1}`,
     type: coercePlacementType(row.type),
     page: pageNumber,
     points,
     style: defaultStyle,
-    label: typeof row.label === 'string' ? row.label : undefined,
+    label: typeof row.label === 'string' && row.label.trim()
+      ? row.label
+      : (typeof row.id === 'string' && row.id.trim() ? row.id : undefined),
     content: typeof row.content === 'string' ? row.content : undefined,
     productId: typeof row.productId === 'string' && row.productId.trim() ? row.productId : undefined,
-    linkedItemId: typeof row.linkedItemId === 'string' ? row.linkedItemId : undefined,
+    linkedItemId: typeof row.linkedItemId === 'string' && row.linkedItemId.trim()
+      ? row.linkedItemId
+      : (typeof row.id === 'string' && row.id.trim() ? row.id : undefined),
     confidence: typeof row.confidence === 'number' && Number.isFinite(row.confidence)
       ? Math.max(0, Math.min(1, row.confidence))
       : 0.85,

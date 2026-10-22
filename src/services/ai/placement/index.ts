@@ -64,6 +64,11 @@ export {
   detectionPctToDocPointerFields,
 } from './parseChatMarkupPointer';
 export {
+  visionDisplayPctToDoc,
+  visionLocationToDocPoint,
+  pageGeometryFromUnrotated,
+} from './visionDisplayPctToDoc';
+export {
   nonePageCalibration,
   pageCalibrationFromManualMeasure,
   pageCalibrationFromLegacyGlobal,

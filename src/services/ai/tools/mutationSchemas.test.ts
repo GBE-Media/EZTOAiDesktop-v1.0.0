@@ -88,6 +88,24 @@ describe('mutationSchemas', () => {
       markupIds: ['m1', 'm2'],
     });
     expect(mismatched.success).toBe(false);
+
+    expect(placeMarkupsSchema.safeParse({
+      description: 'itemIds without analysisRef',
+      itemIds: ['a1'],
+      page: 1,
+    }).success).toBe(false);
+
+    expect(placeMarkupsSchema.safeParse({
+      description: 'itemIds with analysisRef',
+      itemIds: ['a1'],
+      page: 1,
+      analysisRef: {
+        docId: 'doc-a',
+        page: 1,
+        revision: 1,
+        analyzedAt: '2026-01-01T00:00:00.000Z',
+      },
+    }).success).toBe(true);
   });
 
   it('propose_callouts requires ChatMarkupPointer rows and rejects place markup geometry', () => {

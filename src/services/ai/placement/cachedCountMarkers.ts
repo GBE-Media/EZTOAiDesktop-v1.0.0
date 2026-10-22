@@ -1,13 +1,23 @@
 import type { DetectedItem } from '../providers/types';
 import type { PlacementMarkup } from '../providers/types';
 import { NO_CONFIDENT_MATCH, normalizeMatchConfidence } from '../detection/visionLegendClassification';
-import { getLatestFullPageAnalysis } from '../agent/pageAnalysisCache';
+import { getLatestFullPageAnalysis, type PageAnalysisRef } from '../agent/pageAnalysisCache';
+import { isPageAnalysisRef } from '../agent/pageAnalysisRef';
 import { useCanvasStore } from '@/store/canvasStore';
-import { detectionPctToDocPointerFields } from './parseChatMarkupPointer';
+import { CONFIDENCE_REVIEW, type PageGeometry } from './types';
+import { pageGeometryFromUnrotated, visionLocationToDocPoint, type DisplayCrop } from './visionDisplayPctToDoc';
 import type { DocPoint } from './types';
 import type { MarkupStyle } from '@/types/markup';
 
 export type CachedItemLookupDrop = { itemId: string; reason: string };
+
+const REVIEW_STYLE = (style: MarkupStyle): PlacementMarkup['style'] => ({
+  strokeColor: '#f59e0b',
+  fillColor: 'rgba(245, 158, 11, 0.16)',
+  strokeWidth: style.strokeWidth,
+  fontSize: style.fontSize,
+  fontFamily: style.fontFamily,
+});
 
 const COUNT_STYLE = (style: MarkupStyle): PlacementMarkup['style'] => ({
   strokeColor: style.strokeColor,
@@ -27,39 +37,89 @@ export function isUnresolvedOrLowCountItem(item: DetectedItem): boolean {
 
 export function detectionLocationToDocPoint(
   item: DetectedItem,
-  pageWidth: number,
-  pageHeight: number,
+  page: PageGeometry | null | undefined,
+  crop?: DisplayCrop,
 ): DocPoint | null {
-  const loc = item.location;
-  if (!loc || typeof loc.x !== 'number' || typeof loc.y !== 'number') return null;
-  if (!Number.isFinite(loc.x) || !Number.isFinite(loc.y)) return null;
-  return detectionPctToDocPointerFields(loc, item.boundingBox, pageWidth, pageHeight).point;
+  return visionLocationToDocPoint(item.location, page, crop);
 }
 
-export function lookupCachedPageItems(page: number): {
+export type CachedPageItemsLookup = {
   items: DetectedItem[];
-  pageWidth: number;
-  pageHeight: number;
+  pageGeometry: PageGeometry | null;
+  analysisRef?: PageAnalysisRef;
   error?: string;
-} {
+};
+
+export function lookupCachedPageItems(options: {
+  page: number;
+  analysisRef?: unknown;
+}): CachedPageItemsLookup {
   const canvas = useCanvasStore.getState();
   const docId = canvas.activeDocId;
-  if (!docId) return { items: [], pageWidth: 0, pageHeight: 0, error: 'No active document' };
+  if (!docId) {
+    return { items: [], pageGeometry: null, error: 'No active document' };
+  }
   const pdf = canvas.pdfDocuments[docId];
-  if (!pdf) return { items: [], pageWidth: 0, pageHeight: 0, error: 'No active document' };
-  const cached = getLatestFullPageAnalysis(docId, page, pdf.contentRevision ?? 0);
+  if (!pdf) {
+    return { items: [], pageGeometry: null, error: 'No active document' };
+  }
+  if (!isPageAnalysisRef(options.analysisRef)) {
+    return {
+      items: [],
+      pageGeometry: null,
+      error: 'place_markups with itemIds requires analysisRef',
+    };
+  }
+  const analysisRef = options.analysisRef;
+  if (analysisRef.page !== options.page) {
+    return {
+      items: [],
+      pageGeometry: null,
+      error: 'analysisRef.page does not match page',
+    };
+  }
+  if (analysisRef.docId !== docId) {
+    return {
+      items: [],
+      pageGeometry: null,
+      error: 'Active document does not match analysisRef; ask the AI to count again',
+    };
+  }
+  const revision = pdf.contentRevision ?? 0;
+  if (analysisRef.revision !== revision) {
+    return {
+      items: [],
+      pageGeometry: null,
+      error: 'Document revision changed after counting; ask the AI to count again',
+    };
+  }
+  const cached = getLatestFullPageAnalysis(docId, options.page, revision);
   if (!cached?.analysis?.items) {
     return {
       items: [],
-      pageWidth: pdf.originalPageWidth || 0,
-      pageHeight: pdf.originalPageHeight || 0,
-      error: `No cached page analysis for page ${page}`,
+      pageGeometry: canvas.getPageGeometry(options.page),
+      error: `No cached page analysis for page ${options.page}`,
     };
   }
+  if (cached.analysisRef && cached.analysisRef.analyzedAt !== analysisRef.analyzedAt) {
+    return {
+      items: [],
+      pageGeometry: canvas.getPageGeometry(options.page),
+      analysisRef: cached.analysisRef,
+      error: 'Page was re-analyzed after counting; ask the AI to count again',
+    };
+  }
+  const stored = canvas.getPageGeometry(options.page);
+  const pageGeometry = stored || pageGeometryFromUnrotated({
+    pageNumber: options.page,
+    docWidth: pdf.originalPageWidth || 0,
+    docHeight: pdf.originalPageHeight || 0,
+    rotationDeg: 0,
+  });
   return {
     items: cached.analysis.items,
-    pageWidth: pdf.originalPageWidth || 0,
-    pageHeight: pdf.originalPageHeight || 0,
+    pageGeometry,
+    analysisRef: cached.analysisRef,
   };
 }
 
@@ -74,17 +134,31 @@ export function placementMarkupsFromCachedItemIds(options: {
   includeReviewMarkers?: boolean;
   idPrefix: string;
   defaultStyle: MarkupStyle;
+  pageGeometry?: PageGeometry | null;
   pageWidth?: number;
   pageHeight?: number;
   items?: DetectedItem[];
+  analysisRef?: unknown;
+  skipAnalysisRefCheck?: boolean;
+  crop?: DisplayCrop;
 }): {
   markups: PlacementMarkup[];
   dropped: CachedItemLookupDrop[];
 } {
   const dropped: CachedItemLookupDrop[] = [];
   const resolved = options.items
-    ? { items: options.items, pageWidth: options.pageWidth || 0, pageHeight: options.pageHeight || 0 }
-    : lookupCachedPageItems(options.page);
+    ? {
+      items: options.items,
+      pageGeometry: options.pageGeometry
+        || (options.pageWidth && options.pageHeight
+          ? pageGeometryFromUnrotated({
+            pageNumber: options.page,
+            docWidth: options.pageWidth,
+            docHeight: options.pageHeight,
+          })
+          : null),
+    }
+    : lookupCachedPageItems({ page: options.page, analysisRef: options.analysisRef });
   if (resolved.error && !options.items) {
     return {
       markups: [],
@@ -93,14 +167,20 @@ export function placementMarkupsFromCachedItemIds(options: {
   }
   const byId = new Map(resolved.items.map(item => [item.id, item]));
   const markups: PlacementMarkup[] = [];
+  const seen = new Set<string>();
 
   options.itemIds.forEach((itemId, index) => {
+    if (seen.has(itemId)) {
+      dropped.push({ itemId, reason: 'duplicate itemId' });
+      return;
+    }
+    seen.add(itemId);
     const item = byId.get(itemId);
     if (!item) {
       dropped.push({ itemId, reason: 'not in cached page analysis' });
       return;
     }
-    const point = detectionLocationToDocPoint(item, resolved.pageWidth, resolved.pageHeight);
+    const point = detectionLocationToDocPoint(item, resolved.pageGeometry, options.crop);
     if (!point) {
       dropped.push({ itemId, reason: 'no location' });
       return;
@@ -114,16 +194,18 @@ export function placementMarkupsFromCachedItemIds(options: {
       ? item.legendTypeCode.trim()
       : item.type;
     markups.push({
-      id: `${options.idPrefix}_item_${item.id || index + 1}`,
+      id: `${options.idPrefix}_item_${index + 1}`,
       type: 'count-marker',
       page: options.page,
       points: [point],
-      style: COUNT_STYLE(options.defaultStyle),
-      label: review ? `${code} (unconfirmed)` : code,
+      style: review ? REVIEW_STYLE(options.defaultStyle) : COUNT_STYLE(options.defaultStyle),
+      label: review ? '?' : code,
       linkedItemId: item.id,
-      confidence: review ? 0.3 : 0.85,
+      confidence: review ? CONFIDENCE_REVIEW : 0.85,
       pending: review,
-      aiNote: review ? 'Unconfirmed / low-confidence detection' : undefined,
+      aiNote: review
+        ? 'Unconfirmed / low-confidence detection — excluded from confirmed counts'
+        : undefined,
     });
   });
 

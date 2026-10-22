@@ -71,7 +71,10 @@ export type PendingPlacementRow = {
 export function commitMarkupsByConfidence(options: {
   markups: PageMarkupPair[];
   forceConfirm?: boolean;
-  addAIMarkupBatch: (markups: PageMarkupPair[], pending?: boolean) => void;
+  addAIMarkupBatch: (
+    markups: PageMarkupPair[],
+    pending?: boolean,
+  ) => { ok: boolean; placed: number; reason?: string } | void;
   setPendingPlacements: (rows: PendingPlacementRow[]) => void;
   getPendingPlacements?: () => PendingPlacementRow[];
 }): {
@@ -79,16 +82,30 @@ export function commitMarkupsByConfidence(options: {
   confirm: number;
   review: number;
   placed: number;
+  failedReason?: string;
 } {
   const { auto, confirm, review } = partitionMarkupsByConfidence(options.markups, {
     forceConfirm: options.forceConfirm,
   });
 
-  if (auto.length > 0) {
-    options.addAIMarkupBatch(auto, false);
-  }
-  if (confirm.length > 0) {
-    options.addAIMarkupBatch(confirm, true);
+  const runBatch = (batch: PageMarkupPair[], pending: boolean): string | undefined => {
+    if (batch.length === 0) return undefined;
+    const result = options.addAIMarkupBatch(batch, pending);
+    if (result && typeof result === 'object' && result.ok === false) {
+      return result.reason || 'Could not place markups (no active document)';
+    }
+    return undefined;
+  };
+
+  const failedReason = runBatch(auto, false) || runBatch(confirm, true);
+  if (failedReason) {
+    return {
+      auto: 0,
+      confirm: 0,
+      review: 0,
+      placed: 0,
+      failedReason,
+    };
   }
 
   const pendingRows: PendingPlacementRow[] = [

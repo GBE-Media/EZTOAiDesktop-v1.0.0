@@ -1,6 +1,9 @@
 import type { BlueprintAnalysisResult, DetectedItem } from '../providers/types';
 import { NO_CONFIDENT_MATCH, normalizeMatchConfidence } from '../detection/visionLegendClassification';
-import { detectionPctToDocPointerFields } from '../placement/parseChatMarkupPointer';
+import type { PageGeometry } from '../placement/types';
+import { pageGeometryFromUnrotated, visionLocationToDocPoint, type DisplayCrop } from '../placement/visionDisplayPctToDoc';
+import type { PageAnalysisRef } from './pageAnalysisRef';
+export type { PageAnalysisRef } from './pageAnalysisRef';
 
 /** Compact analyze_page payload stored for reuse (no overview images). */
 export interface CachedAnalyzePageResult {
@@ -16,6 +19,7 @@ export interface CachedAnalyzePageResult {
   };
   cached?: boolean;
   cacheNote?: string;
+  analysisRef?: PageAnalysisRef;
 }
 
 export interface CachedExtractPageTextResult {
@@ -40,6 +44,7 @@ const latestFullByDocPage = new Map<string, {
   value: CachedAnalyzePageResult;
   docId: string;
   contentRevision: number;
+  analyzedAt: string;
 }>();
 
 function stillFresh(at: number): boolean {
@@ -133,15 +138,26 @@ export function setCachedAnalyze(
     cached: undefined,
     cacheNote: undefined,
   };
-  analyzeByKey.set(key, { at: Date.now(), value: stored });
+  const analyzedAt = stored.analysisRef?.analyzedAt || new Date().toISOString();
+  const withRef: CachedAnalyzePageResult = {
+    ...stored,
+    analysisRef: {
+      docId: options.docId,
+      page: options.page,
+      revision: options.contentRevision,
+      analyzedAt,
+    },
+  };
+  analyzeByKey.set(key, { at: Date.now(), value: withRef });
   if (options.scope === 'full' && options.promoteToLatestFull) {
     latestFullByDocPage.set(
       latestFullCacheKey(options.docId, options.page, options.contentRevision),
       {
         at: Date.now(),
-        value: stored,
+        value: withRef,
         docId: options.docId,
         contentRevision: options.contentRevision,
+        analyzedAt,
       },
     );
   }
@@ -183,7 +199,15 @@ export function getLatestFullPageAnalysis(
     if (entry) latestFullByDocPage.delete(latestFullCacheKey(docId, page, contentRevision));
     return null;
   }
-  return entry.value;
+  return {
+    ...entry.value,
+    analysisRef: {
+      docId: entry.docId,
+      page: entry.value.page,
+      revision: entry.contentRevision,
+      analyzedAt: entry.analyzedAt,
+    },
+  };
 }
 
 /** Compact summary for agent context so follow-up turns know analysis already exists. */
@@ -242,6 +266,26 @@ export function clearPageAnalysisCache(docId?: string): void {
   }
 }
 
+export const COUNT_ITEM_LIST_CHAR_BUDGET = 9_000;
+/** Stay under sanitizeToolOutput's 50-item array slice so JSON stays parseable. */
+export const COUNT_ITEM_ARRAY_MAX = 50;
+
+export type CompactCountItemRow = {
+  id: string;
+  code: string;
+  x: number;
+  y: number;
+  confidence?: number;
+};
+
+export type CompactUnresolvedItemRow = {
+  id: string;
+  code?: string;
+  reason: string;
+  x?: number;
+  y?: number;
+};
+
 export interface PageItemCountResult {
   status: 'completed' | 'unavailable';
   page: number;
@@ -250,26 +294,18 @@ export interface PageItemCountResult {
   total: number;
   matchingTypeCounts: Record<string, number>;
   allTypeCounts: Record<string, number>;
-  matchingItems: Array<{
-    id: string;
-    type: string;
-    name: string;
-    quantity: number;
-    location?: { x: number; y: number };
-    confidence?: number;
-    legendTypeCode?: string;
-    matchConfidence?: DetectedItem['matchConfidence'];
-    unresolved?: boolean;
-    code?: string;
-  }>;
-  unresolvedItems?: Array<{
-    id: string;
-    code?: string;
-    reason: string;
-    x?: number;
-    y?: number;
-  }>;
+  matchingItems: CompactCountItemRow[];
+  unresolvedItems?: CompactUnresolvedItemRow[];
   truncated?: boolean;
+  returnedItems?: number;
+  omittedItems?: number;
+  matchingReturned?: number;
+  matchingOmitted?: number;
+  unresolvedReturned?: number;
+  unresolvedOmitted?: number;
+  nextOffset?: number;
+  hasMore?: boolean;
+  analysisRef?: PageAnalysisRef;
   countReliability?: 'high' | 'partial' | 'low';
   legendTypeCodes?: string[];
   verificationNotes?: string[];
@@ -295,17 +331,43 @@ function typeKeyMatchesQuery(typeKey: string, query: string): boolean {
   return tokens.some(token => key.includes(token));
 }
 
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function resolveCountPageGeometry(options?: {
+  pageGeometry?: PageGeometry;
+  pageWidth?: number;
+  pageHeight?: number;
+  page?: number;
+}): PageGeometry | null {
+  if (options?.pageGeometry && options.pageGeometry.docWidth > 0 && options.pageGeometry.docHeight > 0) {
+    return options.pageGeometry;
+  }
+  if (options?.pageWidth && options?.pageHeight && options.pageWidth > 0 && options.pageHeight > 0) {
+    return pageGeometryFromUnrotated({
+      pageNumber: options.page || 1,
+      docWidth: options.pageWidth,
+      docHeight: options.pageHeight,
+      rotationDeg: 0,
+    });
+  }
+  return null;
+}
+
 function compactDocLocation(
   item: DetectedItem,
-  pageWidth?: number,
-  pageHeight?: number,
+  page: PageGeometry | null,
+  crop?: DisplayCrop,
 ): { x: number; y: number } | undefined {
-  const loc = item.location;
-  if (!loc || !Number.isFinite(loc.x) || !Number.isFinite(loc.y)) return undefined;
-  if (pageWidth && pageHeight && pageWidth > 0 && pageHeight > 0) {
-    return detectionPctToDocPointerFields(loc, item.boundingBox, pageWidth, pageHeight).point;
+  if (!page) {
+    const loc = item.location;
+    if (!loc || !Number.isFinite(loc.x) || !Number.isFinite(loc.y)) return undefined;
+    return { x: round1(loc.x), y: round1(loc.y) };
   }
-  return { x: loc.x, y: loc.y };
+  const point = visionLocationToDocPoint(item.location, page, crop);
+  if (!point) return undefined;
+  return { x: round1(point.x), y: round1(point.y) };
 }
 
 function itemIsUnresolvedForCounts(item: DetectedItem): { unresolved: boolean; reason?: string } {
@@ -319,10 +381,88 @@ function itemIsUnresolvedForCounts(item: DetectedItem): { unresolved: boolean; r
   return { unresolved: false };
 }
 
+function toCompactMatchingRow(item: DetectedItem, loc: { x: number; y: number }): CompactCountItemRow {
+  const row: CompactCountItemRow = {
+    id: item.id,
+    code: (typeof item.legendTypeCode === 'string' && item.legendTypeCode.trim())
+      ? item.legendTypeCode.trim()
+      : item.type,
+    x: loc.x,
+    y: loc.y,
+  };
+  if (normalizeMatchConfidence(item.matchConfidence) !== 'high' && typeof item.confidence === 'number') {
+    row.confidence = round1(item.confidence);
+  }
+  return row;
+}
+
+function packItemLists(options: {
+  matching: CompactCountItemRow[];
+  unresolved: CompactUnresolvedItemRow[];
+  offset: number;
+  limit?: number;
+}): {
+  matchingItems: CompactCountItemRow[];
+  unresolvedItems: CompactUnresolvedItemRow[];
+  matchingReturned: number;
+  matchingOmitted: number;
+  unresolvedReturned: number;
+  unresolvedOmitted: number;
+} {
+  const offset = Math.max(0, options.offset);
+  const matchingWindow = options.matching.slice(offset);
+  const matchingCap = typeof options.limit === 'number' && Number.isFinite(options.limit) && options.limit >= 0
+    ? Math.min(COUNT_ITEM_ARRAY_MAX, options.limit)
+    : COUNT_ITEM_ARRAY_MAX;
+  const matchingItems: CompactCountItemRow[] = [];
+  const unresolvedItems: CompactUnresolvedItemRow[] = [];
+  let chars = 2;
+
+  const fits = (row: unknown) => {
+    const extra = JSON.stringify(row).length + 1;
+    return chars + extra <= COUNT_ITEM_LIST_CHAR_BUDGET;
+  };
+
+  for (const row of matchingWindow) {
+    if (matchingItems.length >= matchingCap) break;
+    if (!fits(row)) break;
+    matchingItems.push(row);
+    chars += JSON.stringify(row).length + 1;
+  }
+
+  if (offset === 0) {
+    for (const row of options.unresolved) {
+      if (unresolvedItems.length >= COUNT_ITEM_ARRAY_MAX) break;
+      if (!fits(row)) break;
+      unresolvedItems.push(row);
+      chars += JSON.stringify(row).length + 1;
+    }
+  }
+
+  return {
+    matchingItems,
+    unresolvedItems,
+    matchingReturned: matchingItems.length,
+    matchingOmitted: Math.max(0, options.matching.length - matchingItems.length),
+    unresolvedReturned: unresolvedItems.length,
+    unresolvedOmitted: Math.max(0, options.unresolved.length - unresolvedItems.length),
+  };
+}
+
 export function countItemsFromAnalysis(
   analysis: BlueprintAnalysisResult,
   query: string,
-  options?: { source?: 'cache' | 'fresh_analysis'; pageWidth?: number; pageHeight?: number },
+  options?: {
+    source?: 'cache' | 'fresh_analysis';
+    pageWidth?: number;
+    pageHeight?: number;
+    pageGeometry?: PageGeometry;
+    analysisRef?: PageAnalysisRef;
+    offset?: number;
+    limit?: number;
+    code?: string;
+    crop?: DisplayCrop;
+  },
 ): PageItemCountResult {
   const q = query.trim();
   const items = analysis.items || [];
@@ -355,47 +495,75 @@ export function countItemsFromAnalysis(
     ? ` Legend-grounded types: ${analysis.legendTypeCodes.join(', ')}.`
     : ' No page legend types extracted — treat per-type counts as provisional.';
 
+  const pageGeometry = resolveCountPageGeometry({
+    pageGeometry: options?.pageGeometry,
+    pageWidth: options?.pageWidth,
+    pageHeight: options?.pageHeight,
+    page: analysis.page,
+  });
+  const codeFilter = typeof options?.code === 'string' ? options.code.trim() : '';
   const classified = matchingItems.map((item) => {
     const flag = itemIsUnresolvedForCounts(item);
-    const loc = compactDocLocation(item, options?.pageWidth, options?.pageHeight);
+    const loc = compactDocLocation(item, pageGeometry, options?.crop);
     return { item, flag, loc };
   });
   const confirmed = classified.filter(row => !row.flag.unresolved);
   const unresolved = classified.filter(row => row.flag.unresolved);
-  const MAX_ITEMS = 80;
-  const truncated = confirmed.length + unresolved.length > MAX_ITEMS;
+  const matchingRows = confirmed
+    .filter(({ item }) => {
+      if (!codeFilter) return true;
+      const code = (typeof item.legendTypeCode === 'string' && item.legendTypeCode.trim())
+        ? item.legendTypeCode.trim()
+        : item.type;
+      return code.toLowerCase() === codeFilter.toLowerCase();
+    })
+    .filter((row): row is typeof row & { loc: { x: number; y: number } } => !!row.loc)
+    .map(({ item, loc }) => toCompactMatchingRow(item, loc));
+  const unresolvedRows: CompactUnresolvedItemRow[] = unresolved.map(({ item, loc, flag }) => ({
+    id: item.id,
+    code: item.legendTypeCode || item.type,
+    reason: flag.reason || 'unresolved',
+    x: loc?.x,
+    y: loc?.y,
+  }));
+
+  const offset = typeof options?.offset === 'number' && Number.isFinite(options.offset)
+    ? Math.max(0, Math.floor(options.offset))
+    : 0;
+  const packed = packItemLists({
+    matching: matchingRows,
+    unresolved: unresolvedRows,
+    offset,
+    limit: options?.limit,
+  });
+  const omittedItems = packed.matchingOmitted + packed.unresolvedOmitted;
+  const returnedItems = packed.matchingReturned + packed.unresolvedReturned;
+  const truncated = omittedItems > 0;
+  const nextOffset = packed.matchingReturned > 0 || offset < matchingRows.length
+    ? offset + packed.matchingReturned
+    : undefined;
+  const hasMore = offset + packed.matchingReturned < matchingRows.length;
 
   return {
     status: 'completed',
     page: analysis.page,
     query: q,
     source: options?.source || 'cache',
-    total: totalFromCounts > 0 ? totalFromCounts : confirmed.reduce(
-      (sum, row) => sum + (typeof row.item.quantity === 'number' && row.item.quantity > 0 ? row.item.quantity : 1),
-      0,
-    ),
+    total: totalFromCounts > 0 ? totalFromCounts : totalFromItems,
     matchingTypeCounts,
     allTypeCounts,
-    matchingItems: confirmed.slice(0, MAX_ITEMS).map(({ item, loc }) => ({
-      id: item.id,
-      type: item.type,
-      name: item.name,
-      quantity: typeof item.quantity === 'number' ? item.quantity : 1,
-      location: loc,
-      confidence: item.confidence,
-      legendTypeCode: item.legendTypeCode,
-      matchConfidence: item.matchConfidence,
-      unresolved: false,
-      code: item.legendTypeCode || item.type,
-    })),
-    unresolvedItems: unresolved.slice(0, MAX_ITEMS).map(({ item, loc, flag }) => ({
-      id: item.id,
-      code: item.legendTypeCode || item.type,
-      reason: flag.reason || 'unresolved',
-      x: loc?.x,
-      y: loc?.y,
-    })),
+    matchingItems: packed.matchingItems,
+    unresolvedItems: packed.unresolvedItems,
     truncated: truncated || undefined,
+    returnedItems,
+    omittedItems,
+    matchingReturned: packed.matchingReturned,
+    matchingOmitted: packed.matchingOmitted,
+    unresolvedReturned: packed.unresolvedReturned,
+    unresolvedOmitted: packed.unresolvedOmitted,
+    nextOffset: hasMore ? nextOffset : undefined,
+    hasMore: hasMore || undefined,
+    analysisRef: options?.analysisRef,
     countReliability: reliability,
     legendTypeCodes: analysis.legendTypeCodes,
     verificationNotes,
@@ -405,6 +573,8 @@ export function countItemsFromAnalysis(
       + reliabilityNote
       + legendNote
       + (verificationNotes.length ? ` ${verificationNotes[0]}` : '')
-      + (truncated ? ' Item list truncated to keep tool output compact.' : ''),
+      + (truncated
+        ? ` Returned ${returnedItems} item row(s); omitted ${omittedItems}. Pass offset=${nextOffset ?? offset} (or code) to page through the rest.`
+        : ''),
   };
 }

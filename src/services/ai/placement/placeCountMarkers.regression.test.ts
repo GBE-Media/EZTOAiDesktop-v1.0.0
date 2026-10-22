@@ -3,8 +3,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { MarkupStyle } from '@/types/markup';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
-import { BASE_RENDER_SCALE, createPageGeometry, docToRender } from './coords';
-import { convertPlacementsToMarkups } from './convertPlacements';
+import { createPageGeometry } from './coords';
 import { normalizeAgentMarkupPayload } from './normalizeAgentMarkupPayload';
 import { partitionMarkupsByConfidence } from './confidenceGate';
 import { executePlaceMarkupsApproval } from './executePlaceMarkupsApproval';
@@ -174,6 +173,7 @@ describe('count-marker placement regression (v1.3.45 E-100)', () => {
   });
 
   it('no active document is reported as failed, not placed N', async () => {
+    let pendingWrites = 0;
     const execution = await executePlaceMarkupsApproval({
       approval: {
         id: 'a3',
@@ -192,65 +192,115 @@ describe('count-marker placement regression (v1.3.45 E-100)', () => {
       pageHeight: 792,
       defaultStyle,
       addAIMarkupBatch: () => ({ ok: false, placed: 0, reason: 'No active document' }),
-      setPendingPlacements: () => {},
+      setPendingPlacements: () => {
+        pendingWrites += 1;
+      },
       getPendingPlacements: () => [],
     });
     expect(execution.status).toBe('failed');
     expect(execution.placed).toBe(0);
     expect(execution.error).toMatch(/No active document/);
+    expect(pendingWrites).toBe(0);
   });
 });
 
-describe('itemIds placement uses cached DocPoints', () => {
-  it('converts page-percent detections to DocPoints and respects 90/180/270 rotation', () => {
-    const page = createPageGeometry({
-      pageNumber: 1,
-      docWidth: 612,
-      docHeight: 792,
-      renderScale: BASE_RENDER_SCALE,
-      rotationDeg: 90,
-    });
-    const items: DetectedItem[] = [{
-      id: 'ex1-1',
-      type: 'EX1',
-      trade: 'electrical',
-      name: 'EX1',
-      quantity: 1,
-      location: { x: (100 / 612) * 100, y: (200 / 792) * 100 },
-      confidence: 0.9,
-      legendTypeCode: 'EX1',
-      matchConfidence: 'high',
-    }];
-    const looked = placementMarkupsFromCachedItemIds({
-      itemIds: ['ex1-1'],
-      page: 1,
-      idPrefix: 'cached',
-      defaultStyle,
-      pageWidth: 612,
-      pageHeight: 792,
-      items,
-    });
-    expect(looked.dropped).toEqual([]);
-    expect(looked.markups[0].points[0].x).toBeCloseTo(100, 5);
-    expect(looked.markups[0].points[0].y).toBeCloseTo(200, 5);
+/**
+ * Independent display-percent → DocPoint oracle from the clockwise rotation table
+ * (not visionDisplayPctToDoc / unrotateRenderPointToDoc).
+ * 90: display (H-y, x) ⇒ doc (dy, H-dx)
+ * 180: display (W-x, H-y) ⇒ doc (W-dx, H-dy)
+ * 270: display (y, W-x) ⇒ doc (W-dy, dx)
+ */
+function expectedDisplayPctToDoc(
+  xPct: number,
+  yPct: number,
+  docW: number,
+  docH: number,
+  rotationDeg: 0 | 90 | 180 | 270,
+  crop?: { x: number; y: number; width: number; height: number },
+): { x: number; y: number } {
+  const dispW = rotationDeg === 90 || rotationDeg === 270 ? docH : docW;
+  const dispH = rotationDeg === 90 || rotationDeg === 270 ? docW : docH;
+  const region = crop ?? { x: 0, y: 0, width: dispW, height: dispH };
+  const dx = region.x + (xPct / 100) * region.width;
+  const dy = region.y + (yPct / 100) * region.height;
+  if (rotationDeg === 90) return { x: dy, y: docH - dx };
+  if (rotationDeg === 180) return { x: docW - dx, y: docH - dy };
+  if (rotationDeg === 270) return { x: docW - dy, y: dx };
+  return { x: dx, y: dy };
+}
 
-    for (const rotationDeg of [90, 180, 270] as const) {
-      const rotated = createPageGeometry({ ...page, rotationDeg });
-      const expected = docToRender(looked.markups[0].points[0], rotated);
-      const converted = convertPlacementsToMarkups(
-        { notes: [], markups: looked.markups },
-        defaultStyle,
-        'g',
-        BASE_RENDER_SCALE,
-        BASE_RENDER_SCALE,
-        undefined,
-        new Map([[1, rotated]]),
-      );
-      expect(converted[0].markup).toMatchObject({
-        type: 'count-marker',
-        x: expected.x,
-        y: expected.y,
+describe('itemIds placement uses cached DocPoints', () => {
+  it('converts display-space percents through real page rotation (0/90/180/270, crop, non-square)', () => {
+    const cases: Array<{
+      docW: number;
+      docH: number;
+      rotationDeg: 0 | 90 | 180 | 270;
+      crop?: { x: number; y: number; width: number; height: number };
+    }> = [
+      { docW: 612, docH: 792, rotationDeg: 0 },
+      { docW: 612, docH: 792, rotationDeg: 90 },
+      { docW: 612, docH: 792, rotationDeg: 180 },
+      { docW: 612, docH: 792, rotationDeg: 270 },
+      { docW: 612, docH: 1000, rotationDeg: 90 },
+      {
+        docW: 612,
+        docH: 1000,
+        rotationDeg: 90,
+        crop: { x: 40, y: 30, width: 500, height: 400 },
+      },
+    ];
+    for (const spec of cases) {
+      const page = createPageGeometry({
+        pageNumber: 1,
+        docWidth: spec.docW,
+        docHeight: spec.docH,
+        renderScale: 1,
+        rotationDeg: spec.rotationDeg,
       });
+      const loc = { x: 25, y: 10 };
+      const expected = expectedDisplayPctToDoc(
+        loc.x,
+        loc.y,
+        spec.docW,
+        spec.docH,
+        spec.rotationDeg,
+        spec.crop,
+      );
+      const items: DetectedItem[] = [{
+        id: 'ex1-1',
+        type: 'EX1',
+        trade: 'electrical',
+        name: 'EX1',
+        quantity: 1,
+        location: loc,
+        confidence: 0.9,
+        legendTypeCode: 'EX1',
+        matchConfidence: 'high',
+      }];
+      const looked = placementMarkupsFromCachedItemIds({
+        itemIds: ['ex1-1'],
+        page: 1,
+        idPrefix: 'cached',
+        defaultStyle,
+        pageGeometry: page,
+        items,
+        crop: spec.crop,
+      });
+      expect(looked.dropped).toEqual([]);
+      expect(looked.markups[0].points[0].x).toBeCloseTo(expected.x, 5);
+      expect(looked.markups[0].points[0].y).toBeCloseTo(expected.y, 5);
+
+      const counted = countItemsFromAnalysis({
+        page: 1,
+        items,
+        dimensions: [],
+        text: [],
+        symbols: [],
+        legendTypeCounts: { EX1: 1 },
+      }, '', { pageGeometry: page, crop: spec.crop });
+      expect(counted.matchingItems[0].x).toBeCloseTo(Math.round(expected.x * 10) / 10, 5);
+      expect(counted.matchingItems[0].y).toBeCloseTo(Math.round(expected.y * 10) / 10, 5);
     }
   });
 
@@ -302,7 +352,35 @@ describe('itemIds placement uses cached DocPoints', () => {
       items,
     });
     expect(review.markups).toHaveLength(2);
-    expect(review.markups.find(m => m.linkedItemId === 'low')?.label).toMatch(/unconfirmed/i);
+    const reviewMarkup = review.markups.find(m => m.linkedItemId === 'low');
+    expect(reviewMarkup?.label).toBe('?');
+    expect(reviewMarkup?.pending).toBe(true);
+    expect(reviewMarkup?.style.strokeColor).toBe('#f59e0b');
+  });
+
+  it('drops duplicate itemIds', () => {
+    const items: DetectedItem[] = [{
+      id: 'ok',
+      type: 'A',
+      trade: 'electrical',
+      name: 'A',
+      quantity: 1,
+      location: { x: 10, y: 10 },
+      confidence: 0.9,
+      legendTypeCode: 'A',
+      matchConfidence: 'high',
+    }];
+    const result = placementMarkupsFromCachedItemIds({
+      itemIds: ['ok', 'ok'],
+      page: 1,
+      idPrefix: 'c',
+      defaultStyle,
+      pageWidth: 612,
+      pageHeight: 792,
+      items,
+    });
+    expect(result.markups).toHaveLength(1);
+    expect(result.dropped.some(d => d.reason === 'duplicate itemId')).toBe(true);
   });
 });
 
@@ -340,10 +418,100 @@ describe('count_page_items compact DocPoints', () => {
       legendTypeCounts: { A: 1, B: 0 },
     }, '', { pageWidth: 1000, pageHeight: 800 });
 
-    expect(counted.matchingItems[0].location).toEqual({ x: 100, y: 160 });
+    expect(counted.matchingItems[0].x).toEqual(100);
+    expect(counted.matchingItems[0].y).toEqual(160);
     expect(counted.matchingItems.every(i => i.id !== 'low1')).toBe(true);
     expect(counted.unresolvedItems?.some(i => i.id === 'low1')).toBe(true);
-    expect(counted.matchingItems[0].location?.x).toBeGreaterThan(50);
+    expect(counted.truncated).toBeUndefined();
+    expect(counted.omittedItems).toBe(0);
+  });
+
+  it('45 matching + 45 unresolved is not truncated', () => {
+    const items: DetectedItem[] = [];
+    for (let i = 0; i < 45; i += 1) {
+      items.push({
+        id: `ok-${i}`,
+        type: 'A',
+        trade: 'electrical',
+        name: 'A',
+        quantity: 1,
+        location: { x: 10, y: 10 },
+        confidence: 0.9,
+        legendTypeCode: 'A',
+        matchConfidence: 'high',
+      });
+    }
+    for (let i = 0; i < 45; i += 1) {
+      items.push({
+        id: `low-${i}`,
+        type: 'B',
+        trade: 'electrical',
+        name: 'B',
+        quantity: 1,
+        location: { x: 20, y: 20 },
+        confidence: 0.4,
+        legendTypeCode: 'B',
+        matchConfidence: 'low',
+      });
+    }
+    const counted = countItemsFromAnalysis({
+      page: 1,
+      items,
+      dimensions: [],
+      text: [],
+      symbols: [],
+      legendTypeCounts: { A: 45, B: 0 },
+    }, '', { pageWidth: 612, pageHeight: 792 });
+    expect(counted.matchingItems).toHaveLength(45);
+    expect(counted.unresolvedItems).toHaveLength(45);
+    expect(counted.truncated).toBeFalsy();
+    expect(counted.omittedItems).toBe(0);
+  });
+
+  it('320 items stay under 12k after the safety pass and paging returns the remainder', async () => {
+    const { sanitizeToolOutput } = await import('../agent/safety');
+    const items: DetectedItem[] = Array.from({ length: 320 }, (_, i) => ({
+      id: `item-${i}`,
+      type: 'A',
+      trade: 'electrical' as const,
+      name: 'A',
+      quantity: 1,
+      location: { x: 10 + (i % 40), y: 12 + (i % 30) },
+      confidence: 0.9,
+      legendTypeCode: 'A',
+      matchConfidence: 'high' as const,
+    }));
+    const counted = countItemsFromAnalysis({
+      page: 1,
+      items,
+      dimensions: [],
+      text: [],
+      symbols: [],
+      legendTypeCounts: { A: 320 },
+    }, '', { pageWidth: 612, pageHeight: 792 });
+    expect(counted.truncated).toBe(true);
+    expect(counted.omittedItems).toBe(320 - counted.matchingItems.length);
+    expect(counted.matchingItems.length).toBeGreaterThan(0);
+    const sanitized = sanitizeToolOutput(counted);
+    expect(sanitized).not.toHaveProperty('preview');
+    const serialized = JSON.stringify(sanitized);
+    expect(serialized.length).toBeLessThan(12_000);
+    expect(() => JSON.parse(serialized)).not.toThrow();
+
+    const page2 = countItemsFromAnalysis({
+      page: 1,
+      items,
+      dimensions: [],
+      text: [],
+      symbols: [],
+      legendTypeCounts: { A: 320 },
+    }, '', { pageWidth: 612, pageHeight: 792, offset: counted.nextOffset });
+    expect(page2.matchingItems[0].id).not.toBe(counted.matchingItems[0].id);
+    const returnedIds = new Set([
+      ...counted.matchingItems.map(r => r.id),
+      ...page2.matchingItems.map(r => r.id),
+    ]);
+    expect(returnedIds.size).toBe(counted.matchingItems.length + page2.matchingItems.length);
   });
 });
 
