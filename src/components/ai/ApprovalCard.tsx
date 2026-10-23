@@ -1,4 +1,4 @@
-import { Check, ShieldCheck, X } from 'lucide-react';
+import { Check, Copy, ShieldCheck, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
@@ -41,6 +41,44 @@ export function formatApprovalPreview(preview: unknown): string | null {
   return null;
 }
 
+export function formatDroppedLine(row: { index?: number; itemId?: string; reason: string }): string {
+  const who = typeof row.itemId === 'string' && row.itemId.trim()
+    ? row.itemId
+    : typeof row.index === 'number'
+      ? `row ${row.index + 1}`
+      : 'row';
+  return `${who}: ${row.reason}`;
+}
+
+export function uniqueDroppedLines(
+  dropped: Array<{ index?: number; itemId?: string; reason: string }> | undefined,
+): string[] {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  for (const row of dropped || []) {
+    const line = formatDroppedLine(row);
+    if (seen.has(line)) continue;
+    seen.add(line);
+    lines.push(line);
+  }
+  return lines;
+}
+
+export function formatExecutionSummary(result: NonNullable<ApprovalRequest['executionResult']>): string {
+  const parts = [
+    `placed ${result.placed ?? 0}`,
+    `auto-committed ${result.autoCommitted ?? 0}`,
+    `needs confirmation ${result.needsConfirmation ?? 0}`,
+    `review-queued ${result.reviewQueued ?? 0}`,
+  ];
+  const dropped = result.dropped?.length ?? 0;
+  if (dropped > 0) {
+    parts.push(`dropped ${dropped}`);
+  }
+  if (result.status === 'partial') parts.unshift('partial');
+  return parts.join(' · ');
+}
+
 export function ApprovalCardView({
   approval,
   onResolve,
@@ -52,6 +90,9 @@ export function ApprovalCardView({
   const resolve = (decision: 'approved' | 'rejected') => {
     onResolve?.(decision);
   };
+  const busy = !!approval.executing || approval.status !== 'pending';
+  const droppedLines = uniqueDroppedLines(approval.executionResult?.dropped);
+  const collapseDrops = droppedLines.length > 6;
 
   return (
     <div className="my-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
@@ -76,15 +117,69 @@ export function ApprovalCardView({
       </div>
       {approval.status === 'pending' ? (
         <div className="mt-3 flex justify-end gap-2">
-          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => resolve('rejected')}>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs"
+            disabled={busy}
+            onClick={() => resolve('rejected')}
+          >
             <X className="mr-1 h-3 w-3" /> Reject
           </Button>
-          <Button size="sm" className="h-7 bg-emerald-600 text-xs hover:bg-emerald-700" onClick={() => resolve('approved')}>
-            <Check className="mr-1 h-3 w-3" /> Approve
+          <Button
+            size="sm"
+            className="h-7 bg-emerald-600 text-xs hover:bg-emerald-700"
+            disabled={busy}
+            data-testid="approval-approve"
+            onClick={() => resolve('approved')}
+          >
+            <Check className="mr-1 h-3 w-3" /> {approval.executing ? 'Placing…' : 'Approve'}
           </Button>
         </div>
       ) : (
-        <div className="mt-2 text-[11px] capitalize text-muted-foreground">{approval.status}</div>
+        <div className="mt-2 space-y-2">
+          <div className="text-[11px] capitalize text-muted-foreground">{approval.status}</div>
+          {approval.status === 'failed' && approval.error && (
+            <div
+              data-testid="approval-error"
+              className="flex items-start gap-2 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5"
+            >
+              <p className="line-clamp-3 min-w-0 flex-1 text-[11px] text-red-600">{approval.error}</p>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 shrink-0 px-1.5 text-[10px]"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(approval.error || '');
+                }}
+              >
+                <Copy className="mr-1 h-3 w-3" /> Copy
+              </Button>
+            </div>
+          )}
+          {(approval.status === 'executed' || approval.executionResult) && approval.executionResult && (
+            <div data-testid="approval-result" className="rounded-md border border-emerald-500/20 bg-background/60 px-2 py-1.5 text-[11px] text-foreground/90">
+              {formatExecutionSummary(approval.executionResult)}
+              {droppedLines.length > 0 && (
+                <details
+                  data-testid="approval-dropped"
+                  className="mt-1"
+                  open={!collapseDrops}
+                >
+                  <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-muted-foreground">
+                    Dropped rows
+                  </summary>
+                  <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                    {droppedLines.map(line => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

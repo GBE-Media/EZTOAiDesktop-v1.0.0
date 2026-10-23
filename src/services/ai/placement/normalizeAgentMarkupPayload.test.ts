@@ -67,7 +67,7 @@ describe('normalizeAgentMarkupPayload multi-page', () => {
     expect(getPageDimensions).toHaveBeenCalledWith(expect.anything(), 2);
     expect(getPageDimensions).toHaveBeenCalledWith(expect.anything(), 5);
 
-    const byId = Object.fromEntries(result.map(row => [row.markup.id, row]));
+    const byId = Object.fromEntries(result.markups.map(row => [row.markup.id, row]));
     expect(byId['leg-p2'].page).toBe(2);
     expect(byId['leg-p2'].markup.page).toBe(2);
     expect(byId['leg-p5'].page).toBe(5);
@@ -106,10 +106,10 @@ describe('normalizeAgentMarkupPayload multi-page', () => {
       resolveAnchors: () => [],
     });
 
-    expect(result).toHaveLength(2);
-    expect(result.map(row => row.page).sort()).toEqual([2, 5]);
-    expect(result.map(row => row.markup.page).sort()).toEqual([2, 5]);
-    expect(result.every(row => row.markup.page !== 1)).toBe(true);
+    expect(result.markups).toHaveLength(2);
+    expect(result.markups.map(row => row.page).sort()).toEqual([2, 5]);
+    expect(result.markups.map(row => row.markup.page).sort()).toEqual([2, 5]);
+    expect(result.markups.every(row => row.markup.page !== 1)).toBe(true);
   });
 
   it('drops legacy-pct pointers when page size is unavailable (no fabricated (0,0) markup)', async () => {
@@ -133,14 +133,15 @@ describe('normalizeAgentMarkupPayload multi-page', () => {
       resolveAnchors: () => [],
     });
 
-    expect(result).toHaveLength(0);
-    expect(result.some(row => {
+    expect(result.markups).toHaveLength(0);
+    expect(result.dropped[0]?.reason).toMatch(/legacy percents need page geometry/);
+    expect(result.markups.some(row => {
       const m = row.markup as { x?: number; y?: number; width?: number; height?: number };
       return m.x === 0 || m.y === 0 || (m.x === 0 && m.y === 0);
     })).toBe(false);
     expect(warn).toHaveBeenCalled();
     expect(warn.mock.calls.some(call =>
-      String(call.join(' ')).includes('missing page size'),
+      String(call.join(' ')).includes('legacy percents need page geometry'),
     )).toBe(true);
     warn.mockRestore();
   });
@@ -258,8 +259,8 @@ describe('normalizeAgentMarkupPayload rotation integration (full production chai
       resolveAnchors: () => [],
     });
 
-    expect(result).toHaveLength(1);
-    const markup = result[0].markup as {
+    expect(result.markups).toHaveLength(1);
+    const markup = result.markups[0].markup as {
       type: string;
       x: number;
       y: number;

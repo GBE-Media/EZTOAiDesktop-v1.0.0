@@ -123,10 +123,53 @@ export const placeMarkupsSchema = z.preprocess(
     markups: z.array(placeMarkupItemSchema).min(1).optional(),
     pointers: z.array(chatMarkupPointerSchema).min(1).optional(),
     callouts: z.array(chatMarkupPointerSchema).min(1).optional(),
-  }).refine(
-    (value) => Boolean(value.markups?.length || value.pointers?.length || value.callouts?.length),
-    { message: 'place_markups requires markups, pointers, or callouts' },
-  ).describe('At least one of markups, pointers, or callouts must be provided.'),
+    /** Cached count_page_items ids — executor looks up DocPoints; model coords are ignored. */
+    itemIds: z.array(z.string().min(1)).min(1).optional(),
+    page: z.number().int().positive().optional(),
+    analysisRef: z.object({
+      docId: z.string().min(1),
+      page: z.number().int().positive(),
+      revision: z.number().int().nonnegative(),
+      analyzedAt: z.string().min(1),
+      analysisId: z.string().min(1),
+    }).optional(),
+    includeReviewMarkers: z.boolean().optional(),
+  }).superRefine((value, ctx) => {
+    const hasRows = Boolean(
+      value.markups?.length
+      || value.pointers?.length
+      || value.callouts?.length
+      || value.itemIds?.length,
+    );
+    if (!hasRows) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'place_markups requires markups, pointers, callouts, or itemIds',
+      });
+    }
+    if (value.itemIds?.length) {
+      if (value.page == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'place_markups with itemIds requires page',
+          path: ['page'],
+        });
+      }
+      if (!value.analysisRef) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'place_markups with itemIds requires analysisRef',
+          path: ['analysisRef'],
+        });
+      } else if (value.page != null && value.analysisRef.page !== value.page) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'analysisRef.page does not match page',
+          path: ['analysisRef', 'page'],
+        });
+      }
+    }
+  }).describe('At least one of markups, pointers, callouts, or itemIds must be provided. itemIds also requires page and analysisRef.'),
 );
 
 export const proposeCalloutsSchema = z.preprocess(
@@ -258,6 +301,17 @@ export const applyMaterialCountAdjustmentsSchema = z.object({
 export function approvalPayloadFromPlaceMarkups(
   input: z.infer<typeof placeMarkupsSchema>,
 ): unknown {
+  if (input.itemIds?.length) {
+    return {
+      itemIds: input.itemIds,
+      page: input.page,
+      analysisRef: input.analysisRef,
+      includeReviewMarkers: input.includeReviewMarkers,
+      markups: input.markups,
+      pointers: input.pointers,
+      callouts: input.callouts,
+    };
+  }
   return input.markups || input.pointers || input.callouts;
 }
 

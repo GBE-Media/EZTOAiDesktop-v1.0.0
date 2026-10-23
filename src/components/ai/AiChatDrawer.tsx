@@ -35,6 +35,11 @@ import {
   usePlacementDebugStore,
   verifyPlacementMarkupsWithGeometryGate,
 } from '@/services/ai/placement';
+import {
+  executePlaceMarkupsApproval,
+  newDirectPlaceMarkupsApprovalId,
+} from '@/services/ai/placement/executePlaceMarkupsApproval';
+import { handleApprovalDecision } from '@/services/ai/placement/handleApprovalDecision';
 import { useEditorStore } from '@/store/editorStore';
 import { useProductSync } from '@/hooks/useProductSync';
 import { ChatMessage } from './ChatMessage';
@@ -58,7 +63,6 @@ import {
 } from '@/services/ai/assistantOrchestrator';
 import type { EvidenceCitation } from '@/types/assistant';
 import {
-  executeApprovedAssistantAction,
   proposeAssistantMutation,
 } from '@/services/ai/tools/registry';
 import {
@@ -67,7 +71,6 @@ import {
   createAgentToolContext,
   labelForAgentStatus,
   registerAllAgentTools,
-  resumeTaskAfterApproval,
   resumeTaskAfterClarification,
   startAgentTask,
   startPipelineTask,
@@ -250,30 +253,29 @@ export function AgentAssistantDrawer() {
       const canvas = useCanvasStore.getState();
       const docId = canvas.activeDocId;
       const pdf = docId ? canvas.pdfDocuments[docId] : null;
-      const markups = await normalizeAgentMarkupPayload({
-        payload,
+      return executePlaceMarkupsApproval({
+        approval: {
+          id: newDirectPlaceMarkupsApprovalId(messageId),
+          runId,
+          messageId,
+          toolId: 'place_markups',
+          title: 'Place document markups',
+          description: 'Place proposed markups on the document',
+          status: 'approved',
+          payload,
+          undoable: true,
+          createdAt: new Date().toISOString(),
+        },
         page: canvas.getCurrentPage() || 1,
         pageWidth: pdf?.originalPageWidth || pageWidth,
         pageHeight: pdf?.originalPageHeight || pageHeight,
-        idPrefix: `agent_${messageId}`,
-        messageId,
         defaultStyle,
         pdfDocument: pdf?.pdfDocument || null,
-      });
-      if (!markups.length) return { placed: 0 };
-      const gated = commitMarkupsByConfidence({
-        markups,
-        forceConfirm: placementMode === 'confirm',
+        placementMode,
         addAIMarkupBatch,
         setPendingPlacements,
         getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
       });
-      return {
-        placed: gated.placed,
-        autoCommitted: gated.auto,
-        needsConfirmation: gated.confirm,
-        reviewQueued: gated.review,
-      };
     },
     navigateToPage: (page, bounds) => {
       const canvas = useCanvasStore.getState();
@@ -738,8 +740,8 @@ export function AgentAssistantDrawer() {
             defaultStyle,
             pdfDocument: docData?.pdfDocument || null,
           });
-          if (normalized.length > 0) {
-            setPendingMarkups(normalized);
+          if (normalized.markups.length > 0) {
+            setPendingMarkups(normalized.markups);
             setPendingAssistantId(assistantMsgId);
           }
         }
@@ -978,144 +980,19 @@ export function AgentAssistantDrawer() {
 
   useEffect(() => {
     const handleApproval = (event: Event) => {
-      void (async () => {
       const detail = (event as CustomEvent<{ approvalId: string; decision: 'approved' | 'rejected' }>).detail;
-      const store = useAIChatStore.getState();
-      const approval = store.approvals[detail.approvalId];
-      if (!approval || approval.status !== 'pending') return;
-
-      const continueAgent = async (decision: 'approved' | 'rejected', executionResult?: unknown) => {
-        const toolContext = createEditorToolContext(approval.runId, approval.messageId);
-        try {
-          setPipelineStatus({ isRunning: true, message: 'Continuing assistant…', progress: 60 });
-          const orchestrated = await resumeTaskAfterApproval({
-            runId: approval.runId,
-            approval,
-            decision,
-            toolContext,
-            executionResult,
-          });
-          const result = orchestrated.agentResult;
-          if (!result) return;
-          const assistantMessage = result.assistantMessage || 'The assistant could not continue this task.';
-          if (orchestrated.errorCode === 'SESSION_EXPIRED') {
-            store.finishRun(approval.runId, 'completed');
-            const existing = store.messages.find(message => message.id === approval.messageId);
-            const placed = (executionResult as { placed?: number } | undefined)?.placed;
-            store.updateMessage(approval.messageId, {
-              content: `${existing?.content || ''}\n\n${
-                decision === 'rejected'
-                  ? 'Callout placement was declined. The document was not changed.'
-                  : `✓ ${typeof placed === 'number'
-                      ? `Placed ${placed} callout${placed === 1 ? '' : 's'}`
-                      : 'Approved action executed'
-                    }. Use Undo to revert this batch.`
-              }`,
-              isLoading: false,
-            });
-            return;
-          }
-          store.updateMessage(approval.messageId, {
-            content: assistantMessage,
-            isLoading: false,
-            error: result.status === 'failed' ? assistantMessage : undefined,
-          });
-          if (result.status === 'failed') {
-            store.finishRun(approval.runId, 'error', assistantMessage);
-          }
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          store.updateMessage(approval.messageId, {
-            isLoading: false,
-            error: errorMessage,
-          });
-          store.finishRun(approval.runId, 'error', errorMessage);
-        } finally {
-          setPipelineStatus({ isRunning: false, progress: 0, message: '' });
-        }
-      };
-
-      if (detail.decision === 'rejected') {
-        store.resolveApproval(approval.id, 'rejected');
-        void continueAgent('rejected');
-        return;
-      }
-
-      try {
-        let executionResult: unknown;
-        if (
-          approval.toolId === 'place_markups'
-          || approval.toolId === 'propose_callouts'
-        ) {
-          const canvas = useCanvasStore.getState();
-          const docId = canvas.activeDocId;
-          const pdf = docId ? canvas.pdfDocuments[docId] : null;
-          const markups = await normalizeAgentMarkupPayload({
-            payload: approval.payload,
-            page: canvas.getCurrentPage() || 1,
-            pageWidth: pdf?.originalPageWidth || pageWidth,
-            pageHeight: pdf?.originalPageHeight || pageHeight,
-            idPrefix: `agent_${approval.messageId}`,
-            messageId: approval.messageId,
-            defaultStyle,
-            pdfDocument: pdf?.pdfDocument || null,
-          });
-          if (markups.length === 0 && Array.isArray(approval.payload)) {
-            // Pipeline path: payload already CanvasMarkup pairs
-            const legacy = approval.payload as Array<{ page: number; markup: CanvasMarkup }>;
-            const gated = commitMarkupsByConfidence({
-              markups: legacy,
-              forceConfirm: placementMode === 'confirm',
-              addAIMarkupBatch,
-              setPendingPlacements,
-              getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
-            });
-            executionResult = {
-              placed: gated.placed,
-              autoCommitted: gated.auto,
-              needsConfirmation: gated.confirm,
-              reviewQueued: gated.review,
-            };
-          } else {
-            const gated = commitMarkupsByConfidence({
-              markups,
-              forceConfirm: placementMode === 'confirm',
-              addAIMarkupBatch,
-              setPendingPlacements,
-              getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
-            });
-            executionResult = {
-              placed: gated.placed,
-              autoCommitted: gated.auto,
-              needsConfirmation: gated.confirm,
-              reviewQueued: gated.review,
-            };
-          }
-        } else {
-          const toolContext = createAgentToolContext({
-            runId: approval.runId,
-            messageId: approval.messageId,
-            trade: store.selectedTrade,
-            placeMarkups: () => ({ placed: 0 }),
-          });
-          executionResult = await executeApprovedAssistantAction(approval, toolContext);
-        }
-
-        store.resolveApproval(approval.id, 'executed');
-
-        void continueAgent('approved', executionResult);
-      } catch (error) {
-        store.resolveApproval(
-          approval.id,
-          'failed',
-          error instanceof Error ? error.message : String(error)
-        );
-      }
-      })();
+      void handleApprovalDecision(detail.approvalId, detail.decision, {
+        pageWidth,
+        pageHeight,
+        defaultStyle,
+        placementMode,
+        setPipelineStatus,
+        createEditorToolContext,
+      });
     };
     window.addEventListener('bidveraai:approval', handleApproval);
     return () => window.removeEventListener('bidveraai:approval', handleApproval);
-  }, [addAIMarkupBatch, createEditorToolContext, defaultStyle, pageHeight, pageWidth, placementMode, setPendingPlacements, setPipelineStatus]);
+  }, [createEditorToolContext, defaultStyle, pageHeight, pageWidth, placementMode, setPipelineStatus]);
 
   useEffect(() => {
     const handleClarification = (event: Event) => {

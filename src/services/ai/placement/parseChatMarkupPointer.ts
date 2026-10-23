@@ -78,6 +78,9 @@ export function parseChatMarkupPointerRow(
     && pageHeight > 0;
 
   let point: DocPoint | null = readDocPoint(row.point);
+  if (!point && Array.isArray(row.points) && row.points.length > 0) {
+    point = readDocPoint(row.points[0]);
+  }
   if (!point) {
     // Top-level x/y as DocPoints when point object omitted (and not legacy-only).
     const hasLegacyPct = row.xPct != null || row.yPct != null;
@@ -155,6 +158,41 @@ export function parseChatMarkupPointerRow(
       ? Math.max(0, Math.min(1, row.confidence))
       : undefined,
   };
+}
+
+/** Why a row could not yield a DocPoint (for user-visible drop reasons). */
+export function describeMissingCoordinates(row: Record<string, unknown>): string {
+  const hasPointObj = row.point != null;
+  const hasPointsArr = Array.isArray(row.points);
+  const hasXy = row.x != null || row.y != null;
+  const hasPct = row.xPct != null || row.yPct != null;
+  if (!hasPointObj && !hasPointsArr && !hasXy && !hasPct) {
+    return 'no point/points';
+  }
+  if (hasPct && !hasPointObj && !hasPointsArr && !hasXy) {
+    return 'legacy percents need page geometry';
+  }
+  if (hasPointsArr && (row.points as unknown[]).length === 0) {
+    return 'points array is empty';
+  }
+  if (hasPointObj && !readDocPoint(row.point)) {
+    return 'point is not a finite {x,y}';
+  }
+  if (hasPointsArr && !readDocPoint((row.points as unknown[])[0])) {
+    return 'points[0] is not a finite {x,y}';
+  }
+  return 'unusable coordinates';
+}
+
+export function readDocPointsArray(raw: unknown): DocPoint[] | null {
+  if (!Array.isArray(raw) || raw.length === 0) return null;
+  const points: DocPoint[] = [];
+  for (const entry of raw) {
+    const point = readDocPoint(entry);
+    if (!point) return null;
+    points.push(point);
+  }
+  return points;
 }
 
 /** Convert vision 0–100 detection location/bounds into DocPoint space. */

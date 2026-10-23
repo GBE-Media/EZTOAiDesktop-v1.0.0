@@ -27,9 +27,16 @@ export function partitionMarkupsByConfidence(
   const review: PageMarkupPair[] = [];
 
   for (const item of markups) {
+    if (!item?.markup) {
+      continue;
+    }
     let band = confidencePlacementBand(item.markup.aiConfidence);
+    // Explicit review markers stay drawn-but-pending even if verify lowered confidence.
+    if (item.markup.reviewMarker) {
+      band = 'confirm';
+    }
     // Global "Confirm" placement mode can only make auto stricter, never weaker.
-    if (options?.forceConfirm && band === 'auto') band = 'confirm';
+    if (options?.forceConfirm && band === 'auto' && !item.markup.reviewMarker) band = 'confirm';
 
     if (band === 'auto') {
       auto.push({
@@ -68,7 +75,10 @@ export type PendingPlacementRow = {
 export function commitMarkupsByConfidence(options: {
   markups: PageMarkupPair[];
   forceConfirm?: boolean;
-  addAIMarkupBatch: (markups: PageMarkupPair[], pending?: boolean) => void;
+  addAIMarkupBatch: (
+    markups: PageMarkupPair[],
+    pending?: boolean,
+  ) => { ok: boolean; placed: number; reason?: string; markups?: PageMarkupPair[] } | void;
   setPendingPlacements: (rows: PendingPlacementRow[]) => void;
   getPendingPlacements?: () => PendingPlacementRow[];
 }): {
@@ -76,20 +86,47 @@ export function commitMarkupsByConfidence(options: {
   confirm: number;
   review: number;
   placed: number;
+  failedReason?: string;
 } {
   const { auto, confirm, review } = partitionMarkupsByConfidence(options.markups, {
     forceConfirm: options.forceConfirm,
   });
 
-  if (auto.length > 0) {
-    options.addAIMarkupBatch(auto, false);
-  }
-  if (confirm.length > 0) {
-    options.addAIMarkupBatch(confirm, true);
+  const runBatch = (batch: PageMarkupPair[], pending: boolean): {
+    failedReason?: string;
+    markups: PageMarkupPair[];
+  } => {
+    if (batch.length === 0) return { markups: [] };
+    const result = options.addAIMarkupBatch(batch, pending);
+    if (result && typeof result === 'object' && result.ok === false) {
+      return {
+        failedReason: result.reason || 'Could not place markups (no active document)',
+        markups: [],
+      };
+    }
+    const placed = result && typeof result === 'object' && Array.isArray(result.markups)
+      ? result.markups
+      : batch;
+    return { markups: placed };
+  };
+
+  const autoResult = runBatch(auto, false);
+  const confirmResult = autoResult.failedReason
+    ? { failedReason: autoResult.failedReason, markups: [] as PageMarkupPair[] }
+    : runBatch(confirm, true);
+  const failedReason = autoResult.failedReason || confirmResult.failedReason;
+  if (failedReason) {
+    return {
+      auto: 0,
+      confirm: 0,
+      review: 0,
+      placed: 0,
+      failedReason,
+    };
   }
 
   const pendingRows: PendingPlacementRow[] = [
-    ...confirm.map(({ page, markup }) => ({
+    ...confirmResult.markups.map(({ page, markup }) => ({
       id: markup.id,
       type: markup.type,
       page: markup.page || page,

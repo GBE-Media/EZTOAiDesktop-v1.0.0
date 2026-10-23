@@ -26,6 +26,7 @@ import {
 } from './pageAnalysisCache';
 import {
   activateEditorToolOnCanvas,
+  ensurePageGeometry,
   executeDeleteMarkups,
   executeUpdateMarkups,
 } from './markupMutations';
@@ -385,6 +386,14 @@ async function defaultCountPageItems(
     ? raw.page
     : null;
   const query = typeof raw.query === 'string' ? raw.query.trim() : '';
+  const offset = typeof raw.offset === 'number' && Number.isInteger(raw.offset) && raw.offset >= 0
+    ? raw.offset
+    : undefined;
+  const limit = typeof raw.limit === 'number' && Number.isInteger(raw.limit) && raw.limit > 0
+    ? raw.limit
+    : undefined;
+  const code = typeof raw.code === 'string' ? raw.code.trim() : '';
+  const section = raw.section === 'unresolved' ? 'unresolved' as const : undefined;
 
   if (page == null) {
     return {
@@ -405,8 +414,17 @@ async function defaultCountPageItems(
   const pdfData = canvas.pdfDocuments[docId];
   const contentRevision = pdfData?.contentRevision ?? 0;
   const cached = getLatestFullPageAnalysis(docId, page, contentRevision);
+  const pageGeometry = await ensurePageGeometry(page);
   if (cached?.analysis) {
-    return countItemsFromAnalysis(cached.analysis, query, { source: 'cache' });
+    return countItemsFromAnalysis(cached.analysis, query, {
+      source: 'cache',
+      pageGeometry,
+      analysisRef: cached.analysisRef,
+      offset,
+      limit,
+      code: code || undefined,
+      section,
+    });
   }
 
   // Cache miss: ALWAYS run a broad, unprompted full-page analysis, then filter
@@ -428,7 +446,16 @@ async function defaultCountPageItems(
     };
   }
 
-  return countItemsFromAnalysis(analyzed.analysis, query, { source: 'fresh_analysis' });
+  const latest = getLatestFullPageAnalysis(docId, page, contentRevision);
+  return countItemsFromAnalysis(analyzed.analysis, query, {
+    source: 'fresh_analysis',
+    pageGeometry,
+    analysisRef: latest?.analysisRef || analyzed.analysisRef,
+    offset,
+    limit,
+    code: code || undefined,
+    section,
+  });
 }
 
 /**
@@ -665,7 +692,7 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
 
 function markupsToDetectedItems(markups: CanvasMarkup[], trade: TradeType): DetectedItem[] {
   return markups
-    .filter(m => m.type === 'count-marker' || m.type === 'callout')
+    .filter(m => (m.type === 'count-marker' || m.type === 'callout') && !m.reviewMarker)
     .slice(0, 80)
     .map((m, index) => {
       const x = 'x' in m ? Number((m as { x?: number }).x) || 0 : 0;
