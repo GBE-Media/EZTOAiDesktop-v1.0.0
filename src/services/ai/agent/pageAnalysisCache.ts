@@ -718,7 +718,7 @@ export function countItemsFromAnalysis(
     ? Math.max(0, Math.floor(options.offset))
     : 0;
   const limit = typeof options?.limit === 'number' && Number.isFinite(options.limit)
-    ? Math.max(0, Math.floor(options.limit))
+    ? Math.min(COUNT_ITEM_ARRAY_MAX, Math.max(0, Math.floor(options.limit)))
     : undefined;
   const section = options?.section === 'unresolved' ? 'unresolved' : 'matching';
   const matchingWindow = section === 'matching'
