@@ -27,6 +27,40 @@ describe('AssistantMarkdown', () => {
   });
 });
 
+describe('AssistantMessageBlocks grouping', () => {
+  it('renders a collapsed process disclosure and keeps approval outside it', () => {
+    const html = renderToStaticMarkup(
+      <AssistantMessageBlocks
+        blocks={[
+          { id: 'a', type: 'activity', runId: 'run-1' },
+          {
+            id: 't',
+            type: 'tool-result',
+            activity: {
+              id: 'act-1',
+              toolId: 'count_page_items',
+              title: 'count_page_items',
+              status: 'completed',
+              output: [{ code: 'too_big', maximum: 50 }],
+            },
+          },
+          { id: 'ap', type: 'approval', approvalId: 'appr-1' },
+          { id: 'md', type: 'markdown', markdown: 'Ready to place markers.' },
+        ]}
+      />,
+    );
+    expect(html).toContain('data-testid="turn-process"');
+    expect(html).toContain('data-testid="visible-approval"');
+    const processIdx = html.indexOf('data-testid="turn-process"');
+    const visibleIdx = html.indexOf('data-testid="turn-visible"');
+    expect(processIdx).toBeGreaterThan(-1);
+    expect(visibleIdx).toBeGreaterThan(processIdx);
+    expect(html).not.toContain('data-testid="turn-process-details"');
+    expect(html).not.toContain('count_page_items');
+    expect(html).not.toContain('too_big');
+  });
+});
+
 describe('AssistantMessageBlocks markdown', () => {
   it('routes markdown blocks through the real renderer', () => {
     const html = renderToStaticMarkup(

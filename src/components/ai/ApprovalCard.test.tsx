@@ -29,6 +29,18 @@ describe('formatApprovalPreview', () => {
   });
 });
 
+describe('ApprovalCard handlers', () => {
+  it('wires Approve and Reject to the same onResolve callback used by handleApprovalDecision', () => {
+    const html = renderToStaticMarkup(
+      <ApprovalCardView approval={baseApproval} onResolve={() => undefined} />,
+    );
+    expect(html).toContain('data-testid="approval-approve"');
+    expect(html).toContain('Approve');
+    expect(html).toContain('Reject');
+    expect(html).toContain('Place document markups');
+  });
+});
+
 describe('ApprovalCard preview', () => {
   it('renders populated approval.preview content', () => {
     const html = renderToStaticMarkup(

@@ -3,7 +3,7 @@
  * Quick actions for trade selection, placement mode, and common operations
  */
 
-import { Zap, ZapOff, Settings, Trash2, CheckCircle2, XCircle, Wand2 } from 'lucide-react';
+import { Zap, ZapOff, CheckCircle2, XCircle, Wand2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Select,
@@ -26,9 +26,10 @@ import { cn } from '@/lib/utils';
 import { PendingPlacementsReviewList } from './PendingPlacementsReviewList';
 
 interface AiToolbarProps {
-  onOpenSettings?: () => void;
-  onClearChat?: () => void;
   onRunTakeoff?: () => void;
+  pageSelection?: string;
+  onPageSelectionChange?: (value: string) => void;
+  pageSummary?: string;
 }
 
 const TRADE_OPTIONS: { value: TradeType; label: string; color: string }[] = [
@@ -37,7 +38,7 @@ const TRADE_OPTIONS: { value: TradeType; label: string; color: string }[] = [
   { value: 'hvac', label: 'HVAC', color: 'bg-green-500' },
 ];
 
-export function AiToolbar({ onOpenSettings, onClearChat, onRunTakeoff }: AiToolbarProps) {
+export function AiToolbar({ onRunTakeoff, pageSelection, onPageSelectionChange, pageSummary }: AiToolbarProps) {
   const {
     selectedTrade,
     setSelectedTrade,
@@ -54,15 +55,15 @@ export function AiToolbar({ onOpenSettings, onClearChat, onRunTakeoff }: AiToolb
   const isProcessing = pipelineStatus.isRunning;
 
   return (
-    <div className="border-b border-border bg-secondary/30">
-      <div className="flex items-center gap-2 p-2">
+    <div className="relative border-b border-border bg-secondary/20">
+      <div className="flex flex-wrap items-center gap-1.5 px-3 py-1.5">
         {/* Trade Selector */}
         <Select
           value={selectedTrade}
           onValueChange={(value: TradeType) => setSelectedTrade(value)}
           disabled={isProcessing}
         >
-          <SelectTrigger className="w-[130px] h-8 text-xs">
+          <SelectTrigger className="h-7 w-[120px] text-xs">
             <SelectValue>
               <div className="flex items-center gap-2">
                 <div className={cn(
@@ -92,7 +93,7 @@ export function AiToolbar({ onOpenSettings, onClearChat, onRunTakeoff }: AiToolb
               <Button
                 variant={placementMode === 'auto' ? 'default' : 'outline'}
                 size="sm"
-                className="h-8 gap-1.5 text-xs"
+                className="h-7 gap-1.5 text-xs"
                 onClick={() => setPlacementMode(placementMode === 'auto' ? 'confirm' : 'auto')}
                 disabled={isProcessing}
               >
@@ -124,7 +125,7 @@ export function AiToolbar({ onOpenSettings, onClearChat, onRunTakeoff }: AiToolb
               <Button
                 variant="default"
                 size="sm"
-                className="h-8 gap-1.5 text-xs"
+                className="h-7 gap-1.5 text-xs"
                 onClick={onRunTakeoff}
                 disabled={isProcessing || !onRunTakeoff}
               >
@@ -136,43 +137,18 @@ export function AiToolbar({ onOpenSettings, onClearChat, onRunTakeoff }: AiToolb
           </Tooltip>
         </TooltipProvider>
 
-        {/* Spacer */}
-        <div className="flex-1" />
-
-        {/* Clear Chat */}
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                onClick={onClearChat}
-                disabled={isProcessing}
-              >
-                <Trash2 className="w-4 h-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Clear chat</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-
-        {/* Settings */}
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                onClick={onOpenSettings}
-              >
-                <Settings className="w-4 h-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>AI Settings</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        {typeof pageSelection === 'string' && onPageSelectionChange && (
+          <input
+            value={pageSelection}
+            onChange={(event) => onPageSelectionChange(event.target.value)}
+            placeholder="pages"
+            className="h-7 w-24 rounded-md border border-border bg-background px-2 text-[11px] text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            title="Pages: current, all, or 1,3-5"
+          />
+        )}
+        {pageSummary && (
+          <span className="text-[10px] text-muted-foreground">{pageSummary}</span>
+        )}
       </div>
 
       {hasPending && (
