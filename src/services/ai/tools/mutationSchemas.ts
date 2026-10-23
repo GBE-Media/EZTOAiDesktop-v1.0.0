@@ -251,7 +251,8 @@ export const linkCatalogSchema = z.object({
 export const searchCatalogSchema = z.object({
   query: z.string().optional().default(''),
   category: z.string().optional(),
-  limit: z.number().int().min(1).max(50).optional(),
+  /** No schema max: searchCatalog clamps to 1..50, so an oversized request is narrowed instead of failing. */
+  limit: z.number().int().optional(),
   /** Prefer true when binding takeoff counts — assemblies cannot receive measurements. */
   productsOnly: z.boolean().optional().default(true),
 });

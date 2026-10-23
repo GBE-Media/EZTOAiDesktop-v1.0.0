@@ -156,8 +156,10 @@ const coreTools: AssistantToolDefinition[] = [
       query: z.string().min(1).describe('Fixture/symbol type or name to count, e.g. "light" or "Type A"'),
       offset: z.number().int().nonnegative().optional()
         .describe('Skip this many matching items (use nextOffset from a truncated result).'),
-      limit: z.number().int().positive().max(50).optional()
-        .describe('Max matching item rows to return (default fills the size budget, cap 50).'),
+      // No schema max: models sometimes ask for more than 50 rows, and rejecting the call
+      // fails the whole count. countItemsFromAnalysis clamps to COUNT_ITEM_ARRAY_MAX instead.
+      limit: z.number().int().positive().optional()
+        .describe('Max matching item rows to return (default fills the size budget; values above 50 are treated as 50).'),
       code: z.string().min(1).optional()
         .describe('Return only matching items with this legend type code.'),
       section: z.enum(['matching', 'unresolved']).optional()
