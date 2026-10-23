@@ -1,8 +1,15 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { capRenderScale, cssPageSize } from './renderScaleCap';
 
 // Configure PDF.js worker for desktop app (no CDN dependency)
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+const renderTasks = new WeakMap<HTMLCanvasElement, pdfjsLib.RenderTask>();
+
+export function isRenderingCancelled(error: unknown): boolean {
+  return !!error && typeof error === 'object' && (error as { name?: string }).name === 'RenderingCancelledException';
+}
 
 export interface PDFPageInfo {
   pageNumber: number;
@@ -17,24 +24,49 @@ export interface LoadedPDF {
   numPages: number;
 }
 
-export async function loadPDF(source: string | ArrayBuffer): Promise<LoadedPDF> {
-  // When source is an ArrayBuffer, create a copy to prevent PDF.js from detaching the original
-  // PDF.js often transfers ArrayBuffers to a worker, which detaches them (byteLength becomes 0)
-  let documentSource: string | ArrayBuffer = source;
-  
-  if (source instanceof ArrayBuffer) {
-    // Create a true copy with a new backing buffer
-    const copiedBytes = new Uint8Array(source).slice();
-    documentSource = copiedBytes.buffer;
+export async function loadPDF(
+  source: string | ArrayBuffer,
+  options?: { copy?: boolean },
+): Promise<LoadedPDF> {
+  let documentSource: string | ArrayBuffer | Uint8Array = source;
+
+  if (source instanceof ArrayBuffer && options?.copy !== false) {
+    documentSource = new Uint8Array(source);
   }
-  
+
   const loadingTask = pdfjsLib.getDocument(documentSource);
   const document = await loadingTask.promise;
-  
+
   return {
     document,
     numPages: document.numPages,
   };
+}
+
+export async function loadPDFFromUrl(
+  url: string,
+  options?: { rangeChunkSize?: number },
+): Promise<LoadedPDF> {
+  const loadingTask = pdfjsLib.getDocument({
+    url,
+    rangeChunkSize: options?.rangeChunkSize ?? (1 << 20),
+    disableAutoFetch: true,
+    disableStream: false,
+  });
+  const document = await loadingTask.promise;
+  return {
+    document,
+    numPages: document.numPages,
+  };
+}
+
+export async function getPageLabels(document: pdfjsLib.PDFDocumentProxy): Promise<string[] | null> {
+  try {
+    const labels = await document.getPageLabels();
+    return Array.isArray(labels) ? labels : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function renderPage(
@@ -43,41 +75,60 @@ export async function renderPage(
   canvas: HTMLCanvasElement,
   scale: number = 1.5
 ): Promise<PDFPageInfo> {
+  const previous = renderTasks.get(canvas);
+  previous?.cancel();
+
   const page = await document.getPage(pageNumber);
-  
-  // Use device pixel ratio for crisp rendering on high-DPI displays
   const devicePixelRatio = window.devicePixelRatio || 1;
-  const outputScale = devicePixelRatio * 2; // 2x for extra sharpness
-  
-  const viewport = page.getViewport({ scale: scale * outputScale });
-  
+  const outputScale = devicePixelRatio * 2;
+  const originalViewport = page.getViewport({ scale: 1 });
+  const css = cssPageSize(scale, originalViewport.width, originalViewport.height);
+  const backingScale = capRenderScale(scale * outputScale, originalViewport.width, originalViewport.height);
+  const viewport = page.getViewport({ scale: backingScale });
+
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Could not get canvas context');
-  
-  // Set canvas size to match high-DPI rendering
+
   canvas.width = viewport.width;
   canvas.height = viewport.height;
-  
-  // Scale CSS size to match logical size
-  canvas.style.width = `${viewport.width / outputScale}px`;
-  canvas.style.height = `${viewport.height / outputScale}px`;
-  
-  const renderContext = {
+  canvas.style.width = `${css.width}px`;
+  canvas.style.height = `${css.height}px`;
+
+  const task = page.render({
     canvasContext: context,
-    viewport: viewport,
-  };
-  
-  await page.render(renderContext).promise;
-  
-  const originalViewport = page.getViewport({ scale: 1 });
-  
+    viewport,
+  });
+  renderTasks.set(canvas, task);
+  try {
+    await task.promise;
+  } finally {
+    if (renderTasks.get(canvas) === task) renderTasks.delete(canvas);
+    page.cleanup();
+  }
+
   return {
     pageNumber,
-    width: viewport.width / outputScale,
-    height: viewport.height / outputScale,
+    width: css.width,
+    height: css.height,
     originalWidth: originalViewport.width,
     originalHeight: originalViewport.height,
   };
+}
+
+export async function prefetchPageOperators(
+  document: pdfjsLib.PDFDocumentProxy,
+  pageNumber: number,
+): Promise<void> {
+  if (pageNumber < 1 || pageNumber > document.numPages) return;
+  const page = await document.getPage(pageNumber);
+  try {
+    await Promise.all([
+      page.getOperatorList(),
+      page.getTextContent(),
+    ]);
+  } finally {
+    page.cleanup();
+  }
 }
 
 export async function getPageDimensions(

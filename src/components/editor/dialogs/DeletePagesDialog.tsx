@@ -34,7 +34,7 @@ export function DeletePagesDialog({ open, onOpenChange }: DeletePagesDialogProps
   
   const { 
     activeDocId, 
-    getOriginalPdfBytes,
+    getOriginalPdfBytesAsync,
     getCurrentPage,
     getTotalPages,
     setCurrentPage,
@@ -94,7 +94,7 @@ export function DeletePagesDialog({ open, onOpenChange }: DeletePagesDialogProps
     setIsLoading(true);
     
     try {
-      const originalBytes = getOriginalPdfBytes();
+      const originalBytes = await getOriginalPdfBytesAsync();
       if (!originalBytes) {
         toast.error('No document loaded');
         return;
@@ -165,7 +165,7 @@ export function DeletePagesDialog({ open, onOpenChange }: DeletePagesDialogProps
       setIsLoading(false);
     }
   }, [
-    activeDocId, getOriginalPdfBytes, pageSelection, pageRange,
+    activeDocId, getOriginalPdfBytesAsync, pageSelection, pageRange,
     totalPages, currentPage, getPagesToDelete, onOpenChange, setCurrentPage
   ]);
   

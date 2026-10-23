@@ -24,7 +24,7 @@ interface SaveAsDialogProps {
 
 export function SaveAsDialog({ open, onOpenChange }: SaveAsDialogProps) {
   const { documents, activeDocument } = useEditorStore();
-  const { getOriginalPdfBytes, getMarkupsByPage } = useCanvasStore();
+  const { getOriginalPdfBytesAsync, getMarkupsByPage } = useCanvasStore();
   
   const currentDoc = documents.find(d => d.id === activeDocument);
   const currentName = currentDoc?.name?.replace(/\.pdf$/i, '') || 'document';
@@ -46,7 +46,7 @@ export function SaveAsDialog({ open, onOpenChange }: SaveAsDialogProps) {
       return;
     }
 
-    const originalBytes = getOriginalPdfBytes();
+    const originalBytes = await getOriginalPdfBytesAsync();
     if (!originalBytes) {
       toast.error('Original PDF data not available');
       return;

@@ -57,7 +57,7 @@ export function MenuBar() {
     containerWidth,
     containerHeight,
     startCalibration,
-    getOriginalPdfBytes,
+    getOriginalPdfBytesAsync,
     getMarkupsByPage,
     setCurrentPage,
     getPdfDocument,
@@ -129,7 +129,7 @@ export function MenuBar() {
     const doc = documents.find(d => d.id === activeDocument);
     if (!doc) return;
 
-    const originalBytes = getOriginalPdfBytes();
+    const originalBytes = await getOriginalPdfBytesAsync();
     const markupsByPage = getMarkupsByPage();
 
     if (!originalBytes) {
@@ -165,7 +165,7 @@ export function MenuBar() {
       console.error('Export failed:', error);
       toast.error('Failed to export PDF', { id: 'export-pdf' });
     }
-  }, [documents, activeDocument, getOriginalPdfBytes, getMarkupsByPage]);
+  }, [documents, activeDocument, getOriginalPdfBytesAsync, getMarkupsByPage]);
   
   const handleClose = useCallback(() => {
     if (activeDocument) {

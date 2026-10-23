@@ -1,7 +1,30 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, shell, safeStorage } from 'electron';
+import { app, BrowserWindow, Menu, dialog, ipcMain, protocol, shell, safeStorage } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as path from 'path';
 import * as fs from 'fs';
+import {
+  allowLocalPath,
+  assetDestPath,
+  fileUrlForPath,
+  hashFileSha256,
+  isAllowedLocalPath,
+  projectAssetsDir,
+  serveAllowedFile,
+} from './fileProtocol';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'bidvera-file',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+      bypassCSP: false,
+    },
+  },
+]);
 
 const isDev = !app.isPackaged;
 
@@ -317,14 +340,27 @@ ipcMain.handle('dialog:openFile', async (_, fileType?: 'pdf' | 'project') => {
     return null;
   }
 
-  const filePath = result.filePaths[0];
-  const buffer = fs.readFileSync(filePath);
+  const filePath = allowLocalPath(result.filePaths[0]);
   const name = path.basename(filePath);
+  const stat = fs.statSync(filePath);
+  const isProject = name.toLowerCase().endsWith('.bidveraai');
+
+  if (isProject) {
+    const buffer = fs.readFileSync(filePath);
+    allowLocalPath(projectAssetsDir(filePath));
+    return {
+      buffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+      name,
+      path: filePath,
+      byteLength: stat.size,
+    };
+  }
 
   return {
-    buffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
     name,
     path: filePath,
+    byteLength: stat.size,
+    url: fileUrlForPath(filePath),
   };
 });
 
@@ -362,12 +398,94 @@ ipcMain.handle('dialog:saveFile', async (_, data: ArrayBuffer, defaultName: stri
 ipcMain.handle('dialog:saveFileDirect', async (_, data: ArrayBuffer, filePath: string) => {
   try {
     fs.writeFileSync(filePath, Buffer.from(data));
+    if (filePath.toLowerCase().endsWith('.bidveraai')) {
+      allowLocalPath(projectAssetsDir(filePath));
+    }
     return { success: true, path: filePath };
   } catch (error) {
     console.error('Failed to save file:', error);
     return { success: false, error: (error as Error).message };
   }
 });
+
+ipcMain.handle('allowlist:add', async (_, filePath: string) => {
+  if (typeof filePath !== 'string' || !filePath) return { success: false };
+  allowLocalPath(filePath);
+  return { success: true, path: normalizeMaybe(filePath) };
+});
+
+ipcMain.handle('fs:hashFile', async (_, filePath: string) => {
+  if (!isAllowedLocalPath(filePath)) return { success: false, error: 'not-allowed' };
+  const sha256 = await hashFileSha256(filePath);
+  const byteLength = fs.statSync(filePath).size;
+  return { success: true, sha256, byteLength };
+});
+
+ipcMain.handle('fs:readAllowedFile', async (_, filePath: string) => {
+  if (!isAllowedLocalPath(filePath)) return null;
+  const buffer = fs.readFileSync(filePath);
+  return {
+    buffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+    path: filePath,
+    name: path.basename(filePath),
+  };
+});
+
+ipcMain.handle('project:writeAsset', async (_, payload: {
+  projectPath: string;
+  sha256: string;
+  sourcePath?: string;
+  data?: ArrayBuffer;
+}) => {
+  const projectPath = payload?.projectPath;
+  const sha256 = payload?.sha256;
+  if (!projectPath || !sha256 || !/^[a-f0-9]{64}$/i.test(sha256)) {
+    return { success: false, error: 'invalid-args' };
+  }
+  allowLocalPath(projectPath);
+  const dest = assetDestPath(projectPath, sha256.toLowerCase());
+  const dir = projectAssetsDir(projectPath);
+  fs.mkdirSync(dir, { recursive: true });
+  allowLocalPath(dir);
+  allowLocalPath(dest);
+
+  if (fs.existsSync(dest)) {
+    const existing = await hashFileSha256(dest);
+    if (existing.toLowerCase() === sha256.toLowerCase()) {
+      return {
+        success: true,
+        skipped: true,
+        relPath: `${path.parse(projectPath).name}.bidveraai.files/${sha256.toLowerCase()}.pdf`,
+        sha256: sha256.toLowerCase(),
+        byteLength: fs.statSync(dest).size,
+      };
+    }
+  }
+
+  if (payload.sourcePath) {
+    if (!isAllowedLocalPath(payload.sourcePath)) {
+      return { success: false, error: 'not-allowed' };
+    }
+    fs.copyFileSync(payload.sourcePath, dest);
+  } else if (payload.data) {
+    fs.writeFileSync(dest, Buffer.from(payload.data));
+  } else {
+    return { success: false, error: 'no-source' };
+  }
+
+  const writtenHash = await hashFileSha256(dest);
+  return {
+    success: true,
+    skipped: false,
+    relPath: `${path.parse(projectPath).name}.bidveraai.files/${writtenHash}.pdf`,
+    sha256: writtenHash,
+    byteLength: fs.statSync(dest).size,
+  };
+});
+
+function normalizeMaybe(filePath: string): string {
+  return path.resolve(filePath);
+}
 
 // IPC Handlers for secure session storage
 ipcMain.handle('auth:storeSession', async (_, sessionData: string) => {
@@ -521,6 +639,11 @@ if (process.platform === 'win32' && process.argv.length >= 2) {
 }
 
 app.whenReady().then(() => {
+  protocol.handle('bidvera-file', async (request) => {
+    const served = serveAllowedFile(request.url, request.headers.get('Range'));
+    return new Response(served.body, { status: served.status, headers: served.headers });
+  });
+
   // #region agent log
   log('electron/main.ts:app.whenReady', 'App ready', { isDev, isPackaged: app.isPackaged, __dirname, fileToOpen });
   // #endregion

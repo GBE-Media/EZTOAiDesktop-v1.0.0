@@ -95,6 +95,10 @@ export function EditorLayout() {
               return;
             }
             
+            if (!fileData.buffer) {
+              toast.error('Failed to open project file', { id: 'open-project-file' });
+              return;
+            }
             const jsonString = new TextDecoder().decode(fileData.buffer);
             const projectData = JSON.parse(jsonString);
             await openProject(projectData, filePath);

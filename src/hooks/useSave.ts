@@ -12,10 +12,10 @@ interface SaveResult {
 
 export function useSave() {
   const { documents, activeDocument, updateDocument } = useEditorStore();
-  const { getOriginalPdfBytes, getMarkupsByPage } = useCanvasStore();
+  const { getOriginalPdfBytesAsync, getMarkupsByPage } = useCanvasStore();
 
   const getExportedPdfBytes = useCallback(async (): Promise<ArrayBuffer | null> => {
-    const originalBytes = getOriginalPdfBytes();
+    const originalBytes = await getOriginalPdfBytesAsync();
     const markupsByPage = getMarkupsByPage();
 
     if (!originalBytes) {
@@ -34,7 +34,7 @@ export function useSave() {
       toast.error('Failed to export PDF');
       return null;
     }
-  }, [getOriginalPdfBytes, getMarkupsByPage]);
+  }, [getOriginalPdfBytesAsync, getMarkupsByPage]);
 
   // Save As - always shows native dialog
   const saveAs = useCallback(async (docId?: string): Promise<boolean> => {

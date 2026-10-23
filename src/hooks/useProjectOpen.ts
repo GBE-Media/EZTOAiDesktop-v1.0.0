@@ -3,7 +3,8 @@ import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { setSnapToObjectsEnabled, syncCanvasSnapFromEditor } from '@/store/snapSettings';
 import { useProductStore } from '@/store/productStore';
-import { loadPDF, getPageDimensions } from '@/lib/pdfLoader';
+import { loadPDF, loadPDFFromUrl, getPageDimensions } from '@/lib/pdfLoader';
+import { decodeBase64Chunked } from '@/lib/base64Chunks';
 import { toast } from 'sonner';
 import type { ProjectFile } from '@/types/project';
 import type { LinkedMeasurement, ProductNode } from '@/types/product';
@@ -113,20 +114,35 @@ export function useProjectOpen() {
         try {
           console.log('[PROJECT-OPEN] Loading document:', projDoc.name);
           
-          // Decode base64 PDF data
-          const binaryString = atob(projDoc.pdfData);
-          const bytes = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            bytes[i] = binaryString.charCodeAt(i);
+          let pdfDoc;
+          let numPages: number;
+          let originalBytes: ArrayBuffer | undefined;
+          let pdfSource: { source: 'file'; path: string } | { source: 'memory'; bytes: ArrayBuffer } | undefined;
+
+          if (projDoc.fileRef && projectPath) {
+            const dir = projectPath.replace(/[\\/][^\\/]+$/, '');
+            const sep = projectPath.includes('\\') ? '\\' : '/';
+            const assetPath = `${dir}${sep}${projDoc.fileRef.relPath}`;
+            await window.electronAPI?.allowLocalPath?.(assetPath);
+            const url = `bidvera-file://local/?p=${encodeURIComponent(assetPath)}`;
+            console.log('[PROJECT-OPEN] Loading PDF from fileRef...');
+            const loaded = await loadPDFFromUrl(url);
+            pdfDoc = loaded.document;
+            numPages = loaded.numPages;
+            pdfSource = { source: 'file', path: assetPath };
+          } else if (projDoc.pdfData) {
+            const bytes = decodeBase64Chunked(projDoc.pdfData);
+            const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+            console.log('[PROJECT-OPEN] Loading PDF from legacy base64...');
+            const loaded = await loadPDF(arrayBuffer);
+            pdfDoc = loaded.document;
+            numPages = loaded.numPages;
+            originalBytes = arrayBuffer;
+            pdfSource = { source: 'memory', bytes: arrayBuffer };
+          } else {
+            throw new Error('Document has neither fileRef nor pdfData');
           }
-          const arrayBuffer = bytes.buffer;
 
-          // Clone for PDF.js
-          const originalBytes = arrayBuffer.slice(0);
-
-          // Load PDF
-          console.log('[PROJECT-OPEN] Loading PDF...');
-          const { document: pdfDoc, numPages } = await loadPDF(arrayBuffer);
           const pageDimensions = await getPageDimensions(pdfDoc, 1);
           console.log('[PROJECT-OPEN] PDF loaded, pages:', numPages);
 
@@ -156,7 +172,8 @@ export function useProjectOpen() {
             numPages,
             pageDimensions.width,
             pageDimensions.height,
-            originalBytes
+            originalBytes,
+            pdfSource,
           );
 
           // Set first document as active BEFORE restoring markups

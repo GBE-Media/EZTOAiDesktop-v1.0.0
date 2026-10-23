@@ -18,6 +18,8 @@ import { attachProductsForPlacedMarkups } from '@/services/ai/catalog/linkPlaced
 import { confirmedCountMarkerFields } from '@/components/editor/markupDrawAppearance';
 import { extractVectorPaths, nearestPointOnLine, type DocumentSnapData, type DocumentLine } from '@/lib/pdfVectorExtractor';
 import { clearPageAnalysisCache } from '@/services/ai/agent/pageAnalysisCache';
+import { cacheClearAll, cacheClearDoc, cacheGet, cacheSet } from '@/lib/pageCache';
+import { materializePdfBytes, type PdfBytesSource } from '@/lib/pdfBytesSource';
 import {
   computeFitTransform,
   FIT_PADDING_PX,
@@ -82,7 +84,8 @@ interface DocumentPdfData {
   hasViewState: boolean;
   /** True only after the user pans or zooms. Auto-fit may still run until then. */
   viewUserAdjusted: boolean;
-  originalPdfBytes: ArrayBuffer | null; // Store original PDF for saving
+  originalPdfBytes: ArrayBuffer | null; // In-memory PDF bytes when source is memory
+  pdfSource?: PdfBytesSource | null;
   textContentByPage: Record<number, TextItemWithBounds[]>; // Cached text for highlight snapping
   textWordsByPage: Record<number, TextWord[]>; // Word-level text for professional highlighting
   /** Per-page PageGeometry (unrotated doc size + rotationDeg) for AI DocPoint conversion. */
@@ -159,8 +162,8 @@ interface CanvasState {
 
 interface CanvasActions {
   // PDF actions
-  setPdfDocument: (docId: string, doc: any, totalPages: number, originalWidth: number, originalHeight: number, originalBytes?: ArrayBuffer) => void;
-  updatePdfDocument: (docId: string, doc: any, totalPages: number, originalWidth: number, originalHeight: number, originalBytes: ArrayBuffer) => void;
+  setPdfDocument: (docId: string, doc: any, totalPages: number, originalWidth: number, originalHeight: number, originalBytes?: ArrayBuffer, pdfSource?: PdfBytesSource) => void;
+  updatePdfDocument: (docId: string, doc: any, totalPages: number, originalWidth: number, originalHeight: number, originalBytes: ArrayBuffer, pdfSource?: PdfBytesSource) => void;
   setActiveDocId: (docId: string | null) => void;
   setCurrentPage: (page: number) => void;
   setZoom: (zoom: number) => void;
@@ -187,6 +190,7 @@ interface CanvasActions {
   getTotalPages: () => number;
   getMarkupsByPage: (docId?: string) => Record<number, CanvasMarkup[]>;
   getOriginalPdfBytes: (docId?: string) => ArrayBuffer | null;
+  getOriginalPdfBytesAsync: (docId?: string) => Promise<ArrayBuffer | null>;
   getTextContent: (page: number) => TextItemWithBounds[];
   setTextContent: (page: number, items: TextItemWithBounds[]) => void;
   getTextWords: (page: number) => TextWord[];
@@ -389,54 +393,44 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     const targetId = docId || state.activeDocId;
     if (!targetId) return null;
     const docData = state.pdfDocuments[targetId];
-    return docData?.originalPdfBytes || null;
+    if (docData?.originalPdfBytes) return docData.originalPdfBytes;
+    if (docData?.pdfSource?.source === 'memory') return docData.pdfSource.bytes;
+    return null;
+  },
+
+  getOriginalPdfBytesAsync: async (docId?: string) => {
+    const state = get();
+    const targetId = docId || state.activeDocId;
+    if (!targetId) return null;
+    const docData = state.pdfDocuments[targetId];
+    if (!docData) return null;
+    if (docData.originalPdfBytes) return docData.originalPdfBytes;
+    return materializePdfBytes(docData.pdfSource);
   },
   
   getTextContent: (page: number) => {
-    const docData = getCurrentDocData(get());
-    return docData?.textContentByPage[page] || [];
+    const state = get();
+    if (!state.activeDocId) return [];
+    return cacheGet<TextItemWithBounds[]>('text', state.activeDocId, page) || [];
   },
   
-  setTextContent: (page, items) => set((state) => {
-    if (!state.activeDocId) return state;
-    const docData = state.pdfDocuments[state.activeDocId];
-    if (!docData) return state;
-    return {
-      pdfDocuments: {
-        ...state.pdfDocuments,
-        [state.activeDocId]: {
-          ...docData,
-          textContentByPage: {
-            ...docData.textContentByPage,
-            [page]: items,
-          },
-        },
-      },
-    };
-  }),
+  setTextContent: (page, items) => {
+    const state = get();
+    if (!state.activeDocId) return;
+    cacheSet('text', state.activeDocId, page, items);
+  },
   
   getTextWords: (page: number) => {
-    const docData = getCurrentDocData(get());
-    return docData?.textWordsByPage[page] || [];
+    const state = get();
+    if (!state.activeDocId) return [];
+    return cacheGet<TextWord[]>('words', state.activeDocId, page) || [];
   },
   
-  setTextWords: (page, words) => set((state) => {
-    if (!state.activeDocId) return state;
-    const docData = state.pdfDocuments[state.activeDocId];
-    if (!docData) return state;
-    return {
-      pdfDocuments: {
-        ...state.pdfDocuments,
-        [state.activeDocId]: {
-          ...docData,
-          textWordsByPage: {
-            ...docData.textWordsByPage,
-            [page]: words,
-          },
-        },
-      },
-    };
-  }),
+  setTextWords: (page, words) => {
+    const state = get();
+    if (!state.activeDocId) return;
+    cacheSet('words', state.activeDocId, page, words);
+  },
   
   getOcrStatus: () => {
     const docData = getCurrentDocData(get());
@@ -462,8 +456,11 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     };
   }),
   
-  setPdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes) => {
+  setPdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes, pdfSource) => {
     clearPageAnalysisCache(docId);
+    cacheClearDoc(docId);
+    const source: PdfBytesSource | null = pdfSource
+      || (originalBytes ? { source: 'memory', bytes: originalBytes } : null);
     set((state) => {
       const existing = state.pdfDocuments[docId];
       return {
@@ -480,7 +477,8 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
             panOffset: { x: 0, y: 0 },
             hasViewState: false,
             viewUserAdjusted: false,
-            originalPdfBytes: originalBytes || null,
+            originalPdfBytes: source?.source === 'memory' ? source.bytes : null,
+            pdfSource: source,
             textContentByPage: {},
             textWordsByPage: {},
             pageGeometryByPage: {},
@@ -496,8 +494,11 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   },
   
   // Update PDF document while preserving existing markups
-  updatePdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes) => {
+  updatePdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes, pdfSource) => {
     clearPageAnalysisCache(docId);
+    cacheClearDoc(docId);
+    const source: PdfBytesSource | null = pdfSource
+      || (originalBytes ? { source: 'memory', bytes: originalBytes } : null);
     set((state) => {
       const existingDocData = state.pdfDocuments[docId];
       return {
@@ -514,7 +515,8 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
             panOffset: { x: 0, y: 0 },
             hasViewState: false,
             viewUserAdjusted: false,
-            originalPdfBytes: originalBytes,
+            originalPdfBytes: source?.source === 'memory' ? source.bytes : null,
+            pdfSource: source,
             textContentByPage: {},  // Clear text cache (page structure changed)
             textWordsByPage: {},
             pageGeometryByPage: {},
@@ -537,6 +539,13 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   
   removeDocument: (docId) => {
     clearPageAnalysisCache(docId);
+    cacheClearDoc(docId);
+    const doomed = get().pdfDocuments[docId]?.pdfDocument;
+    try {
+      doomed?.destroy?.();
+    } catch {
+      /* ignore */
+    }
     set((state) => {
       const { [docId]: _removedDoc, ...restDocs } = state.pdfDocuments;
       const { [docId]: _removedCals, ...restCals } = state.pageCalibrationsByDoc;
@@ -556,6 +565,15 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   
   clearAllDocuments: () => {
     clearPageAnalysisCache();
+    cacheClearAll();
+    const docs = Object.values(get().pdfDocuments);
+    for (const doc of docs) {
+      try {
+        doc.pdfDocument?.destroy?.();
+      } catch {
+        /* ignore */
+      }
+    }
     set({
       pdfDocuments: {},
       activeDocId: null,
@@ -1059,28 +1077,15 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   cachePageGeometries: (geometryByPage) => {
     const state = get();
     if (!state.activeDocId) return;
-    const docData = state.pdfDocuments[state.activeDocId];
-    if (!docData) return;
-    const next = { ...docData.pageGeometryByPage };
     geometryByPage.forEach((geometry, pageNumber) => {
-      next[pageNumber] = { ...geometry, pageNumber };
-    });
-    set({
-      pdfDocuments: {
-        ...state.pdfDocuments,
-        [state.activeDocId]: {
-          ...docData,
-          pageGeometryByPage: next,
-        },
-      },
+      cacheSet('geometry', state.activeDocId as string, pageNumber, { ...geometry, pageNumber });
     });
   },
 
   getPageGeometry: (pageNumber) => {
     const state = get();
     if (!state.activeDocId) return null;
-    const cached = state.pdfDocuments[state.activeDocId]?.pageGeometryByPage?.[pageNumber];
-    return cached || null;
+    return cacheGet<PageGeometry>('geometry', state.activeDocId, pageNumber) || null;
   },
 
   setEditorInteractionBusy: (busy) => set({ editorInteractionBusy: busy }),
