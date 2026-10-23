@@ -5,6 +5,7 @@ import { setSnapToObjectsEnabled, syncCanvasSnapFromEditor } from '@/store/snapS
 import { useProductStore } from '@/store/productStore';
 import { loadPDF, loadPDFFromUrl, getPageDimensions } from '@/lib/pdfLoader';
 import { decodeBase64Chunked } from '@/lib/base64Chunks';
+import { resolveProjectAssetPath } from '@/lib/projectAssetRef';
 import { toast } from 'sonner';
 import type { ProjectFile } from '@/types/project';
 import type { LinkedMeasurement, ProductNode } from '@/types/product';
@@ -120,10 +121,12 @@ export function useProjectOpen() {
           let pdfSource: { source: 'file'; path: string } | { source: 'memory'; bytes: ArrayBuffer } | undefined;
 
           if (projDoc.fileRef && projectPath) {
-            const dir = projectPath.replace(/[\\/][^\\/]+$/, '');
-            const sep = projectPath.includes('\\') ? '\\' : '/';
-            const assetPath = `${dir}${sep}${projDoc.fileRef.relPath}`;
-            await window.electronAPI?.allowLocalPath?.(assetPath);
+            let assetPath: string;
+            try {
+              assetPath = resolveProjectAssetPath(projectPath, projDoc.fileRef.relPath);
+            } catch {
+              throw new Error(`Missing PDF asset ${projDoc.fileRef.relPath} — keep the .bidveraai.files folder next to the project.`);
+            }
             const url = `bidvera-file://local/?p=${encodeURIComponent(assetPath)}`;
             console.log('[PROJECT-OPEN] Loading PDF from fileRef...');
             const loaded = await loadPDFFromUrl(url);
@@ -212,7 +215,24 @@ export function useProjectOpen() {
           console.log('[PROJECT-OPEN] Document loaded successfully:', newDocId);
         } catch (error) {
           console.error(`[PROJECT-OPEN] Failed to load document ${projDoc.name}:`, error);
-          toast.error(`Failed to load ${projDoc.name}`);
+          const rel = projDoc.fileRef?.relPath;
+          const message = rel
+            ? `Missing PDF asset ${rel} — keep the .bidveraai.files folder next to the project.`
+            : `Failed to load ${projDoc.name}`;
+          toast.error(message);
+          const newDocId = docIdMap.get(projDoc.id || `__missing_${docIndex}`) || `doc-${Date.now()}-${docIndex}`;
+          addDocument({
+            id: newDocId,
+            name: projDoc.name,
+            path: projectPath || '',
+            pages: projDoc.pages || 0,
+            currentPage: projDoc.currentPage || 1,
+            zoom: projDoc.zoom || 100,
+            modified: false,
+            markups: projDoc.markups || [],
+            measurements: projDoc.measurements || [],
+            fileRef: projDoc.fileRef,
+          });
         }
       }
 

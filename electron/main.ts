@@ -383,6 +383,10 @@ ipcMain.handle('dialog:saveFile', async (_, data: ArrayBuffer, defaultName: stri
 
   try {
     fs.writeFileSync(result.filePath, Buffer.from(data));
+    allowLocalPath(result.filePath);
+    if (result.filePath.toLowerCase().endsWith('.bidveraai')) {
+      allowLocalPath(projectAssetsDir(result.filePath));
+    }
     return { 
       success: true, 
       path: result.filePath, 
@@ -398,6 +402,7 @@ ipcMain.handle('dialog:saveFile', async (_, data: ArrayBuffer, defaultName: stri
 ipcMain.handle('dialog:saveFileDirect', async (_, data: ArrayBuffer, filePath: string) => {
   try {
     fs.writeFileSync(filePath, Buffer.from(data));
+    allowLocalPath(filePath);
     if (filePath.toLowerCase().endsWith('.bidveraai')) {
       allowLocalPath(projectAssetsDir(filePath));
     }
@@ -408,10 +413,19 @@ ipcMain.handle('dialog:saveFileDirect', async (_, data: ArrayBuffer, filePath: s
   }
 });
 
-ipcMain.handle('allowlist:add', async (_, filePath: string) => {
-  if (typeof filePath !== 'string' || !filePath) return { success: false };
-  allowLocalPath(filePath);
-  return { success: true, path: normalizeMaybe(filePath) };
+ipcMain.handle('fs:snapshotOriginal', async (_, filePath: string) => {
+  if (!isAllowedLocalPath(filePath) || !fs.existsSync(filePath)) {
+    return { success: false, error: 'not-allowed' };
+  }
+  const sha256 = await hashFileSha256(filePath);
+  const cacheDir = path.join(app.getPath('userData'), 'pdf-cache');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const dest = path.join(cacheDir, `${sha256}.pdf`);
+  if (!fs.existsSync(dest)) {
+    fs.copyFileSync(filePath, dest);
+  }
+  allowLocalPath(dest);
+  return { success: true, path: dest, sha256 };
 });
 
 ipcMain.handle('fs:hashFile', async (_, filePath: string) => {
@@ -442,7 +456,9 @@ ipcMain.handle('project:writeAsset', async (_, payload: {
   if (!projectPath || !sha256 || !/^[a-f0-9]{64}$/i.test(sha256)) {
     return { success: false, error: 'invalid-args' };
   }
-  allowLocalPath(projectPath);
+  if (!isAllowedLocalPath(projectPath)) {
+    return { success: false, error: 'not-allowed' };
+  }
   const dest = assetDestPath(projectPath, sha256.toLowerCase());
   const dir = projectAssetsDir(projectPath);
   fs.mkdirSync(dir, { recursive: true });
@@ -450,6 +466,15 @@ ipcMain.handle('project:writeAsset', async (_, payload: {
   allowLocalPath(dest);
 
   if (fs.existsSync(dest)) {
+    if (payload.sourcePath && path.resolve(payload.sourcePath) === path.resolve(dest)) {
+      return {
+        success: true,
+        skipped: true,
+        relPath: `${path.parse(projectPath).name}.bidveraai.files/${sha256.toLowerCase()}.pdf`,
+        sha256: sha256.toLowerCase(),
+        byteLength: fs.statSync(dest).size,
+      };
+    }
     const existing = await hashFileSha256(dest);
     if (existing.toLowerCase() === sha256.toLowerCase()) {
       return {
@@ -462,18 +487,29 @@ ipcMain.handle('project:writeAsset', async (_, payload: {
     }
   }
 
+  const tmp = `${dest}.tmp`;
   if (payload.sourcePath) {
     if (!isAllowedLocalPath(payload.sourcePath)) {
       return { success: false, error: 'not-allowed' };
     }
-    fs.copyFileSync(payload.sourcePath, dest);
+    if (path.resolve(payload.sourcePath) === path.resolve(dest)) {
+      return {
+        success: true,
+        skipped: true,
+        relPath: `${path.parse(projectPath).name}.bidveraai.files/${sha256.toLowerCase()}.pdf`,
+        sha256: sha256.toLowerCase(),
+        byteLength: fs.statSync(dest).size,
+      };
+    }
+    fs.copyFileSync(payload.sourcePath, tmp);
   } else if (payload.data) {
-    fs.writeFileSync(dest, Buffer.from(payload.data));
+    fs.writeFileSync(tmp, Buffer.from(payload.data));
   } else {
     return { success: false, error: 'no-source' };
   }
+  fs.renameSync(tmp, dest);
 
-  const writtenHash = await hashFileSha256(dest);
+  const writtenHash = sha256.toLowerCase();
   return {
     success: true,
     skipped: false,
@@ -482,10 +518,6 @@ ipcMain.handle('project:writeAsset', async (_, payload: {
     byteLength: fs.statSync(dest).size,
   };
 });
-
-function normalizeMaybe(filePath: string): string {
-  return path.resolve(filePath);
-}
 
 // IPC Handlers for secure session storage
 ipcMain.handle('auth:storeSession', async (_, sessionData: string) => {
@@ -622,6 +654,8 @@ app.on('open-file', (event, filePath) => {
   
   if (mainWindow) {
     // Window already exists, send file path to renderer
+    allowLocalPath(filePath);
+    allowLocalPath(projectAssetsDir(filePath));
     mainWindow.webContents.send('open-project-file', filePath);
   } else {
     // Store for later when window is created
@@ -640,7 +674,7 @@ if (process.platform === 'win32' && process.argv.length >= 2) {
 
 app.whenReady().then(() => {
   protocol.handle('bidvera-file', async (request) => {
-    const served = serveAllowedFile(request.url, request.headers.get('Range'));
+    const served = await serveAllowedFile(request.url, request.headers.get('Range'));
     return new Response(served.body, { status: served.status, headers: served.headers });
   });
 
@@ -708,9 +742,12 @@ app.whenReady().then(() => {
 
   // If a file was specified, open it after window is ready
   if (fileToOpen && mainWindow) {
+    const pendingPath = fileToOpen;
     mainWindow.webContents.once('did-finish-load', () => {
-      console.log('[DEBUG] Sending file to renderer:', fileToOpen);
-      mainWindow?.webContents.send('open-project-file', fileToOpen);
+      console.log('[DEBUG] Sending file to renderer:', pendingPath);
+      allowLocalPath(pendingPath);
+      allowLocalPath(projectAssetsDir(pendingPath));
+      mainWindow?.webContents.send('open-project-file', pendingPath);
       fileToOpen = null;
     });
   }

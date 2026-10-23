@@ -3,7 +3,7 @@ import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { useFileOpen } from '@/hooks/useFileOpen';
-import { isRenderingCancelled, prefetchPageOperators, renderPage } from '@/lib/pdfLoader';
+import { cancelCanvasRender, isRenderingCancelled, prefetchPageOperators, renderPage } from '@/lib/pdfLoader';
 import { MarkupCanvas } from './MarkupCanvas';
 import { PlacementDebugOverlay } from './PlacementDebugOverlay';
 import { CanvasStatusChip } from './CanvasStatusChip';
@@ -242,6 +242,7 @@ export function Canvas() {
     render();
     return () => {
       cancelled = true;
+      if (pdfCanvasRef.current) cancelCanvasRender(pdfCanvasRef.current);
     };
   }, [pdfDocument, currentPage, setPageDimensions]);
 

@@ -32,7 +32,7 @@ export function TrainingMaterialDialog({ open, onOpenChange }: TrainingMaterialD
   const { user } = useAuth();
   const { toast } = useToast();
   const { documents, activeDocument } = useEditorStore();
-  const { getOriginalPdfBytes } = useCanvasStore();
+  const { getOriginalPdfBytesAsync } = useCanvasStore();
 
   const activeDoc = useMemo(
     () => documents.find(doc => doc.id === activeDocument),
@@ -76,12 +76,12 @@ export function TrainingMaterialDialog({ open, onOpenChange }: TrainingMaterialD
     }
   };
 
-  const handleUseCurrentFile = () => {
+  const handleUseCurrentFile = async () => {
     if (!activeDoc) {
       toast({ title: 'No document', description: 'Open a PDF on the canvas first.' });
       return;
     }
-    const bytes = getOriginalPdfBytes(activeDoc.id);
+    const bytes = await getOriginalPdfBytesAsync(activeDoc.id);
     if (!bytes) {
       toast({ title: 'Unavailable', description: 'The current document data is not available.' });
       return;

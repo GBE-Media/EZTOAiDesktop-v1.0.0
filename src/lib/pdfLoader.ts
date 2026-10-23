@@ -6,6 +6,27 @@ import { capRenderScale, cssPageSize } from './renderScaleCap';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 const renderTasks = new WeakMap<HTMLCanvasElement, pdfjsLib.RenderTask>();
+const renderSeq = new WeakMap<HTMLCanvasElement, number>();
+
+export function cancelCanvasRender(canvas: HTMLCanvasElement): void {
+  renderTasks.get(canvas)?.cancel();
+  renderSeq.set(canvas, (renderSeq.get(canvas) ?? 0) + 1);
+}
+
+export function createPdfRangeTransport(
+  url: string,
+  size: number,
+): pdfjsLib.PDFDataRangeTransport {
+  class FileRangeTransport extends pdfjsLib.PDFDataRangeTransport {
+    requestDataRange(begin: number, end: number) {
+      fetch(url, { headers: { Range: `bytes=${begin}-${end - 1}` } })
+        .then(r => r.arrayBuffer())
+        .then(b => this.onDataRange(begin, new Uint8Array(b)))
+        .catch(() => this.onDataRange(begin, new Uint8Array(0)));
+    }
+  }
+  return new FileRangeTransport(size, new Uint8Array(0));
+}
 
 export function isRenderingCancelled(error: unknown): boolean {
   return !!error && typeof error === 'object' && (error as { name?: string }).name === 'RenderingCancelledException';
@@ -30,8 +51,8 @@ export async function loadPDF(
 ): Promise<LoadedPDF> {
   let documentSource: string | ArrayBuffer | Uint8Array = source;
 
-  if (source instanceof ArrayBuffer && options?.copy !== false) {
-    documentSource = new Uint8Array(source);
+  if (source instanceof ArrayBuffer) {
+    documentSource = options?.copy === false ? new Uint8Array(source) : new Uint8Array(source.slice(0));
   }
 
   const loadingTask = pdfjsLib.getDocument(documentSource);
@@ -47,11 +68,16 @@ export async function loadPDFFromUrl(
   url: string,
   options?: { rangeChunkSize?: number },
 ): Promise<LoadedPDF> {
+  const head = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+  if (head.status !== 206) throw new Error(`PDF open failed (${head.status})`);
+  const contentRange = head.headers.get('Content-Range');
+  const size = Number(contentRange?.split('/')[1]);
+  if (!Number.isFinite(size) || size <= 0) throw new Error('PDF open failed (missing size)');
   const loadingTask = pdfjsLib.getDocument({
-    url,
+    range: createPdfRangeTransport(url, size),
     rangeChunkSize: options?.rangeChunkSize ?? (1 << 20),
     disableAutoFetch: true,
-    disableStream: false,
+    disableStream: true,
   });
   const document = await loadingTask.promise;
   return {
@@ -77,8 +103,14 @@ export async function renderPage(
 ): Promise<PDFPageInfo> {
   const previous = renderTasks.get(canvas);
   previous?.cancel();
+  const seq = (renderSeq.get(canvas) ?? 0) + 1;
+  renderSeq.set(canvas, seq);
 
   const page = await document.getPage(pageNumber);
+  if (renderSeq.get(canvas) !== seq) {
+    throw Object.assign(new Error('superseded'), { name: 'RenderingCancelledException' });
+  }
+  renderTasks.get(canvas)?.cancel();
   const devicePixelRatio = window.devicePixelRatio || 1;
   const outputScale = devicePixelRatio * 2;
   const originalViewport = page.getViewport({ scale: 1 });

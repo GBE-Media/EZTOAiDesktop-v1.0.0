@@ -11,17 +11,21 @@ const textContent = new Map<string, Bucket<unknown>>();
 const textWords = new Map<string, Bucket<unknown>>();
 const pageGeometry = new Map<string, Bucket<unknown>>();
 const lruOrder = new Map<string, number[]>();
+const pinnedWords = new Map<string, Set<number>>();
 
 function touch(docId: string, page: number): void {
   const order = lruOrder.get(docId) || [];
   const next = order.filter(p => p !== page);
   next.push(page);
+  const pinned = pinnedWords.get(docId) || new Set();
   while (next.length > PAGE_CACHE_LIMIT) {
-    const evict = next.shift();
+    const evict = next.find(p => !pinned.has(p)) ?? next.shift();
     if (evict == null) break;
+    const idx = next.indexOf(evict);
+    if (idx >= 0) next.splice(idx, 1);
+    if (pinned.has(evict)) continue;
     textContent.get(docId)?.delete(evict);
     textWords.get(docId)?.delete(evict);
-    // Geometry is tiny; keep it unbounded inside the same map keyed by page.
   }
   lruOrder.set(docId, next);
 }
@@ -37,12 +41,25 @@ function getBucket<T>(store: Map<string, Bucket<T>>, docId: string): Bucket<T> {
 
 export function cacheGet<T>(kind: 'text' | 'words' | 'geometry', docId: string, page: number): T | undefined {
   const store = kind === 'text' ? textContent : kind === 'words' ? textWords : pageGeometry;
-  return getBucket(store, docId).get(page) as T | undefined;
+  const value = getBucket(store, docId).get(page) as T | undefined;
+  if (value !== undefined && kind !== 'geometry') touch(docId, page);
+  return value;
 }
 
-export function cacheSet<T>(kind: 'text' | 'words' | 'geometry', docId: string, page: number, value: T): void {
+export function cacheSet<T>(
+  kind: 'text' | 'words' | 'geometry',
+  docId: string,
+  page: number,
+  value: T,
+  options?: { pin?: boolean },
+): void {
   const store = kind === 'text' ? textContent : kind === 'words' ? textWords : pageGeometry;
   getBucket(store, docId).set(page, value);
+  if (options?.pin && kind === 'words') {
+    const set = pinnedWords.get(docId) || new Set();
+    set.add(page);
+    pinnedWords.set(docId, set);
+  }
   if (kind !== 'geometry') touch(docId, page);
 }
 
@@ -51,6 +68,7 @@ export function cacheClearDoc(docId: string): void {
   textWords.delete(docId);
   pageGeometry.delete(docId);
   lruOrder.delete(docId);
+  pinnedWords.delete(docId);
 }
 
 export function cacheClearAll(): void {
@@ -58,8 +76,13 @@ export function cacheClearAll(): void {
   textWords.clear();
   pageGeometry.clear();
   lruOrder.clear();
+  pinnedWords.clear();
 }
 
 export function cacheTextPageCount(docId: string): number {
   return textContent.get(docId)?.size ?? 0;
+}
+
+export function cacheWordsPageCount(docId: string): number {
+  return textWords.get(docId)?.size ?? 0;
 }

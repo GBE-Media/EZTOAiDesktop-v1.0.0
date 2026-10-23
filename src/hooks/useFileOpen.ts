@@ -64,7 +64,6 @@ export function useFileOpen() {
 
   const processFileFromDisk = useCallback(async (filePath: string, fileName: string, url?: string) => {
     try {
-      await window.electronAPI?.allowLocalPath?.(filePath);
       const { document: pdfDoc, numPages } = await loadPDFFromUrl(url || bidveraFileUrl(filePath));
       await attachPdf(pdfDoc, numPages, fileName, filePath);
     } catch (error) {

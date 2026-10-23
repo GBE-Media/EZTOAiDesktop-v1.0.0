@@ -5,7 +5,7 @@ import { useProductStore } from '@/store/productStore';
 import { toast } from 'sonner';
 import type { ProjectFile, ProjectDocument } from '@/types/project';
 import type { LinkedMeasurement, ProductNode } from '@/types/product';
-import { sha256Hex } from '@/lib/base64Chunks';
+import { encodeBase64Chunked, sha256Hex } from '@/lib/base64Chunks';
 
 const PROJECT_VERSION = '2';
 const PROJECT_EXTENSION = 'bidveraai';
@@ -35,7 +35,20 @@ export function useProjectSave() {
   const writeAsset = useCallback(async (projectPath: string, docId: string): Promise<ProjectDocument | null> => {
     const doc = documents.find(d => d.id === docId);
     const docData = pdfDocuments[docId];
-    if (!doc || !docData) return null;
+    if (!doc) return null;
+    if (!docData) {
+      return {
+        id: doc.id,
+        name: doc.name,
+        originalPath: doc.path?.endsWith('.bidveraai') ? undefined : doc.path,
+        fileRef: doc.fileRef,
+        pages: doc.pages,
+        currentPage: doc.currentPage,
+        zoom: doc.zoom,
+        markups: getMarkupsByPage(docId) ? Object.values(getMarkupsByPage(docId)).flat() : (doc.markups || []),
+        measurements: doc.measurements,
+      } as ProjectDocument;
+    }
 
     const markupsByPage = getMarkupsByPage(docId);
     const allMarkups: unknown[] = [];
@@ -45,16 +58,17 @@ export function useProjectSave() {
       });
     });
 
-    const hasPageEdits = doc.modified;
     const fileSource = docData.pdfSource?.source === 'file' ? docData.pdfSource.path : null;
     let sha256: string;
     let byteLength: number;
     let sourcePath: string | undefined;
     let data: ArrayBuffer | undefined;
 
-    if (fileSource && window.electronAPI?.hashFile && !hasPageEdits) {
+    if (fileSource && window.electronAPI?.hashFile) {
       const hashed = await window.electronAPI.hashFile(fileSource);
-      if (!hashed.success || !hashed.sha256) return null;
+      if (!hashed.success || !hashed.sha256) {
+        throw new Error(hashed.error || `Failed to hash ${doc.name}`);
+      }
       sha256 = hashed.sha256;
       byteLength = hashed.byteLength || 0;
       sourcePath = fileSource;
@@ -73,7 +87,9 @@ export function useProjectSave() {
         sourcePath,
         data,
       });
-      if (!written.success || !written.relPath || !written.sha256) return null;
+      if (!written.success || !written.relPath || !written.sha256) {
+        throw new Error(written.error || `Failed to write asset for ${doc.name}`);
+      }
       return {
         id: doc.id,
         name: doc.name,
@@ -91,16 +107,13 @@ export function useProjectSave() {
       };
     }
 
-    // Browser fallback: cannot write sidecar files; skip PDF bytes (v2 JSON only).
+    const bytes = data || await getOriginalPdfBytesAsync(docId);
+    if (!bytes) throw new Error(`No PDF bytes for ${doc.name}`);
     return {
       id: doc.id,
       name: doc.name,
       originalPath: doc.path,
-      fileRef: {
-        relPath: `${doc.name}.files/${sha256}.pdf`,
-        sha256,
-        byteLength,
-      },
+      pdfData: encodeBase64Chunked(bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes),
       pages: doc.pages,
       currentPage: doc.currentPage,
       zoom: doc.zoom,
@@ -112,13 +125,9 @@ export function useProjectSave() {
   const exportDocumentsData = useCallback(async (projectPath: string): Promise<ProjectDocument[]> => {
     const projectDocs: ProjectDocument[] = [];
     for (const doc of documents) {
-      if (!pdfDocuments[doc.id]) continue;
-      try {
-        const exported = await writeAsset(projectPath, doc.id);
-        if (exported) projectDocs.push(exported);
-      } catch (error) {
-        console.error(`Failed to export document ${doc.name}:`, error);
-      }
+      const exported = await writeAsset(projectPath, doc.id);
+      if (!exported) throw new Error(`Failed to save document ${doc.name}`);
+      projectDocs.push(exported);
     }
     return projectDocs;
   }, [documents, pdfDocuments, writeAsset]);

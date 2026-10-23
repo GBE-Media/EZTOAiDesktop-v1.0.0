@@ -117,6 +117,14 @@ export function useSave() {
       }
 
       try {
+        const canvas = useCanvasStore.getState();
+        const source = canvas.pdfDocuments[doc.id]?.pdfSource;
+        if (source?.source === 'file' && source.path === doc.path && window.electronAPI?.snapshotOriginal) {
+          const snap = await window.electronAPI.snapshotOriginal(source.path);
+          if (snap.success && snap.path) {
+            canvas.setPdfSource(doc.id, { source: 'file', path: snap.path });
+          }
+        }
         console.log('[SAVE] Saving directly to:', doc.path);
         const result = await window.electronAPI!.saveFileDirect(arrayBuffer, doc.path);
         if (result.success) {

@@ -164,6 +164,7 @@ interface CanvasActions {
   // PDF actions
   setPdfDocument: (docId: string, doc: any, totalPages: number, originalWidth: number, originalHeight: number, originalBytes?: ArrayBuffer, pdfSource?: PdfBytesSource) => void;
   updatePdfDocument: (docId: string, doc: any, totalPages: number, originalWidth: number, originalHeight: number, originalBytes: ArrayBuffer, pdfSource?: PdfBytesSource) => void;
+  setPdfSource: (docId: string, source: PdfBytesSource) => void;
   setActiveDocId: (docId: string | null) => void;
   setCurrentPage: (page: number) => void;
   setZoom: (zoom: number) => void;
@@ -429,7 +430,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   setTextWords: (page, words) => {
     const state = get();
     if (!state.activeDocId) return;
-    cacheSet('words', state.activeDocId, page, words);
+    cacheSet('words', state.activeDocId, page, words, { pin: true });
   },
   
   getOcrStatus: () => {
@@ -459,6 +460,8 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   setPdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes, pdfSource) => {
     clearPageAnalysisCache(docId);
     cacheClearDoc(docId);
+    const previous = get().pdfDocuments[docId]?.pdfDocument;
+    if (previous && previous !== doc) void previous.destroy?.();
     const source: PdfBytesSource | null = pdfSource
       || (originalBytes ? { source: 'memory', bytes: originalBytes } : null);
     set((state) => {
@@ -497,6 +500,8 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   updatePdfDocument: (docId, doc, totalPages, originalWidth, originalHeight, originalBytes, pdfSource) => {
     clearPageAnalysisCache(docId);
     cacheClearDoc(docId);
+    const previous = get().pdfDocuments[docId]?.pdfDocument;
+    if (previous && previous !== doc) void previous.destroy?.();
     const source: PdfBytesSource | null = pdfSource
       || (originalBytes ? { source: 'memory', bytes: originalBytes } : null);
     set((state) => {
@@ -529,6 +534,21 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     });
   },
   
+  setPdfSource: (docId, source) => set((state) => {
+    const existing = state.pdfDocuments[docId];
+    if (!existing) return state;
+    return {
+      pdfDocuments: {
+        ...state.pdfDocuments,
+        [docId]: {
+          ...existing,
+          pdfSource: source,
+          originalPdfBytes: source.source === 'memory' ? source.bytes : existing.originalPdfBytes,
+        },
+      },
+    };
+  }),
+
   setActiveDocId: (docId) => set((state) => {
     const docData = docId ? state.pdfDocuments[docId] : null;
     return {
