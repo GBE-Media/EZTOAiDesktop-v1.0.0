@@ -17,6 +17,7 @@ describe('canvasStore page calibration isolation', () => {
           originalPageHeight: 800,
           panOffset: { x: 0, y: 0 },
           hasViewState: false,
+          viewUserAdjusted: false,
           originalPdfBytes: null,
           textContentByPage: {},
           textWordsByPage: {},

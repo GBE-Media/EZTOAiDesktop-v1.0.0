@@ -18,6 +18,13 @@ import { attachProductsForPlacedMarkups } from '@/services/ai/catalog/linkPlaced
 import { confirmedCountMarkerFields } from '@/components/editor/markupDrawAppearance';
 import { extractVectorPaths, nearestPointOnLine, type DocumentSnapData, type DocumentLine } from '@/lib/pdfVectorExtractor';
 import { clearPageAnalysisCache } from '@/services/ai/agent/pageAnalysisCache';
+import {
+  computeFitTransform,
+  FIT_PADDING_PX,
+  fitScaleToZoomPercent,
+} from '@/lib/computeFitTransform';
+
+const BASE_RENDER_SCALE = 1.5;
 
 /**
  * When an update changes productId on an existing markup id (link_catalog),
@@ -73,6 +80,8 @@ interface DocumentPdfData {
   originalPageHeight: number;
   panOffset: { x: number; y: number };
   hasViewState: boolean;
+  /** True only after the user pans or zooms. Auto-fit may still run until then. */
+  viewUserAdjusted: boolean;
   originalPdfBytes: ArrayBuffer | null; // Store original PDF for saving
   textContentByPage: Record<number, TextItemWithBounds[]>; // Cached text for highlight snapping
   textWordsByPage: Record<number, TextWord[]>; // Word-level text for professional highlighting
@@ -158,10 +167,17 @@ interface CanvasActions {
   setPageDimensions: (width: number, height: number) => void;
   removeDocument: (docId: string) => void;
   clearAllDocuments: () => void;
-  fitToCanvas: (containerWidth: number, containerHeight: number) => void;
-  fitToWidth: (containerWidth: number) => void;
+  fitToCanvas: (
+    containerWidth: number,
+    containerHeight: number,
+    options?: { pageW?: number; pageH?: number; rotation?: number },
+  ) => boolean;
+  fitToWidth: (
+    containerWidth: number,
+    options?: { pageW?: number; pageH?: number; rotation?: number; containerHeight?: number },
+  ) => boolean;
   setContainerDimensions: (width: number, height: number) => void;
-  setPanOffset: (x: number, y: number) => void;
+  setPanOffset: (x: number, y: number, options?: { userAdjusted?: boolean }) => void;
   resetPanOffset: () => void;
   
   // Helper selectors (use these functions instead of getters)
@@ -463,6 +479,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
             originalPageHeight: originalHeight,
             panOffset: { x: 0, y: 0 },
             hasViewState: false,
+            viewUserAdjusted: false,
             originalPdfBytes: originalBytes || null,
             textContentByPage: {},
             textWordsByPage: {},
@@ -494,8 +511,9 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
             markupsByPage: existingDocData?.markupsByPage || {},  // PRESERVE existing markups
             originalPageWidth: originalWidth,
             originalPageHeight: originalHeight,
-            panOffset: existingDocData?.panOffset || { x: 0, y: 0 },
-            hasViewState: existingDocData?.hasViewState ?? false,
+            panOffset: { x: 0, y: 0 },
+            hasViewState: false,
+            viewUserAdjusted: false,
             originalPdfBytes: originalBytes,
             textContentByPage: {},  // Clear text cache (page structure changed)
             textWordsByPage: {},
@@ -555,7 +573,12 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     return {
       pdfDocuments: {
         ...state.pdfDocuments,
-        [state.activeDocId]: { ...docData, currentPage: page, hasViewState: true },
+        [state.activeDocId]: {
+          ...docData,
+          currentPage: page,
+          hasViewState: false,
+          viewUserAdjusted: false,
+        },
       },
     };
   }),
@@ -571,7 +594,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
       zoom,
       pdfDocuments: {
         ...state.pdfDocuments,
-        [state.activeDocId]: { ...docData, zoom, hasViewState: true },
+        [state.activeDocId]: { ...docData, zoom, hasViewState: true, viewUserAdjusted: true },
       },
     };
   }),
@@ -586,27 +609,40 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     return { containerWidth: width, containerHeight: height };
   }),
   
-  fitToCanvas: (containerWidth, containerHeight) => {
+  fitToCanvas: (containerWidth, containerHeight, options) => {
     const state = get();
     const docData = getCurrentDocData(state);
-    if (!docData) return;
-    
-    const { originalPageWidth, originalPageHeight } = docData;
-    if (!originalPageWidth || !originalPageHeight) return;
-    
-    // Account for padding (64px on each side = 128px total)
-    const padding = 128;
-    const availableWidth = containerWidth - padding;
-    const availableHeight = containerHeight - padding;
-    
-    // Calculate zoom to fit both dimensions
-    const scaleX = availableWidth / (originalPageWidth * 1.5); // Account for base scale of 1.5
-    const scaleY = availableHeight / (originalPageHeight * 1.5);
-    const fitScale = Math.min(scaleX, scaleY);
-    
-    // Convert to percentage and clamp between 25-400%
-    const newZoom = Math.max(25, Math.min(400, Math.round(fitScale * 100)));
-    
+    if (!docData || !state.activeDocId) return false;
+
+    const pageW = options?.pageW && options.pageW > 0
+      ? options.pageW
+      : docData.originalPageWidth * BASE_RENDER_SCALE;
+    const pageH = options?.pageH && options.pageH > 0
+      ? options.pageH
+      : docData.originalPageHeight * BASE_RENDER_SCALE;
+    const rotation = options?.rotation ?? useEditorStore.getState().rotation;
+    const fit = computeFitTransform({
+      containerW: containerWidth,
+      containerH: containerHeight,
+      pageW,
+      pageH,
+      rotation,
+      padding: FIT_PADDING_PX,
+    });
+    if (!fit) return false;
+
+    const newZoom = fitScaleToZoomPercent(fit.scale);
+    const currentDoc = state.pdfDocuments[state.activeDocId];
+    if (
+      currentDoc
+      && currentDoc.zoom === newZoom
+      && currentDoc.panOffset.x === fit.offsetX
+      && currentDoc.panOffset.y === fit.offsetY
+      && currentDoc.hasViewState
+      && !currentDoc.viewUserAdjusted
+    ) {
+      return true;
+    }
     set((currentState) => ({
       zoom: newZoom,
       pdfDocuments: {
@@ -614,25 +650,38 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
         [currentState.activeDocId as string]: {
           ...currentState.pdfDocuments[currentState.activeDocId as string],
           zoom: newZoom,
-          panOffset: { x: 0, y: 0 },
+          panOffset: { x: fit.offsetX, y: fit.offsetY },
           hasViewState: true,
+          viewUserAdjusted: false,
         },
       },
     }));
+    return true;
   },
 
-  fitToWidth: (containerWidth) => {
+  fitToWidth: (containerWidth, options) => {
     const state = get();
     const docData = getCurrentDocData(state);
-    if (!docData) return;
+    if (!docData || !state.activeDocId) return false;
 
-    const { originalPageWidth } = docData;
-    if (!originalPageWidth) return;
+    const pageW = options?.pageW && options.pageW > 0
+      ? options.pageW
+      : docData.originalPageWidth * BASE_RENDER_SCALE;
+    const pageH = options?.pageH && options.pageH > 0
+      ? options.pageH
+      : docData.originalPageHeight * BASE_RENDER_SCALE;
+    const containerHeight = options?.containerHeight ?? state.containerHeight;
+    const rotation = options?.rotation ?? useEditorStore.getState().rotation;
+    if (!(containerWidth > 0) || !(pageW > 0)) return false;
 
-    const padding = 128;
-    const availableWidth = containerWidth - padding;
-    const fitScale = availableWidth / (originalPageWidth * 1.5);
-    const newZoom = Math.max(25, Math.min(400, Math.round(fitScale * 100)));
+    const rot = ((Math.round(rotation) % 360) + 360) % 360;
+    const dispW = rot === 90 || rot === 270 ? pageH : pageW;
+    const availW = Math.max(1, containerWidth - 2 * FIT_PADDING_PX);
+    const scale = availW / dispW;
+    if (!Number.isFinite(scale) || scale <= 0) return false;
+    const newZoom = fitScaleToZoomPercent(scale);
+    const offsetX = (containerWidth - pageW) / 2;
+    const offsetY = containerHeight > 0 ? (containerHeight - pageH) / 2 : 0;
 
     set((currentState) => ({
       zoom: newZoom,
@@ -641,21 +690,29 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
         [currentState.activeDocId as string]: {
           ...currentState.pdfDocuments[currentState.activeDocId as string],
           zoom: newZoom,
-          panOffset: { x: 0, y: 0 },
+          panOffset: { x: offsetX, y: offsetY },
           hasViewState: true,
+          viewUserAdjusted: false,
         },
       },
     }));
+    return true;
   },
   
-  setPanOffset: (x, y) => set((state) => {
+  setPanOffset: (x, y, options) => set((state) => {
     if (!state.activeDocId) return state;
     const docData = state.pdfDocuments[state.activeDocId];
     if (!docData) return state;
+    const userAdjusted = options?.userAdjusted ?? true;
     return {
       pdfDocuments: {
         ...state.pdfDocuments,
-        [state.activeDocId]: { ...docData, panOffset: { x, y }, hasViewState: true },
+        [state.activeDocId]: {
+          ...docData,
+          panOffset: { x, y },
+          hasViewState: true,
+          viewUserAdjusted: userAdjusted ? true : docData.viewUserAdjusted,
+        },
       },
     };
   }),

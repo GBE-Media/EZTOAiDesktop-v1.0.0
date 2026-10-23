@@ -10,6 +10,7 @@ import { CanvasStatusChip } from './CanvasStatusChip';
 import { CalibrationDialog } from './CalibrationDialog';
 import { FileText, Upload, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { activatePlacementDebugForPage } from '@/services/ai/placement';
+import { panDeltaKeepingCenter } from '@/lib/computeFitTransform';
 
 // Base scale for PDF rendering - this is the scale at which we render the PDF
 // The pdfLoader already handles high-DPI internally, so we use 1.5 for good quality
@@ -24,7 +25,7 @@ export function Canvas() {
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const pdfTransformRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(false);
-  const [canvasDimensions, setCanvasDimensions] = useState({ width: 612, height: 792 });
+  const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
   const [isDragOver, setIsDragOver] = useState(false);
   const [isSelecting, setIsSelecting] = useState(false);
   const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
@@ -57,8 +58,6 @@ export function Canvas() {
     setCurrentPage,
     setPageDimensions,
     setContainerDimensions,
-    containerWidth,
-    containerHeight,
     fitToCanvas,
     aiSelectionActive,
     aiSelectionRect: storedAiSelectionRect,
@@ -146,21 +145,49 @@ export function Canvas() {
     }, NAV_SETTLE_MS);
   }, []);
 
-  // Track container dimensions for fit-to-canvas (re-bind when document shell mounts)
+  // Track container size and fit/center once page + container sizes are known.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    const updateContainerDimensions = () => {
-      const { clientWidth, clientHeight } = el;
-      setContainerDimensions(clientWidth, clientHeight);
+    const applyViewport = (width: number, height: number) => {
+      const store = useCanvasStore.getState();
+      const prevW = store.containerWidth;
+      const prevH = store.containerHeight;
+      setContainerDimensions(width, height);
+
+      if (!pdfDocument) return;
+      const pageW = canvasDimensions.width;
+      const pageH = canvasDimensions.height;
+      if (!(pageW > 0) || !(pageH > 0) || !(width > 0) || !(height > 0)) return;
+
+      const doc = store.activeDocId ? store.pdfDocuments[store.activeDocId] : null;
+      const userAdjusted = doc?.viewUserAdjusted ?? false;
+      if (!userAdjusted) {
+        fitToCanvas(width, height, { pageW, pageH, rotation });
+        return;
+      }
+      if (prevW > 0 && prevH > 0 && (prevW !== width || prevH !== height)) {
+        const delta = panDeltaKeepingCenter(prevW, prevH, width, height);
+        const pan = doc?.panOffset ?? ZERO_PAN;
+        useCanvasStore.getState().setPanOffset(pan.x + delta.x, pan.y + delta.y, { userAdjusted: true });
+      }
     };
 
-    updateContainerDimensions();
-    const resizeObserver = new ResizeObserver(updateContainerDimensions);
+    const onResize = () => applyViewport(el.clientWidth, el.clientHeight);
+    onResize();
+    const resizeObserver = new ResizeObserver(onResize);
     resizeObserver.observe(el);
     return () => resizeObserver.disconnect();
-  }, [setContainerDimensions, hasActivePdf]);
+  }, [
+    setContainerDimensions,
+    hasActivePdf,
+    pdfDocument,
+    canvasDimensions.width,
+    canvasDimensions.height,
+    rotation,
+    fitToCanvas,
+  ]);
 
   // Sync canvas store's activeDocId with editorStore's activeDocument
   useEffect(() => {
@@ -169,15 +196,9 @@ export function Canvas() {
     setActiveDocId(activeDocument);
   }, [activeDocument, activeDocId, hasActivePdf, setActiveDocId]);
 
-  // Auto-fit when PDF first loads (do not depend on whole currentDocData object)
   useEffect(() => {
-    if (pdfDocument && containerRef.current && !hasViewState) {
-      if (containerWidth > 0 && containerHeight > 0) {
-        containerRef.current.scrollTo({ left: 0, top: 0 });
-        fitToCanvas(containerWidth, containerHeight);
-      }
-    }
-  }, [pdfDocument, activeDocId, hasViewState, fitToCanvas, containerWidth, containerHeight]);
+    setCanvasDimensions({ width: 0, height: 0 });
+  }, [pdfDocument, currentPage, activeDocId]);
 
   // Render PDF page when document or page changes (NOT on zoom/pan/markup updates)
   useEffect(() => {
@@ -830,7 +851,7 @@ export function Canvas() {
       {/* Main canvas area */}
       <div 
         ref={containerRef}
-        className={`flex-1 overflow-auto relative ${
+        className={`flex-1 overflow-hidden relative ${
           isPanning
             ? 'cursor-grabbing'
             : activeTool === 'pan' || spacePanHeld
@@ -850,28 +871,22 @@ export function Canvas() {
       >
         <CanvasStatusChip />
         
-        {/* PDF Page - CSS transform for zoom, pan, and rotation */}
-        <div 
-          className="flex items-center justify-center"
-          style={{ 
-            minWidth: '100%',
-            minHeight: '100%',
-            width: 'max-content',
-            height: 'max-content',
-            padding: '64px',
+        {/* Page at container origin; pan/zoom/rotate via CSS transform (origin: page center). */}
+        <div
+          className="relative shadow-2xl"
+          ref={pdfTransformRef}
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            width: canvasDimensions.width || undefined,
+            height: canvasDimensions.height || undefined,
+            transform: `translate(${displayPan.x}px, ${displayPan.y}px) scale(${displayZoom / 100}) rotate(${rotation}deg)`,
+            transformOrigin: 'center center',
+            willChange: isNavigating ? 'transform' : 'auto',
+            visibility: hasViewState && canvasDimensions.width > 0 ? 'visible' : 'hidden',
           }}
         >
-          {/* Zoom/Pan/Rotate container - CSS transform for instant zoom */}
-          <div 
-            className="relative shadow-2xl"
-            ref={pdfTransformRef}
-            style={{
-              // Live view during pan/zoom avoids Zustand writes every frame.
-              transform: `translate(${displayPan.x}px, ${displayPan.y}px) scale(${displayZoom / 100}) rotate(${rotation}deg)`,
-              transformOrigin: 'center center',
-              willChange: isNavigating ? 'transform' : 'auto',
-            }}
-          >
             {/* Loading indicator */}
             {loading && (
               <div className="absolute inset-0 bg-background/80 flex items-center justify-center z-10">
@@ -977,7 +992,6 @@ export function Canvas() {
               </div>
             )}
           </div>
-        </div>
 
         {/* Drag overlay */}
         {isDragOver && (

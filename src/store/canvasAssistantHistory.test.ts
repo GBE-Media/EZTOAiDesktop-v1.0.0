@@ -41,6 +41,7 @@ describe('assistant batch history', () => {
           originalPageHeight: 100,
           panOffset: { x: 0, y: 0 },
           hasViewState: true,
+          viewUserAdjusted: false,
           originalPdfBytes: null,
           textContentByPage: {},
           textWordsByPage: {},
