@@ -120,6 +120,9 @@ async function defaultAnalyzePage(
   }
 
   const canvas = useCanvasStore.getState();
+  if (typeof raw.documentId === 'string' && raw.documentId.trim() && !canvas.pdfDocuments[raw.documentId.trim()]) {
+    return { status: 'failed', message: `Unknown documentId ${raw.documentId.trim()}` };
+  }
   const docId = typeof raw.documentId === 'string' && raw.documentId.trim()
     ? raw.documentId.trim()
     : canvas.activeDocId;
@@ -294,6 +297,9 @@ async function defaultExtractPageText(
   }
 
   const canvas = useCanvasStore.getState();
+  if (typeof raw.documentId === 'string' && raw.documentId.trim() && !canvas.pdfDocuments[raw.documentId.trim()]) {
+    return { status: 'failed', message: `Unknown documentId ${raw.documentId.trim()}` };
+  }
   const docId = typeof raw.documentId === 'string' && raw.documentId.trim()
     ? raw.documentId.trim()
     : canvas.activeDocId;
@@ -417,6 +423,9 @@ async function defaultCountPageItems(
   }
 
   const canvas = useCanvasStore.getState();
+  if (typeof raw.documentId === 'string' && raw.documentId.trim() && !canvas.pdfDocuments[raw.documentId.trim()]) {
+    return { status: 'failed', message: `Unknown documentId ${raw.documentId.trim()}` };
+  }
   const docId = typeof raw.documentId === 'string' && raw.documentId.trim()
     ? raw.documentId.trim()
     : canvas.activeDocId;
@@ -686,6 +695,7 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
       }
       const canvas = useCanvasStore.getState();
       const editor = useEditorStore.getState();
+      if (documentId && !canvas.pdfDocuments[documentId]) return;
       const target = documentId || canvas.activeDocId;
       if (target && target !== canvas.activeDocId) {
         editor.setActiveDocument(target);

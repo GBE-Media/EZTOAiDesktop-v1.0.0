@@ -56,6 +56,7 @@ export interface AssistantToolResult {
   /** Present when status is stub — never invent data from this. */
   stubReason?: string;
   suggestedUserMessage?: string;
+  citations?: import('@/types/assistant').EvidenceCitation[];
 }
 
 export interface AssistantToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

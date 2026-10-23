@@ -104,11 +104,18 @@ export async function handleApprovalDecision(
     let executionResult: unknown;
     if (approval.toolId === 'place_markups' || approval.toolId === 'propose_callouts') {
       const canvas = useCanvasStore.getState();
-      const docId = canvas.activeDocId;
+      const payload = approval.payload && typeof approval.payload === 'object'
+        ? approval.payload as { documentId?: string; page?: number; analysisRef?: { docId?: string; page?: number } }
+        : {};
+      const docId = payload.documentId || payload.analysisRef?.docId || canvas.activeDocId;
+      if (docId && canvas.pdfDocuments[docId] && docId !== canvas.activeDocId) {
+        canvas.setActiveDocId(docId);
+      }
       const pdf = docId ? canvas.pdfDocuments[docId] : null;
+      const page = payload.page || payload.analysisRef?.page || canvas.getCurrentPage() || 1;
       executionResult = await executePlaceMarkupsApproval({
         approval,
-        page: canvas.getCurrentPage() || 1,
+        page,
         pageWidth: pdf?.originalPageWidth || deps.pageWidth,
         pageHeight: pdf?.originalPageHeight || deps.pageHeight,
         defaultStyle: deps.defaultStyle,

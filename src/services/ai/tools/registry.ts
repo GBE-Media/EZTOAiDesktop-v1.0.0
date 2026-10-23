@@ -21,6 +21,7 @@ import {
   updateMarkupsSchema,
 } from './mutationSchemas';
 import { analyzePageInputSchema } from './analyzePageSchema';
+import { unknownDocumentResult } from '../projectIndex/unknownDoc';
 
 const boundsSchema = z.object({
   x: z.number(),
@@ -279,6 +280,8 @@ const coreTools: AssistantToolDefinition[] = [
       documentId: z.string().min(1).optional(),
     }),
     execute: async (context, input) => {
+      const unknown = unknownDocumentResult(input.documentId);
+      if (unknown) return unknown;
       if (input.documentId) {
         context.navigateToPage(input.page, input.bounds, input.documentId);
       } else {
@@ -399,18 +402,6 @@ const coreTools: AssistantToolDefinition[] = [
 export const assistantToolRegistry = new Map<string, AssistantToolDefinition>(
   coreTools.map(tool => [tool.id, tool])
 );
-
-const placeMarkupsTool = assistantToolRegistry.get('place_markups');
-if (placeMarkupsTool) {
-  const originalExecute = placeMarkupsTool.execute;
-  placeMarkupsTool.execute = async (context, input) => {
-    const record = (input && typeof input === 'object') ? input as { documentId?: string; page?: number } : {};
-    if (record.documentId) {
-      context.navigateToPage(record.page || 1, undefined, record.documentId);
-    }
-    return originalExecute(context, input);
-  };
-}
 
 /** Register or replace a tool definition. Prefer calling from agent/tools/registerAll.ts. */
 export function registerAssistantTool(definition: AssistantToolDefinition): void {

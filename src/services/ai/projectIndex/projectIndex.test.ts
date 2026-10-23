@@ -5,6 +5,7 @@ import { readSpecSection } from './readSpec';
 import { searchIndexedPages } from './searchIndex';
 import { clearIndexMemory, saveIndexedPages, loadCachedPages } from './store';
 import type { IndexedLine, IndexedPageRecord } from './types';
+import { formatToolResultForPrompt } from '../agent/safety';
 import { executeAssistantTool } from '../tools/registry';
 import { registerAllAgentTools, resetAgentToolRegistrationForTests } from '../agent/tools/registerAll';
 import type { AssistantToolContext } from '../tools/types';
@@ -159,7 +160,12 @@ describe('project index classification + search', () => {
       height: 792,
       needsOcr: false,
     }));
-    const pdfDoc = { numPages: 3, fingerprints: ['abc'], getPageLabels: async () => ['i', 'ii', 'iii'] };
+    const pdfDoc = {
+      numPages: 3,
+      fingerprints: ['abc'],
+      getPageLabels: async () => ['i', 'ii', 'iii'],
+      getPage: async () => ({}),
+    };
     const first = await indexPdfDocument({
       docId: 'specs',
       documentName: 'ProjectManual.pdf',
@@ -176,7 +182,7 @@ describe('project index classification + search', () => {
     });
     expect(extractPage).not.toHaveBeenCalled();
     expect(second).toHaveLength(first.length);
-    const cached = await loadCachedPages('abc:3');
+    const cached = await loadCachedPages('abc:3:v2');
     expect(cached.length).toBe(3);
   });
 
@@ -211,5 +217,37 @@ describe('project index classification + search', () => {
     expect(searched.status).toBe('completed');
     const output = searched.output as { results: Array<{ sheetNumber?: string }> };
     expect(output.results.some(hit => hit.sheetNumber === 'E-100')).toBe(true);
+    expect(searched.citations?.length).toBeGreaterThan(0);
+  });
+
+  it('formatToolResultForPrompt delivers the full read_spec_section cursor window', async () => {
+    resetAgentToolRegistrationForTests();
+    registerAllAgentTools();
+    clearIndexMemory();
+    const pages: IndexedPageRecord[] = [];
+    const body = 'W'.repeat(2500);
+    for (let page = 1; page <= 4; page++) {
+      pages.push({
+        docId: 'specs',
+        docFp: 'specs:4',
+        documentName: 'Manual.pdf',
+        page,
+        lines: [line('SECTION 26 27 26 - WIRING DEVICES', 72, 36), line(body, 72, 80)],
+        text: `SECTION 26 27 26 - WIRING DEVICES\n${body}`,
+        kind: 'spec',
+        specSection: '26 27 26',
+        needsOcr: false,
+      });
+    }
+    await saveIndexedPages('specs:4', pages);
+    const first = await executeAssistantTool('read_spec_section', { section: '26 27 26' }, toolContext());
+    const prompt = formatToolResultForPrompt(first);
+    expect(prompt).not.toMatch(/…\[truncated\]/);
+    const raw = (first.output as { text: string; nextCursor?: string });
+    expect(raw.text.length).toBe(6000);
+    expect(raw.nextCursor).toBe('6000');
+    const second = await executeAssistantTool('read_spec_section', { section: '26 27 26', cursor: raw.nextCursor }, toolContext());
+    const combined = raw.text + (second.output as { text: string }).text;
+    expect(combined).toBe(pages.map(p => p.text).join('\n\n'));
   });
 });

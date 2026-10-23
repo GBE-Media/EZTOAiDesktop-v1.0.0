@@ -304,6 +304,7 @@ export const applyMaterialCountAdjustmentsSchema = z.object({
 export function approvalPayloadFromPlaceMarkups(
   input: z.infer<typeof placeMarkupsSchema>,
 ): unknown {
+  const documentId = input.documentId ?? input.analysisRef?.docId;
   if (input.itemIds?.length) {
     return {
       itemIds: input.itemIds,
@@ -313,9 +314,16 @@ export function approvalPayloadFromPlaceMarkups(
       markups: input.markups,
       pointers: input.pointers,
       callouts: input.callouts,
+      documentId,
     };
   }
-  return input.markups || input.pointers || input.callouts;
+  return {
+    documentId,
+    page: input.page,
+    markups: input.markups,
+    pointers: input.pointers,
+    callouts: input.callouts,
+  };
 }
 
 export function approvalPayloadFromProposeCallouts(

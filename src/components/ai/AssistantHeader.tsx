@@ -16,7 +16,6 @@ import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { cn } from '@/lib/utils';
 import type { PipelineStage } from '@/services/ai/providers/types';
 import { allIndexedPages, indexStatus } from '@/services/ai/projectIndex/store';
-import { requestOcrOnScannedPages } from '@/services/ai/projectIndex/scheduler';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useEditorStore } from '@/store/editorStore';
 
@@ -126,9 +125,6 @@ export function AssistantHeader(props: {
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Project index</DropdownMenuLabel>
               <div className="px-2 pb-2 text-[11px] text-muted-foreground">{indexedLabel}</div>
-              <DropdownMenuItem onSelect={() => requestOcrOnScannedPages()}>
-                Run OCR on scanned pages
-              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Display</DropdownMenuLabel>
               <DropdownMenuCheckboxItem

@@ -711,9 +711,20 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         startedAt,
         completedAt: entry.completedAt,
         toolActivity: toolHistoryToActivity(entry),
+        citations: result.citations,
       });
 
       if (result.status === 'approval-required' && result.approval) {
+        const payload = result.approval.payload;
+        const payloadDocId = payload && typeof payload === 'object'
+          ? (payload as { documentId?: string }).documentId
+          : undefined;
+        const payloadPage = payload && typeof payload === 'object'
+          ? Number((payload as { page?: number }).page) || 1
+          : 1;
+        if (payloadDocId) {
+          toolContext.navigateToPage(payloadPage, undefined, payloadDocId);
+        }
         // Thread the model-issued call id onto the approval record so resume
         // can emit a provider-valid tool result (not approval.id).
         result.approval.toolCallId = call.id;

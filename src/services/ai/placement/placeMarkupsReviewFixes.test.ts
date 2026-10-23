@@ -219,10 +219,9 @@ describe('itemIds analysisRef + duplicate markup ids', () => {
       itemIds: ['a1'],
       page: 1,
       analysisRef,
+      documentId: 'doc-a',
     });
-    expect(switched.status).toBe('failed');
-    expect(switched.placed).toBe(0);
-    expect(switched.error).toMatch(/Active document does not match|ask the AI to count again/);
+    expect(switched.status).toBe('ok');
 
     seedDoc('doc-a');
     const revision2 = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
@@ -288,6 +287,44 @@ describe('itemIds analysisRef + duplicate markup ids', () => {
     expect(resume).toHaveBeenCalledTimes(1);
     const markups = useCanvasStore.getState().pdfDocuments['doc-a']?.markupsByPage[1] || [];
     expect(markups).toHaveLength(1);
+  });
+
+  it('count on a non-active doc then place_markups(itemIds) uses payload.documentId', async () => {
+    seedDoc('doc-a');
+    seedDoc('doc-b');
+    useCanvasStore.getState().setActiveDocId('doc-a');
+    const revision = useCanvasStore.getState().pdfDocuments['doc-b']?.contentRevision ?? 0;
+    seedAnalysis('doc-b', 1, [item('b1')], revision);
+    const analysisRef = getLatestFullPageAnalysis('doc-b', 1, revision)?.analysisRef;
+    useAIChatStore.getState().addApproval({
+      ...approval({
+        itemIds: ['b1'],
+        page: 1,
+        documentId: 'doc-b',
+        analysisRef,
+      }),
+      id: 'appr-cross',
+    });
+    await handleApprovalDecision('appr-cross', 'approved', {
+      pageWidth: 612,
+      pageHeight: 792,
+      defaultStyle,
+      setPipelineStatus: () => {},
+      createEditorToolContext: (runId, messageId) => createAgentToolContext({
+        runId,
+        messageId,
+        trade: 'electrical' as const,
+        placeMarkups: () => ({ placed: 0 }),
+      }),
+      resumeAfterApproval: (async () => ({
+        runId: 'run-1',
+        messageId: 'msg-1',
+        status: 'completed',
+        agentResult: { status: 'completed', assistantMessage: 'ok' },
+      })) as never,
+    });
+    expect(pageMarkups('doc-b')).toHaveLength(1);
+    expect(pageMarkups('doc-a')).toHaveLength(0);
   });
 
   it('two place_markups approvals in the same run produce disjoint markup ids', async () => {

@@ -3,6 +3,13 @@ export type IndexPageKind = 'drawing' | 'spec' | 'other';
 export type IndexedLine = {
   text: string;
   bbox: { x: number; y: number; width: number; height: number };
+  fontHeight?: number;
+};
+
+export type SearchPassage = {
+  text: string;
+  lower: string;
+  bounds?: { x: number; y: number; width: number; height: number };
 };
 
 export type IndexedPageRecord = {
@@ -12,6 +19,8 @@ export type IndexedPageRecord = {
   page: number;
   label?: string;
   lines: IndexedLine[];
+  /** Full page text for spec reads; kept in memory when line bboxes are slimmed. */
+  text?: string;
   kind: IndexPageKind;
   sheetNumber?: string;
   sheetTitle?: string;
@@ -19,6 +28,8 @@ export type IndexedPageRecord = {
   specSection?: string;
   articles?: Array<{ id: string; text: string }>;
   needsOcr: boolean;
+  classifierVersion?: string;
+  passages?: SearchPassage[];
 };
 
 export type SearchHit = {

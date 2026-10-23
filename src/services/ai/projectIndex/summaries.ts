@@ -62,9 +62,11 @@ export function formatProjectDocumentsSummary(
   indexed: number,
   total: number,
 ): string {
-  const lines = docs.slice(0, 12).map(doc =>
+  const shown = docs.slice(0, 12);
+  const lines = shown.map(doc =>
     `- ${doc.name}: ${doc.pages}p ${doc.kind} (indexed ${doc.indexed}/${doc.pages}${doc.needsOcr ? `, ${doc.needsOcr} scanned` : ''})`,
   );
+  if (docs.length > 12) lines.push(`- +${docs.length - 12} more (call list_project_documents)`);
   const status = total > 0
     ? `Index ${indexed}/${total} pages (${Math.round((indexed / total) * 100)}%).`
     : 'Index empty.';
