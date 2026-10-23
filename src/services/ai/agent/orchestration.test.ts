@@ -41,6 +41,20 @@ describe('multi-model phases', () => {
     expect(decision.path).toBe('answer_directly');
   });
 
+  it('routes spec / cross-document questions to project index tools, not single-page vision', () => {
+    const intake = runIntake({
+      userMessage: 'What does the spec require for receptacles, and how many are on E-100?',
+      userIntent: 'What does the spec require for receptacles, and how many are on E-100?',
+      trade: 'electrical',
+    });
+    const decision = decideRoutingPolicy(intake);
+    expect(decision.path).toBe('invoke_primary');
+    expect(decision.suggestedTools).toEqual(
+      expect.arrayContaining(['search_project', 'read_spec_section', 'count_page_items']),
+    );
+    expect(decision.suggestedTools).not.toContain('analyze_page');
+  });
+
   it('routes locate / show-me questions into the tool loop', () => {
     const intake = runIntake({
       userMessage: 'Can you show me where the fixture schedule is?',

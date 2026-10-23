@@ -15,6 +15,10 @@ import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { cn } from '@/lib/utils';
 import type { PipelineStage } from '@/services/ai/providers/types';
+import { allIndexedPages, indexStatus } from '@/services/ai/projectIndex/store';
+import { requestOcrOnScannedPages } from '@/services/ai/projectIndex/scheduler';
+import { useCanvasStore } from '@/store/canvasStore';
+import { useEditorStore } from '@/store/editorStore';
 
 function shortModelName(model: string): string {
   const parts = model.split('/');
@@ -51,6 +55,13 @@ export function AssistantHeader(props: {
   const reviewAnalysisMode = useCanvasLayersStore(state => state.reviewAnalysisMode);
   const setReviewAnalysisMode = useCanvasLayersStore(state => state.setReviewAnalysisMode);
   const pipelineStatus = useAIChatStore(state => state.pipelineStatus);
+  useCanvasStore(state => state.pdfDocuments);
+  useEditorStore(state => state.documents);
+  const indexed = allIndexedPages();
+  const status = indexStatus();
+  const totalPages = Object.values(useCanvasStore.getState().pdfDocuments)
+    .reduce((sum, doc) => sum + (doc?.totalPages || 0), 0);
+  const indexedLabel = `Indexed ${indexed.length.toLocaleString()} / ${Math.max(totalPages, indexed.length).toLocaleString()} pages · ${status.needsOcr} scanned`;
   const activeStage =
     pipelineStatus.isRunning && pipelineStatus.currentStage &&
     pipelineStatus.currentStage !== 'complete' &&
@@ -112,6 +123,12 @@ export function AssistantHeader(props: {
                   );
                 })}
               </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Project index</DropdownMenuLabel>
+              <div className="px-2 pb-2 text-[11px] text-muted-foreground">{indexedLabel}</div>
+              <DropdownMenuItem onSelect={() => requestOcrOnScannedPages()}>
+                Run OCR on scanned pages
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Display</DropdownMenuLabel>
               <DropdownMenuCheckboxItem

@@ -80,6 +80,9 @@ import { sanitizeAssistantVisibleText } from '@/services/ai/agent/assistantVisib
 import type { ClarificationAnswerDetail } from './QuestionCard';
 import { AssistantHeader } from './AssistantHeader';
 import { AssistantComposer } from './AssistantComposer';
+import { startProjectIndexer } from '@/services/ai/projectIndex/scheduler';
+import { allIndexedPages } from '@/services/ai/projectIndex/store';
+import { compactProjectDocuments, formatProjectDocumentsSummary } from '@/services/ai/projectIndex/summaries';
 
 /** @deprecated Prefer AgentAssistantDrawer — same implementation. */
 export function AiChatDrawer() {
@@ -189,6 +192,10 @@ export function AgentAssistantDrawer() {
       initSettings();
     }
   }, [isInitialized, initSettings]);
+
+  useEffect(() => {
+    startProjectIndexer();
+  }, []);
   
   // Initialize AI service with proxy mode (company API keys via Edge Function)
   useEffect(() => {
@@ -287,11 +294,18 @@ export function AgentAssistantDrawer() {
         getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
       });
     },
-    navigateToPage: (page, bounds) => {
+    navigateToPage: (page, bounds, documentId) => {
       const canvas = useCanvasStore.getState();
+      const editor = useEditorStore.getState();
+      const target = documentId || canvas.activeDocId;
+      if (target && target !== canvas.activeDocId) {
+        editor.setActiveDocument(target);
+        canvas.setActiveDocId(target);
+      }
       canvas.setCurrentPage(page);
-      if (bounds && canvas.activeDocId) {
-        canvas.setAiSelectionRect(canvas.activeDocId, page, bounds);
+      if (bounds && target) {
+        canvas.setAiSelectionRect(target, page, bounds);
+        canvas.setAiSelectionActive(true);
       }
     },
   }), [
@@ -643,6 +657,14 @@ export function AgentAssistantDrawer() {
         }
       }
 
+      const indexedPages = allIndexedPages();
+      const editorDocs = useEditorStore.getState().documents;
+      const canvasDocs = useCanvasStore.getState().pdfDocuments;
+      const compactDocs = compactProjectDocuments(
+        editorDocs.map(doc => ({ id: doc.id, name: doc.name, pages: canvasDocs[doc.id]?.totalPages || 0 })),
+        indexedPages,
+      );
+      const totalOpenPages = compactDocs.reduce((sum, doc) => sum + doc.pages, 0);
       const { text: contextText } = buildAgentContext({
         userIntent: content,
         trade: selectedTrade,
@@ -659,6 +681,11 @@ export function AgentAssistantDrawer() {
         pageAnalysisSummary: summarizeCachedPageAnalyses(
           activeDocId,
           activeDocId ? useCanvasStore.getState().pdfDocuments[activeDocId]?.contentRevision : undefined,
+        ),
+        projectDocumentsSummary: formatProjectDocumentsSummary(
+          compactDocs,
+          indexedPages.length,
+          totalOpenPages,
         ),
       });
 
@@ -1181,6 +1208,16 @@ export function AgentAssistantDrawer() {
                   <QuickPrompt
                     text="Summarize this sheet"
                     onClick={() => handleSendMessage('Summarize this sheet')}
+                    disabled={!isAIAvailable || isLoading}
+                  />
+                  <QuickPrompt
+                    text="What does the spec require for receptacles, and how many are on E-100?"
+                    onClick={() => handleSendMessage('What does the spec require for receptacles, and how many are on E-100?')}
+                    disabled={!isAIAvailable || isLoading}
+                  />
+                  <QuickPrompt
+                    text="Find every sheet that references panel LP-2."
+                    onClick={() => handleSendMessage('Find every sheet that references panel LP-2.')}
                     disabled={!isAIAvailable || isLoading}
                   />
                 </div>

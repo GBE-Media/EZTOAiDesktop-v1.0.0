@@ -126,6 +126,8 @@ export const placeMarkupsSchema = z.preprocess(
     /** Cached count_page_items ids — executor looks up DocPoints; model coords are ignored. */
     itemIds: z.array(z.string().min(1)).min(1).optional(),
     page: z.number().int().positive().optional(),
+    documentId: z.string().min(1).optional()
+      .describe('Open document id. Navigates to that tab before the approval card.'),
     analysisRef: z.object({
       docId: z.string().min(1),
       page: z.number().int().positive(),

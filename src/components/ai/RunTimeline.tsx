@@ -8,7 +8,8 @@ import {
 } from 'lucide-react';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { cn } from '@/lib/utils';
-import { useCanvasStore } from '@/store/canvasStore';
+import { citationChipText, openEvidenceCitation } from '@/lib/openCitation';
+import type { EvidenceCitation } from '@/types/assistant';
 import {
   friendlyStatusLine,
   friendlyToolLabel,
@@ -23,7 +24,6 @@ function stepTitle(label: string, toolId?: string): string {
 
 export function RunStepList({ runId }: { runId: string }) {
   const run = useAIChatStore(state => state.runs[runId]);
-  const setCurrentPage = useCanvasStore(state => state.setCurrentPage);
   if (!run) return null;
 
   return (
@@ -39,7 +39,6 @@ export function RunStepList({ runId }: { runId: string }) {
           input={step.toolActivity?.input}
           output={step.toolActivity?.output}
           citations={step.citations}
-          onCitationPage={setCurrentPage}
         />
       ))}
     </ol>
@@ -54,8 +53,7 @@ function RunStepRow(props: {
   toolId?: string;
   input?: unknown;
   output?: unknown;
-  citations?: Array<{ id: string; page: number }>;
-  onCitationPage: (page: number) => void;
+  citations?: EvidenceCitation[];
 }) {
   const [open, setOpen] = useState(false);
   const hasDetail = !!(props.toolId || props.input != null || props.output != null || props.error);
@@ -83,10 +81,10 @@ function RunStepRow(props: {
               <button
                 key={citation.id}
                 type="button"
-                onClick={() => props.onCitationPage(citation.page)}
+                onClick={() => openEvidenceCitation(citation)}
                 className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-emerald-500/50"
               >
-                Page {citation.page}
+                {citationChipText(citation)}
               </button>
             ))}
           </div>

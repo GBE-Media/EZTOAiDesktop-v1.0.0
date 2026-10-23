@@ -1,0 +1,164 @@
+import { z } from 'zod';
+import { useCanvasStore } from '@/store/canvasStore';
+import { useEditorStore } from '@/store/editorStore';
+import type { AssistantToolDefinition } from '../tools/types';
+import { allIndexedPages, indexStatus } from './store';
+import { searchIndexedPages } from './searchIndex';
+import { readSpecSection } from './readSpec';
+import { compactProjectDocuments, sheetIndex, specIndex } from './summaries';
+
+const documentIdSchema = z.string().min(1).optional()
+  .describe('Open document id. Defaults to the active tab.');
+
+export function createProjectIndexTools(): AssistantToolDefinition[] {
+  return [
+    {
+      id: 'list_project_documents',
+      title: 'List project documents',
+      description: 'List every open project document with page counts, kind breakdown, index status, sheet and spec summaries.',
+      risk: 'read',
+      requiresConfirmation: false,
+      undoable: false,
+      schema: z.object({}),
+      execute: async () => {
+        const pages = allIndexedPages();
+        const canvas = useCanvasStore.getState();
+        const editor = useEditorStore.getState();
+        const docs = editor.documents.map(doc => ({
+          id: doc.id,
+          name: doc.name,
+          pages: canvas.pdfDocuments[doc.id]?.totalPages || 0,
+        }));
+        const listed = compactProjectDocuments(docs, pages);
+        const status = indexStatus();
+        const sheets = sheetIndex(pages).slice(0, 50);
+        const specs = specIndex(pages).slice(0, 50);
+        return {
+          status: 'completed',
+          summary: `Listed ${listed.length} project document(s).`,
+          output: {
+            documents: listed,
+            index: status,
+            sheets: { items: sheets, count: sheetIndex(pages).length },
+            specSections: { items: specs, count: specIndex(pages).length },
+          },
+        };
+      },
+    },
+    {
+      id: 'search_project',
+      title: 'Search project documents',
+      description: 'Full-text search across indexed specs and drawings. Returns clickable citations (doc/page/bbox).',
+      risk: 'read',
+      requiresConfirmation: false,
+      undoable: false,
+      schema: z.object({
+        query: z.string().min(1),
+        kind: z.enum(['drawing', 'spec', 'other']).optional(),
+        discipline: z.string().optional(),
+        section: z.string().optional(),
+        documentIds: z.array(z.string()).optional(),
+        limit: z.number().int().positive().max(40).optional(),
+      }),
+      execute: async (_context, input) => {
+        const hits = searchIndexedPages(allIndexedPages(), input);
+        return {
+          status: 'completed',
+          summary: `Found ${hits.length} passage(s) for “${input.query}”.`,
+          output: { results: hits, count: hits.length },
+        };
+      },
+    },
+    {
+      id: 'get_sheet_index',
+      title: 'Get drawing sheet index',
+      description: 'List drawing sheets grouped by discipline.',
+      risk: 'read',
+      requiresConfirmation: false,
+      undoable: false,
+      schema: z.object({ discipline: z.string().optional() }),
+      execute: async (_context, input) => {
+        const items = sheetIndex(allIndexedPages(), input.discipline);
+        return {
+          status: 'completed',
+          summary: `Sheet index: ${items.length} sheet(s).`,
+          output: { sheets: items.slice(0, 200), count: items.length },
+        };
+      },
+    },
+    {
+      id: 'get_spec_index',
+      title: 'Get spec section index',
+      description: 'List CSI spec sections with document page ranges.',
+      risk: 'read',
+      requiresConfirmation: false,
+      undoable: false,
+      schema: z.object({ division: z.string().optional() }),
+      execute: async (_context, input) => {
+        const items = specIndex(allIndexedPages(), input.division);
+        return {
+          status: 'completed',
+          summary: `Spec index: ${items.length} section(s).`,
+          output: { sections: items, count: items.length },
+        };
+      },
+    },
+    {
+      id: 'read_spec_section',
+      title: 'Read spec section',
+      description: 'Read a CSI spec section (normalize 262726 / 26 27 26 / 26-27-26). Optional part/article. Paged at ~6000 chars via nextCursor.',
+      risk: 'read',
+      requiresConfirmation: false,
+      undoable: false,
+      schema: z.object({
+        section: z.string().min(1),
+        part: z.union([z.string(), z.number()]).optional(),
+        article: z.string().optional(),
+        cursor: z.string().optional(),
+      }),
+      execute: async (_context, input) => {
+        const result = readSpecSection(allIndexedPages(), input);
+        return {
+          status: 'completed',
+          summary: `Read spec ${result.section}${result.nextCursor ? ' (more available)' : ''}.`,
+          output: result,
+        };
+      },
+    },
+    {
+      id: 'read_pages',
+      title: 'Read document pages',
+      description: 'Read native text (or OCR on demand) for up to 5 pages of a document.',
+      risk: 'read',
+      requiresConfirmation: false,
+      undoable: false,
+      schema: z.object({
+        documentId: z.string().min(1),
+        pages: z.array(z.number().int().positive()).min(1).max(5),
+        maxChars: z.number().int().positive().optional(),
+      }),
+      execute: async (context, input) => {
+        const maxChars = Math.min(input.maxChars ?? 8000, 12000);
+        const pages = [];
+        for (const page of input.pages) {
+          const extracted = await context.extractPageText({ page, documentId: input.documentId }) as {
+            text?: string;
+            context?: string;
+            source?: string;
+            status?: string;
+            message?: string;
+          };
+          const text = String(extracted?.text || extracted?.context || extracted?.message || '').slice(0, maxChars);
+          pages.push({ documentId: input.documentId, page, source: extracted?.source, text });
+        }
+        return {
+          status: 'completed',
+          summary: `Read ${pages.length} page(s).`,
+          output: { pages },
+        };
+      },
+    },
+  ];
+}
+
+export { documentIdSchema };
