@@ -1,4 +1,4 @@
-import { Bot, Eye, Calculator, MapPin, Plus, Settings2, Trash2, X } from 'lucide-react';
+import { Bot, Check, Eye, Calculator, MapPin, Plus, Settings2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -136,14 +136,22 @@ export function AssistantHeader(props: {
                 <>
                   <DropdownMenuSeparator />
                   <DropdownMenuLabel>Chats</DropdownMenuLabel>
-                  {props.conversations.map(item => (
-                    <DropdownMenuItem
-                      key={item.id}
-                      onSelect={() => props.onSelectConversation(item.id)}
-                    >
-                      {item.title}
-                    </DropdownMenuItem>
-                  ))}
+                  <div className="max-h-56 overflow-y-auto">
+                    {props.conversations.map(item => {
+                      const active = item.id === props.conversation?.id;
+                      return (
+                        <DropdownMenuItem
+                          key={item.id}
+                          aria-current={active ? 'true' : undefined}
+                          className={active ? 'font-medium' : undefined}
+                          onSelect={() => props.onSelectConversation(item.id)}
+                        >
+                          <span className="truncate">{item.title}</span>
+                          {active && <Check className="ml-auto h-3.5 w-3.5 flex-shrink-0" />}
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </div>
                 </>
               )}
               {props.onOpenSettings && (
@@ -155,7 +163,10 @@ export function AssistantHeader(props: {
                 </>
               )}
               {props.onClearChat && (
-                <DropdownMenuItem onSelect={() => props.onClearChat?.()}>
+                <DropdownMenuItem
+                  disabled={pipelineStatus.isRunning}
+                  onSelect={() => props.onClearChat?.()}
+                >
                   <Trash2 className="mr-2 h-3.5 w-3.5" />
                   Clear chat
                 </DropdownMenuItem>

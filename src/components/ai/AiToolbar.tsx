@@ -142,6 +142,7 @@ export function AiToolbar({ onRunTakeoff, pageSelection, onPageSelectionChange, 
             value={pageSelection}
             onChange={(event) => onPageSelectionChange(event.target.value)}
             placeholder="pages"
+            aria-label="Pages to analyze"
             className="h-7 w-24 rounded-md border border-border bg-background px-2 text-[11px] text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
             title="Pages: current, all, or 1,3-5"
           />

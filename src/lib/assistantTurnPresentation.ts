@@ -40,13 +40,18 @@ function toProgressive(label: string): string {
     .replace(/^Checked\b/i, 'Checking');
 }
 
-function toFailed(label: string): string {
-  return label
-    .replace(/^Counted\b/i, 'Counting')
-    .replace(/^Placed\b/i, 'Placing')
-    .replace(/^Read\b/i, 'Reading')
-    .replace(/^Searched\b/i, 'Searching')
-    .replace(/^Checked\b/i, 'Checking');
+/** Plain verb phrase for a tool, used in "Couldn't <verb>" sentences. */
+const TOOL_VERBS: Record<string, string> = {
+  count_page_items: 'count fixtures',
+  place_markups: 'place markups',
+  analyze_page: 'read the page',
+  search_catalog: 'search products',
+  get_takeoff_summary: 'check the takeoff',
+};
+
+export function toolVerb(toolId?: string): string {
+  const id = String(toolId || '').trim();
+  return (id && TOOL_VERBS[id]) || 'finish that step';
 }
 
 /** Status shown while a turn is running (no tool ids, counters, or role chips). */
@@ -69,10 +74,10 @@ export function friendlyStatusLine(raw: string | undefined | null): string {
 }
 
 export function humanizeToolError(raw: string, toolId?: string): string {
-  const action = toFailed(toolId ? friendlyToolLabel(toolId) : 'that step').toLowerCase();
+  const action = toProgressive(toolId ? friendlyToolLabel(toolId) : 'That step').toLowerCase();
   const lower = String(raw || '').toLowerCase();
   if (lower.includes('retry')) {
-    return `Couldn't ${action} on the first try, retrying...`;
+    return `Couldn't ${toolVerb(toolId)} on the first try, retrying...`;
   }
   if (lower.includes('too_big') || lower.includes('too large') || lower.includes('"maximum"') || lower.includes('maximum')) {
     return `${action.charAt(0).toUpperCase()}${action.slice(1)} failed: the request was too large.`;

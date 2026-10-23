@@ -94,7 +94,8 @@ function RunStepRow(props: {
         {hasDetail && (
           <button
             type="button"
-            className="mt-0.5 inline-flex items-center gap-1 text-[10px] text-muted-foreground underline-offset-2 hover:underline"
+            className="mt-0.5 inline-flex items-center gap-1 rounded-sm text-[10px] text-muted-foreground underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            aria-expanded={open}
             onClick={() => setOpen(value => !value)}
           >
             Details
