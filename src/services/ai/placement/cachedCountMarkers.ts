@@ -1,7 +1,6 @@
 import type { DetectedItem } from '../providers/types';
 import type { PlacementMarkup } from '../providers/types';
-import { NO_CONFIDENT_MATCH, normalizeMatchConfidence } from '../detection/visionLegendClassification';
-import { getLatestFullPageAnalysis, type PageAnalysisRef } from '../agent/pageAnalysisCache';
+import { getLatestFullPageAnalysis, itemIsUnresolvedForCounts, type PageAnalysisRef } from '../agent/pageAnalysisCache';
 import { isPageAnalysisRef } from '../agent/pageAnalysisRef';
 import { useCanvasStore } from '@/store/canvasStore';
 import { CONFIDENCE_REVIEW, type PageGeometry } from './types';
@@ -27,12 +26,11 @@ const COUNT_STYLE = (style: MarkupStyle): PlacementMarkup['style'] => ({
   fontFamily: style.fontFamily,
 });
 
-export function isUnresolvedOrLowCountItem(item: DetectedItem): boolean {
-  const code = typeof item.legendTypeCode === 'string' ? item.legendTypeCode : '';
-  if (code && code.trim() === NO_CONFIDENT_MATCH) return true;
-  if (normalizeMatchConfidence(item.matchConfidence) === 'low') return true;
-  if (code && !code.trim()) return true;
-  return false;
+export function isUnresolvedOrLowCountItem(
+  item: DetectedItem,
+  legendTypeCodes?: string[] | null,
+): boolean {
+  return itemIsUnresolvedForCounts(item, legendTypeCodes).unresolved;
 }
 
 export function detectionLocationToDocPoint(
@@ -47,6 +45,7 @@ export type CachedPageItemsLookup = {
   items: DetectedItem[];
   pageGeometry: PageGeometry | null;
   analysisRef?: PageAnalysisRef;
+  legendTypeCodes?: string[];
   error?: string;
 };
 
@@ -122,6 +121,7 @@ export function lookupCachedPageItems(options: {
     items: cached.analysis.items,
     pageGeometry: stored,
     analysisRef: cached.analysisRef,
+    legendTypeCodes: cached.analysis.legendTypeCodes,
   };
 }
 
@@ -143,6 +143,7 @@ export function placementMarkupsFromCachedItemIds(options: {
   analysisRef?: unknown;
   skipAnalysisRefCheck?: boolean;
   crop?: DisplayCrop;
+  legendTypeCodes?: string[];
 }): {
   markups: PlacementMarkup[];
   dropped: CachedItemLookupDrop[];
@@ -159,6 +160,7 @@ export function placementMarkupsFromCachedItemIds(options: {
             docHeight: options.pageHeight,
           })
           : null),
+      legendTypeCodes: options.legendTypeCodes,
     }
     : lookupCachedPageItems({ page: options.page, analysisRef: options.analysisRef });
   if (resolved.error && !options.items) {
@@ -182,12 +184,21 @@ export function placementMarkupsFromCachedItemIds(options: {
       dropped.push({ itemId, reason: 'not in cached page analysis' });
       return;
     }
+    const flag = itemIsUnresolvedForCounts(item, resolved.legendTypeCodes || options.legendTypeCodes);
+    if (item.locationMissing || flag.reason === 'no location') {
+      dropped.push({ itemId, reason: 'no location' });
+      return;
+    }
+    if (flag.reason === 'invalid legend code' || flag.reason === 'missing legend code') {
+      dropped.push({ itemId, reason: flag.reason });
+      return;
+    }
     const point = detectionLocationToDocPoint(item, resolved.pageGeometry, options.crop);
     if (!point) {
       dropped.push({ itemId, reason: 'no location' });
       return;
     }
-    const review = isUnresolvedOrLowCountItem(item);
+    const review = flag.unresolved;
     if (review && !options.includeReviewMarkers) {
       dropped.push({ itemId, reason: 'unresolved or low-confidence (not placed as a count marker)' });
       return;

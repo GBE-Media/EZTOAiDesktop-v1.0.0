@@ -192,7 +192,7 @@ describe('page analysis cache + count_page_items', () => {
       placeMarkups: () => ({ placed: 0 }),
     });
 
-    const counted = await context.countPageItems!({ page: 1, query: 'Type A' }) as {
+    const counted = await context.countPageItems!({ page: 1, query: 'light' }) as {
       source: string;
       total: number;
       matchingItems: unknown[];
@@ -334,7 +334,7 @@ describe('page analysis cache + count_page_items', () => {
       placeMarkups: () => ({ placed: 0 }),
     });
 
-    const first = await context.countPageItems!({ page: 1, query: 'Type A' }) as {
+    const first = await context.countPageItems!({ page: 1, query: 'light' }) as {
       source: string;
       total: number;
       allTypeCounts: Record<string, number>;

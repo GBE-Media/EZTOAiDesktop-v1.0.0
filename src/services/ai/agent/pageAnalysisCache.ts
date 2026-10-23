@@ -271,8 +271,7 @@ export function clearPageAnalysisCache(docId?: string): void {
   }
 }
 
-export const COUNT_ITEM_LIST_CHAR_BUDGET = 9_000;
-/** Stay under sanitizeToolOutput's 50-item array slice so JSON stays parseable. */
+export const COUNT_ITEM_LIST_CHAR_BUDGET = 10_000;
 export const COUNT_ITEM_ARRAY_MAX = 50;
 
 export type CompactCountItemRow = {
@@ -313,29 +312,148 @@ export interface PageItemCountResult {
   nextUnresolvedOffset?: number;
   hasMoreUnresolved?: boolean;
   analysisRef?: PageAnalysisRef;
+  matchedCodes?: string[];
+  unresolvedCountByType?: Record<string, number>;
+  unresolvedTruncated?: boolean;
   countReliability?: 'high' | 'partial' | 'low';
   legendTypeCodes?: string[];
   verificationNotes?: string[];
   message?: string;
 }
 
-function itemMatchesQuery(item: DetectedItem, query: string): boolean {
-  if (!query) return true;
-  const hay = `${item.type || ''} ${item.name || ''}`.toLowerCase();
-  const q = query.toLowerCase().trim();
-  if (hay.includes(q)) return true;
-  const tokens = q.split(/\s+/).filter(token => token.length >= 2);
-  if (tokens.length === 0) return hay.includes(q);
-  return tokens.every(token => hay.includes(token));
+const QUERY_FILLER = new Set([
+  'type', 'types', 'fixture', 'fixtures', 'light', 'lights', 'only',
+  'units', 'unit', 'signs', 'sign', 'and', 'the', 'a', 'an', 'of', 'for',
+]);
+
+const QUERY_COMMON_ENGLISH = new Set([
+  ...QUERY_FILLER,
+  'how', 'many', 'are', 'is', 'on', 'in', 'at', 'to', 'from', 'with',
+  'sheet', 'page', 'drawing', 'plan', 'this', 'that', 'what', 'which',
+  'count', 'counted', 'please', 'list', 'there', 'here', 'all',
+]);
+
+function tokenizeQuery(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9/-]+/)
+    .map(token => token.trim())
+    .filter(Boolean);
 }
 
-function typeKeyMatchesQuery(typeKey: string, query: string): boolean {
-  if (!query) return true;
+type QueryToken = { raw: string; lower: string };
+
+function tokenizeQueryRaw(query: string): QueryToken[] {
+  const tokens: QueryToken[] = [];
+  const re = /[A-Za-z0-9/-]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(query))) {
+    tokens.push({ raw: match[0], lower: match[0].toLowerCase() });
+  }
+  return tokens;
+}
+
+function treatAsCodeA(
+  token: QueryToken,
+  index: number,
+  tokens: QueryToken[],
+  known: Map<string, string>,
+): boolean {
+  if (!known.has('a')) return false;
+  if (token.lower !== 'a') return false;
+  if (token.raw === 'A') return true;
+  const prev = tokens[index - 1]?.lower;
+  const next = tokens[index + 1]?.lower;
+  if (prev === 'type' || prev === 'and' || next === 'and') return true;
+  if (prev && known.has(prev) && prev !== 'a') return true;
+  if (next && known.has(next) && next !== 'a') return true;
+  return false;
+}
+
+function isQueryFiller(
+  token: QueryToken,
+  index: number,
+  tokens: QueryToken[],
+  known: Map<string, string>,
+): boolean {
+  if (treatAsCodeA(token, index, tokens, known)) return false;
+  if (known.has(token.lower) && token.lower.length >= 3) return false;
+  return QUERY_FILLER.has(token.lower);
+}
+
+/** Whole-token equality only — never substring (so "A" does not match "and"). */
+export function typeKeyMatchesQuery(typeKey: string, query: string, knownCodes: string[] = []): boolean {
+  if (!query.trim()) return true;
   const key = typeKey.toLowerCase();
-  const q = query.toLowerCase().trim();
-  if (key.includes(q) || q.includes(key)) return true;
-  const tokens = q.split(/\s+/).filter(token => token.length >= 2);
-  return tokens.some(token => key.includes(token));
+  const known = new Map(knownCodes.map(code => [code.toLowerCase(), code]));
+  const tokens = tokenizeQueryRaw(query);
+  return tokens.some((token, index) => {
+    if (isQueryFiller(token, index, tokens, known)) return false;
+    return token.lower === key;
+  });
+}
+
+/**
+ * Legend codes named in the query: "Type A", "A-type", "type A fixtures", "EX1".
+ * Filler words are ignored when collecting codes, except "A" when capitalized
+ * or next to "type" / "and" / another legend code.
+ */
+export function parseMatchedLegendCodes(query: string, knownCodes: string[]): string[] {
+  if (!query.trim() || knownCodes.length === 0) return [];
+  const known = new Map(knownCodes.map(code => [code.toLowerCase(), code]));
+  const matched = new Set<string>();
+  const lower = query.toLowerCase();
+
+  const typeForms = [
+    ...lower.matchAll(/\btype\s+([a-z][a-z0-9/-]*)\b/g),
+    ...lower.matchAll(/\b([a-z][a-z0-9/-]*)-type\b/g),
+  ];
+  for (const match of typeForms) {
+    const canonical = known.get(match[1]);
+    if (canonical) matched.add(canonical);
+  }
+
+  const tokens = tokenizeQueryRaw(query);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (isQueryFiller(token, i, tokens, known)) continue;
+    const canonical = known.get(token.lower);
+    if (canonical) matched.add(canonical);
+  }
+  return [...matched];
+}
+
+function filteredDescriptionWords(query: string): string[] {
+  return tokenizeQuery(query).filter(token => (
+    token.length >= 3
+    && !QUERY_COMMON_ENGLISH.has(token)
+    && token.length > 1
+  ));
+}
+
+function typeDescriptionMatchesQuery(
+  typeKey: string,
+  query: string,
+  items: DetectedItem[],
+): boolean {
+  const words = filteredDescriptionWords(query);
+  if (words.length === 0) return false;
+  const hay = items
+    .filter(item => (item.legendTypeCode || item.type || '').toLowerCase() === typeKey.toLowerCase())
+    .map(item => `${item.type || ''} ${item.name || ''}`)
+    .join(' ')
+    .toLowerCase();
+  if (!hay.trim()) return false;
+  return words.some(word => hay.includes(word));
+}
+
+function itemMatchesQuery(item: DetectedItem, query: string, matchedCodes: string[]): boolean {
+  if (!query) return true;
+  if (matchedCodes.length > 0) {
+    const code = (item.legendTypeCode || item.type || '').toLowerCase();
+    return matchedCodes.some(m => m.toLowerCase() === code);
+  }
+  return false;
 }
 
 function round1(value: number): number {
@@ -377,13 +495,38 @@ function compactDocLocation(
   return { x: round1(point.x), y: round1(point.y) };
 }
 
-function itemIsUnresolvedForCounts(item: DetectedItem): { unresolved: boolean; reason?: string } {
-  const code = typeof item.legendTypeCode === 'string' ? item.legendTypeCode : '';
-  if (code && code.trim() === NO_CONFIDENT_MATCH) {
+export type UnresolvedCountReason =
+  | 'no location'
+  | 'no_confident_match'
+  | 'low confidence'
+  | 'invalid legend code'
+  | 'missing legend code';
+
+export function itemIsUnresolvedForCounts(
+  item: DetectedItem,
+  legendTypeCodes?: string[] | null,
+): { unresolved: boolean; reason?: UnresolvedCountReason } {
+  if (item.locationMissing) {
+    return { unresolved: true, reason: 'no location' };
+  }
+  const code = typeof item.legendTypeCode === 'string' ? item.legendTypeCode.trim() : '';
+  if (code === NO_CONFIDENT_MATCH) {
     return { unresolved: true, reason: 'no_confident_match' };
   }
   if (normalizeMatchConfidence(item.matchConfidence) === 'low') {
     return { unresolved: true, reason: 'low confidence' };
+  }
+  if (!code) {
+    return { unresolved: true, reason: 'missing legend code' };
+  }
+  if (legendTypeCodes && legendTypeCodes.length > 0) {
+    const allowed = new Set(legendTypeCodes.map(c => c.trim().toLowerCase()));
+    if (!allowed.has(code.toLowerCase())) {
+      return { unresolved: true, reason: 'invalid legend code' };
+    }
+  }
+  if (!Number.isFinite(item.location?.x) || !Number.isFinite(item.location?.y)) {
+    return { unresolved: true, reason: 'no location' };
   }
   return { unresolved: false };
 }
@@ -483,28 +626,50 @@ export function countItemsFromAnalysis(
 ): PageItemCountResult {
   const q = query.trim();
   const items = analysis.items || [];
-  const matchingItems = items.filter(item => itemMatchesQuery(item, q));
   // Prefer legend-grounded counts when present (includes zero-count legend types).
   const allTypeCounts = {
     ...(analysis.legendTypeCounts && Object.keys(analysis.legendTypeCounts).length > 0
       ? analysis.legendTypeCounts
       : analysis.typeCounts || {}),
   };
+  const knownCodes = Object.keys(allTypeCounts);
+  const matchedCodes = q ? parseMatchedLegendCodes(q, knownCodes) : [];
   const matchingTypeCounts: Record<string, number> = {};
-  for (const [type, count] of Object.entries(allTypeCounts)) {
-    if (typeKeyMatchesQuery(type, q)) {
-      matchingTypeCounts[type] = count;
+  if (!q) {
+    Object.assign(matchingTypeCounts, allTypeCounts);
+  } else if (matchedCodes.length > 0) {
+    for (const code of matchedCodes) {
+      matchingTypeCounts[code] = allTypeCounts[code] ?? 0;
+    }
+  } else {
+    for (const [type, count] of Object.entries(allTypeCounts)) {
+      if (typeKeyMatchesQuery(type, q, knownCodes)) {
+        matchingTypeCounts[type] = count;
+      }
+    }
+    if (Object.keys(matchingTypeCounts).length === 0) {
+      for (const [type, count] of Object.entries(allTypeCounts)) {
+        if (typeDescriptionMatchesQuery(type, q, items)) {
+          matchingTypeCounts[type] = count;
+        }
+      }
     }
   }
 
-  const totalFromCounts = Object.values(matchingTypeCounts).reduce((sum, n) => sum + n, 0);
-  const totalFromItems = matchingItems.reduce(
-    (sum, item) => sum + (typeof item.quantity === 'number' && item.quantity > 0 ? item.quantity : 1),
-    0,
-  );
+  const legendCodes = analysis.legendTypeCodes || knownCodes;
+  const noParsedCodes = Boolean(q && matchedCodes.length === 0);
+  const matchingItems = noParsedCodes
+    ? []
+    : items.filter(item => itemMatchesQuery(item, q, matchedCodes)
+      && !itemIsUnresolvedForCounts(item, legendCodes).unresolved);
+  const total = Object.values(matchingTypeCounts).reduce((sum, n) => sum + n, 0);
 
   const reliability = analysis.countReliability;
-  const verificationNotes = analysis.countVerificationNotes || [];
+  const verificationNotes = [...(analysis.countVerificationNotes || [])];
+  const namedNoCode = q && matchedCodes.length === 0 && Object.keys(matchingTypeCounts).length === 0;
+  if (namedNoCode) {
+    verificationNotes.unshift(`No known legend codes in query "${q}"; counted 0 (not a fuzzy match).`);
+  }
   const reliabilityNote = reliability
     ? ` Count reliability: ${reliability}.`
     : '';
@@ -519,13 +684,18 @@ export function countItemsFromAnalysis(
     page: analysis.page,
   });
   const codeFilter = typeof options?.code === 'string' ? options.code.trim() : '';
-  const classified = matchingItems.map((item) => {
-    const flag = itemIsUnresolvedForCounts(item);
-    const loc = compactDocLocation(item, pageGeometry, options?.crop);
+  const classified = items.map((item) => {
+    const flag = itemIsUnresolvedForCounts(item, legendCodes);
+    const loc = item.locationMissing ? undefined : compactDocLocation(item, pageGeometry, options?.crop);
     return { item, flag, loc };
   });
-  const confirmed = classified.filter(row => !row.flag.unresolved);
+  const confirmed = classified.filter(row => !row.flag.unresolved && matchingItems.includes(row.item));
   const unresolved = classified.filter(row => row.flag.unresolved);
+  const unresolvedCountByType: Record<string, number> = {};
+  for (const row of unresolved) {
+    const code = row.item.legendTypeCode || row.item.type || 'unknown';
+    unresolvedCountByType[code] = (unresolvedCountByType[code] || 0) + 1;
+  }
   const matchingRows = confirmed
     .filter(({ item }) => {
       if (!codeFilter) return true;
@@ -547,70 +717,97 @@ export function countItemsFromAnalysis(
   const offset = typeof options?.offset === 'number' && Number.isFinite(options.offset)
     ? Math.max(0, Math.floor(options.offset))
     : 0;
-  const section = options?.section === 'unresolved' ? 'unresolved' : 'matching';
-  const packed = packItemLists({
-    matching: matchingRows,
-    unresolved: unresolvedRows,
-    matchingOffset: section === 'matching' ? offset : 0,
-    unresolvedOffset: section === 'unresolved' ? offset : 0,
-    packMatching: section === 'matching',
-    packUnresolved: section === 'unresolved' || (section === 'matching' && offset === 0),
-    limit: options?.limit,
-  });
-  const omittedItems = packed.matchingOmitted + packed.unresolvedOmitted;
-  const returnedItems = packed.matchingReturned + packed.unresolvedReturned;
-  const truncated = omittedItems > 0;
-  const matchingStart = section === 'matching' ? offset : 0;
-  const unresolvedStart = section === 'unresolved' ? offset : 0;
-  const hasMore = section === 'matching'
-    && matchingStart + packed.matchingReturned < matchingRows.length;
-  const nextOffset = hasMore ? matchingStart + packed.matchingReturned : undefined;
-  const hasMoreUnresolved = packed.unresolvedReturned > 0 || section === 'unresolved' || offset === 0
-    ? unresolvedStart + packed.unresolvedReturned < unresolvedRows.length
-    : false;
-  const nextUnresolvedOffset = hasMoreUnresolved
-    ? unresolvedStart + packed.unresolvedReturned
+  const limit = typeof options?.limit === 'number' && Number.isFinite(options.limit)
+    ? Math.max(0, Math.floor(options.limit))
     : undefined;
-
-  return {
-    status: 'completed',
-    page: analysis.page,
-    query: q,
-    source: options?.source || 'cache',
-    total: totalFromCounts > 0 ? totalFromCounts : totalFromItems,
-    matchingTypeCounts,
-    allTypeCounts,
-    matchingItems: packed.matchingItems,
-    unresolvedItems: packed.unresolvedItems,
-    truncated: truncated || undefined,
-    returnedItems,
-    omittedItems,
-    matchingReturned: packed.matchingReturned,
-    matchingOmitted: packed.matchingOmitted,
-    unresolvedReturned: packed.unresolvedReturned,
-    unresolvedOmitted: packed.unresolvedOmitted,
-    nextOffset: hasMore ? nextOffset : undefined,
-    hasMore: hasMore || undefined,
-    nextUnresolvedOffset,
-    hasMoreUnresolved: hasMoreUnresolved || undefined,
-    analysisRef: options?.analysisRef,
-    countReliability: reliability,
-    legendTypeCodes: analysis.legendTypeCodes,
-    verificationNotes,
-    message: (q
-      ? `Counted items matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
-      : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`)
-      + reliabilityNote
-      + legendNote
-      + (verificationNotes.length ? ` ${verificationNotes[0]}` : '')
-      + (truncated
-        ? ` Returned ${returnedItems} item row(s); omitted ${omittedItems}.`
-          + (hasMore
-            ? ` Pass offset=${nextOffset ?? offset} (or code) to page through remaining matching items.`
-            : '')
-          + (hasMoreUnresolved
-            ? ` Pass section=unresolved offset=${nextUnresolvedOffset ?? 0} to page through remaining unresolved items.`
-            : '')
-        : ''),
+  const section = options?.section === 'unresolved' ? 'unresolved' : 'matching';
+  const matchingWindow = section === 'matching'
+    ? matchingRows.slice(offset, limit != null ? offset + limit : undefined)
+    : [];
+  const unresolvedWindow = section === 'unresolved'
+    ? unresolvedRows.slice(offset, limit != null ? offset + limit : undefined)
+    : (section === 'matching' && offset === 0 ? unresolvedRows : []);
+  let matchingPacked = matchingWindow;
+  let unresolvedPacked = unresolvedWindow;
+  const packResult = () => {
+    const matchingOmitted = Math.max(0, matchingRows.length - (section === 'matching' ? offset : 0) - matchingPacked.length);
+    const unresolvedOmitted = Math.max(0, unresolvedRows.length
+      - (section === 'unresolved' ? offset : 0)
+      - unresolvedPacked.length);
+    const omittedItems = matchingOmitted + unresolvedOmitted;
+    const returnedItems = matchingPacked.length + unresolvedPacked.length;
+    const truncated = omittedItems > 0;
+    const matchingStart = section === 'matching' ? offset : 0;
+    const unresolvedStart = section === 'unresolved' ? offset : 0;
+    const hasMore = section === 'matching'
+      && matchingStart + matchingPacked.length < matchingRows.length;
+    const nextOffset = hasMore ? matchingStart + matchingPacked.length : undefined;
+    const hasMoreUnresolved = unresolvedStart + unresolvedPacked.length < unresolvedRows.length
+      && (section === 'unresolved' || offset === 0);
+    const nextUnresolvedOffset = hasMoreUnresolved
+      ? unresolvedStart + unresolvedPacked.length
+      : undefined;
+    return {
+      status: 'completed' as const,
+      page: analysis.page,
+      query: q,
+      source: options?.source || 'cache',
+      total,
+      matchingTypeCounts,
+      allTypeCounts,
+      matchedCodes: matchedCodes.length ? matchedCodes : undefined,
+      matchingItems: matchingPacked,
+      unresolvedItems: unresolvedPacked,
+      unresolvedCountByType,
+      unresolvedTruncated: unresolvedOmitted > 0 || undefined,
+      truncated: truncated || undefined,
+      returnedItems,
+      omittedItems,
+      matchingReturned: matchingPacked.length,
+      matchingOmitted,
+      unresolvedReturned: unresolvedPacked.length,
+      unresolvedOmitted,
+      nextOffset: hasMore ? nextOffset : undefined,
+      hasMore: hasMore || undefined,
+      nextUnresolvedOffset,
+      hasMoreUnresolved: hasMoreUnresolved || undefined,
+      analysisRef: options?.analysisRef,
+      countReliability: reliability,
+      legendTypeCodes: analysis.legendTypeCodes,
+      verificationNotes,
+      message: (namedNoCode
+        ? verificationNotes[0]
+        : (q
+          ? `Counted items matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
+          : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`))
+        + (namedNoCode ? '' : reliabilityNote)
+        + (namedNoCode ? '' : legendNote)
+        + (!namedNoCode && verificationNotes.length ? ` ${verificationNotes[0]}` : '')
+        + (!namedNoCode && truncated
+          ? ` Returned ${returnedItems} item row(s); omitted ${omittedItems}.`
+            + (hasMore
+              ? ` Pass offset=${nextOffset ?? offset} (or code) to page through remaining matching items.`
+              : '')
+            + (hasMoreUnresolved
+              ? ` Pass section=unresolved offset=${nextUnresolvedOffset ?? 0} to page through remaining unresolved items.`
+              : '')
+          : ''),
+    };
   };
+  while (JSON.stringify(packResult()).length >= 10_000 && (matchingPacked.length + unresolvedPacked.length) > 0) {
+    if (unresolvedPacked.length > 0) {
+      unresolvedPacked = unresolvedPacked.length === 1
+        ? []
+        : unresolvedPacked.slice(0, Math.max(0, Math.floor(unresolvedPacked.length / 2)));
+      continue;
+    }
+    if (matchingPacked.length > 0) {
+      matchingPacked = matchingPacked.length === 1
+        ? []
+        : matchingPacked.slice(0, Math.max(0, Math.floor(matchingPacked.length / 2)));
+      continue;
+    }
+    break;
+  }
+  return packResult();
 }

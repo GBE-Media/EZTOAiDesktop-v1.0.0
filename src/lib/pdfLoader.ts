@@ -215,6 +215,48 @@ export function groupTextIntoLines(
   return lines;
 }
 
+/**
+ * Same y-grouping as groupTextIntoLines, then split a line into columns when
+ * neighboring items have a large x-gap (schedule column vs plan text).
+ */
+export function groupTextIntoColumnLines(
+  items: TextItemWithBounds[],
+  yTolerance: number = 5,
+  gapFactor: number = 2.5,
+  minGap: number = 144,
+): string[] {
+  const lines = groupTextIntoLines(items, yTolerance);
+  const texts: string[] = [];
+  for (const line of lines) {
+    const sorted = [...line.items].sort((a, b) => a.x - b.x);
+    if (sorted.length <= 1) {
+      const text = sorted.map(item => item.str).join(' ').trim();
+      if (text) texts.push(text);
+      continue;
+    }
+    const gaps: number[] = [];
+    for (let i = 1; i < sorted.length; i += 1) {
+      const prev = sorted[i - 1];
+      gaps.push(sorted[i].x - (prev.x + prev.width));
+    }
+    const medianGap = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)] ?? 0;
+    const splitAt = Math.max(minGap, medianGap * gapFactor);
+    let current: TextItemWithBounds[] = [sorted[0]];
+    for (let i = 1; i < sorted.length; i += 1) {
+      if (gaps[i - 1] > splitAt) {
+        const text = current.map(item => item.str).join(' ').trim();
+        if (text) texts.push(text);
+        current = [sorted[i]];
+      } else {
+        current.push(sorted[i]);
+      }
+    }
+    const text = current.map(item => item.str).join(' ').trim();
+    if (text) texts.push(text);
+  }
+  return texts;
+}
+
 function createLineFromItems(items: TextItemWithBounds[]): TextLine {
   const minX = Math.min(...items.map(i => i.x));
   const minY = Math.min(...items.map(i => i.y));

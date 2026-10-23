@@ -50,7 +50,7 @@ describe('reconcileTileDetections', () => {
     expect(items[0].location.y).toBeCloseTo(50, 1);
   });
 
-  it('keeps only the owning tile copy of a detection in an overlap', () => {
+  it('merges overlapping-tile copies of the same symbol by distance', () => {
     const [left, middle] = generateOverlappingTileRegions(900, 600).slice(0, 2);
     const pageX = 300;
     const pageY = 100;

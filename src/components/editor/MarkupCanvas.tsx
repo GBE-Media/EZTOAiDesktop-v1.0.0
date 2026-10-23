@@ -732,7 +732,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
 
         const caption = countMarkerCaption(markup);
         if (caption) {
-          ctx.fillStyle = pendingAppearance.strokeStyle || markup.style.strokeColor;
+          // Review markers draw an amber dot; the "?" must contrast with it.
+          ctx.fillStyle = caption === '?' ? '#ffffff' : (pendingAppearance.strokeStyle || markup.style.strokeColor);
           ctx.font = 'bold 12px Arial';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateOverlappingTileRegions } from './imageCapture';
+import { generateOverlappingTileRegions, visionTileGridForPage } from './imageCapture';
 
 describe('generateOverlappingTileRegions', () => {
   it('creates a 3x3 grid with non-overlapping ownership cells', () => {
@@ -22,5 +22,29 @@ describe('generateOverlappingTileRegions', () => {
     expect(regions[0].y).toBe(0);
     expect(regions[8].x + regions[8].width).toBeCloseTo(900);
     expect(regions[8].y + regions[8].height).toBeCloseTo(600);
+  });
+
+  it('computes a denser grid for a large sheet', () => {
+    const small = visionTileGridForPage(612, 792);
+    const large = visionTileGridForPage(36 * 72, 24 * 72);
+    expect(large.cols).toBeGreaterThan(large.rows);
+    expect(large.cols).toBeGreaterThan(small.cols);
+    expect(large.rows * large.cols).toBeLessThanOrEqual(16);
+  });
+
+  it('caps letter and 11x17 while keeping ~138 DPI on 36x24', () => {
+    const dpi = (w: number, h: number, grid: { rows: number; cols: number }) => {
+      const overlap = 0.12;
+      const cropW = Math.min(w, (w / grid.cols) * (1 + 2 * overlap));
+      const cropH = Math.min(h, (h / grid.rows) * (1 + 2 * overlap));
+      return 768 / (Math.min(cropW, cropH) / 72);
+    };
+    const letter = visionTileGridForPage(612, 792);
+    const tabloid = visionTileGridForPage(17 * 72, 11 * 72);
+    const eSize = visionTileGridForPage(36 * 72, 24 * 72);
+    expect(letter.rows * letter.cols).toBeLessThanOrEqual(4);
+    expect(tabloid.rows * tabloid.cols).toBeLessThanOrEqual(6);
+    expect(dpi(36 * 72, 24 * 72, eSize)).toBeGreaterThan(125);
+    expect(dpi(36 * 72, 24 * 72, eSize)).toBeLessThan(155);
   });
 });

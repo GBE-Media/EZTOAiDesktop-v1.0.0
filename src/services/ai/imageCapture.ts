@@ -84,6 +84,60 @@ function exportCanvasWithinLimit(
 }
 
 /**
+ * Size a tile grid so each tile's short side gets the most resolution under
+ * the same tile-count cap, following the page aspect ratio.
+ *
+ * DPI math (assumed, not confirmed): providers are treated as resizing each
+ * tile so its short side is `providerShortSidePx` (default 768). Then
+ * effectiveDpi ≈ providerShortSidePx / (tileShortSideInches).
+ * Example: 36×24in sheet, 2×8 tiles with 12% overlap → overlapped crop short
+ * side ≈5.58in, ≈138 DPI under a 16-tile cap.
+ */
+export function visionTileGridForPage(
+  pageWidth: number,
+  pageHeight: number,
+  options?: {
+    providerShortSidePx?: number;
+    targetDpi?: number;
+    maxTiles?: number;
+    overlapRatio?: number;
+  },
+): { rows: number; cols: number } {
+  const providerShortSidePx = options?.providerShortSidePx ?? 768;
+  const targetDpi = options?.targetDpi ?? 150;
+  const overlapRatio = options?.overlapRatio ?? 0.12;
+  const shortIn = Math.min(pageWidth, pageHeight) / 72;
+  const longIn = Math.max(pageWidth, pageHeight) / 72;
+  const sheetCap = longIn <= 11.5 && shortIn <= 8.6
+    ? 4
+    : (longIn <= 17.5 && shortIn <= 11.5 ? 6 : 16);
+  const maxTiles = Math.min(options?.maxTiles ?? 16, sheetCap);
+  const landscape = pageWidth >= pageHeight;
+  let best = { rows: 1, cols: 1, score: -Infinity };
+  for (let rows = 1; rows <= maxTiles; rows += 1) {
+    for (let cols = 1; cols <= maxTiles; cols += 1) {
+      if (rows * cols > maxTiles) continue;
+      if (landscape && cols < rows) continue;
+      if (!landscape && rows < cols) continue;
+      const cellW = pageWidth / cols;
+      const cellH = pageHeight / rows;
+      const cropW = Math.min(pageWidth, cellW * (1 + 2 * overlapRatio));
+      const cropH = Math.min(pageHeight, cellH * (1 + 2 * overlapRatio));
+      const shortPts = Math.min(cropW, cropH);
+      const longPts = Math.max(cropW, cropH);
+      const dpi = Math.min(providerShortSidePx / (shortPts / 72), 2048 / (longPts / 72));
+      const aspectPage = pageWidth / Math.max(1, pageHeight);
+      const aspectGrid = cols / rows;
+      const aspectPenalty = Math.abs(Math.log(aspectGrid / Math.max(1e-6, aspectPage)));
+      const overshoot = dpi >= targetDpi ? (dpi - targetDpi) * 0.15 : (targetDpi - dpi) * 1.5;
+      const score = 1000 - overshoot - aspectPenalty * 50 - (rows * cols) * 2;
+      if (score > best.score) best = { rows, cols, score };
+    }
+  }
+  return { rows: best.rows, cols: best.cols };
+}
+
+/**
  * Build overlapping tile crops in PDF-point coordinates. Ownership cells do
  * not overlap; expanded crop bounds provide context around boundary symbols.
  */
@@ -243,8 +297,10 @@ export async function capturePageVisionBundle(
   const overviewScale = options.overviewScale ?? getOptimalScale(pageWidth, pageHeight);
   const tileScale = options.tileScale ?? 3;
   const maxImageBytes = options.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES;
-
   const analysisRegion = options.region || { x: 0, y: 0, width: pageWidth, height: pageHeight };
+  const autoGrid = visionTileGridForPage(analysisRegion.width, analysisRegion.height);
+  const rows = options.rows ?? autoGrid.rows;
+  const cols = options.cols ?? autoGrid.cols;
   const overviewSource = await renderPageForOcr(pdfDoc, pageNumber, Math.round(overviewScale * 72));
   const overviewScaleX = overviewSource.width / Math.max(1, pageWidth);
   const overviewScaleY = overviewSource.height / Math.max(1, pageHeight);
@@ -277,8 +333,8 @@ export async function capturePageVisionBundle(
   const regions = generateOverlappingTileRegions(
     analysisRegion.width,
     analysisRegion.height,
-    options.rows,
-    options.cols,
+    rows,
+    cols,
     options.overlapRatio
   ).map(region => ({
     ...region,
