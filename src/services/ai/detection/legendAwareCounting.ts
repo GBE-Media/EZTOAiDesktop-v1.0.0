@@ -125,7 +125,7 @@ export function parseLegendFromTextLines(lines: string[]): LegendEntry[] {
     }
 
     const typePrefixed = line.match(
-      /^\s*(?:TYPE\s+)?([A-Z]{1,3}\d*(?:[/-][A-Z0-9]+)*)\s*[-–—:.)]\s*(.+)$/i,
+      /^\s*(?:TYPE\s+)?([A-Z]{1,3}\d*(?:[/-][A-Z0-9]+)*)(?![A-Z0-9/-])\s*[-–—:.)]\s*(.+)$/i,
     );
     if (typePrefixed) {
       add(typePrefixed[1], typePrefixed[2], inSection ? 'legend' : 'schedule');

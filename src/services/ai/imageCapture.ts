@@ -124,7 +124,8 @@ export function visionTileGridForPage(
       const cropW = Math.min(pageWidth, cellW * (1 + 2 * overlapRatio));
       const cropH = Math.min(pageHeight, cellH * (1 + 2 * overlapRatio));
       const shortPts = Math.min(cropW, cropH);
-      const dpi = providerShortSidePx / (shortPts / 72);
+      const longPts = Math.max(cropW, cropH);
+      const dpi = Math.min(providerShortSidePx / (shortPts / 72), 2048 / (longPts / 72));
       const aspectPage = pageWidth / Math.max(1, pageHeight);
       const aspectGrid = cols / rows;
       const aspectPenalty = Math.abs(Math.log(aspectGrid / Math.max(1e-6, aspectPage)));
