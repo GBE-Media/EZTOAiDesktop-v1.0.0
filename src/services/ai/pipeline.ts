@@ -11,6 +11,7 @@ import {
   type PageTileRegion,
 } from './imageCapture';
 import { skipTilesCoveredByNonPlanZones, type PageZone } from './detection/pageZones';
+import { mergeLegendEntries, type SheetLegend } from './detection/sheetLegend';
 import {
   getTextContentWithBounds,
   groupTextIntoLines,
@@ -668,6 +669,8 @@ export async function analyzePageMaximumAccuracy(options: {
   setCachedText?: (page: number, items: TextItemWithBounds[]) => void;
   onProgress?: (message: string, progress: number) => void;
   pageZones?: PageZone[];
+  /** Legend from the set's legend/schedule sheet, used when this page has no legend of its own. */
+  sheetLegend?: () => Promise<SheetLegend | null>;
 }): Promise<MaximumAccuracyPageResult> {
   const {
     pdfDoc,
@@ -683,6 +686,7 @@ export async function analyzePageMaximumAccuracy(options: {
     setCachedText,
     onProgress,
     pageZones,
+    sheetLegend,
   } = options;
 
   onProgress?.(`Rendering high-resolution page ${page}...`, 5);
@@ -712,11 +716,21 @@ export async function analyzePageMaximumAccuracy(options: {
     : (textEvidence.context
       ? textEvidence.context.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
       : []);
-  const legendEntries = visibleOnly
+  const pageLegendEntries = visibleOnly
     ? []
     : (textEvidence.items?.length
       ? parseLegendFromPageItems(textEvidence.items)
       : parseLegendFromTextLines(legendSourceLines));
+  let borrowedLegend: SheetLegend | null = null;
+  if (!visibleOnly && sheetLegend) {
+    borrowedLegend = await sheetLegend().catch(() => null);
+  }
+  const legendEntries = mergeLegendEntries(pageLegendEntries, borrowedLegend);
+  if (borrowedLegend && legendEntries.length > pageLegendEntries.length) {
+    console.info('[legend] using legend sheet', { page, from: borrowedLegend.sourceLabel, count: legendEntries.length });
+  } else {
+    borrowedLegend = null;
+  }
   if (legendEntries.length > 0) {
     console.info('[legend]', {
       page,
@@ -928,7 +942,11 @@ ${JSON.stringify(items.map(item => ({
       legendTypeCodes: legendEntries.map((e) => e.typeCode),
       legendTypeCounts: legendAware.legendTypeCounts,
       countReliability,
-      countVerificationNotes: [...legendAware.verification.notes, ...extraNotes],
+      countVerificationNotes: [
+        ...(borrowedLegend && !borrowedLegend.ownPage ? [`Fixture types from the legend/schedule on ${borrowedLegend.sourceLabel}.`] : []),
+        ...legendAware.verification.notes,
+        ...extraNotes,
+      ],
       questions: Array.from(new Set([...questions, ...verifiedQuestions])),
       evidence: Array.from(new Set([...evidence, ...verifiedEvidence])),
     },
