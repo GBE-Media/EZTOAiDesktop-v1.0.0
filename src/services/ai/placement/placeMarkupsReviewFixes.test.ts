@@ -475,9 +475,27 @@ describe('itemIds analysisRef + duplicate markup ids', () => {
     expect(resolveMarkupDrawAppearance({ markup: confirmed, scale: 1 }).strokeStyle).toBeUndefined();
   });
 
-  it('fails when page geometry is missing and places nothing', async () => {
+  it('loads page geometry on demand when counting did not cache it', async () => {
     seedDoc('doc-a', false);
     expect(useCanvasStore.getState().getPageGeometry(1)).toBeNull();
+    const revision = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
+    seedAnalysis('doc-a', 1, [item('a1')], revision);
+    const analysisRef = getLatestFullPageAnalysis('doc-a', 1, revision)?.analysisRef;
+    const execution = await executeOnStore({
+      itemIds: ['a1'],
+      page: 1,
+      analysisRef,
+    }, 'appr-geo-load');
+    expect(execution.status).toBe('ok');
+    expect(execution.placed).toBe(1);
+    expect(pageMarkups('doc-a')).toHaveLength(1);
+  });
+
+  it('fails when page geometry cannot be loaded and places nothing', async () => {
+    seedDoc('doc-a', false);
+    const store = useCanvasStore.getState();
+    const broken = { getPage: async () => { throw new Error('page unreadable'); } };
+    store.setPdfDocument('doc-a', broken, 2, 612, 792);
     const revision = useCanvasStore.getState().pdfDocuments['doc-a']?.contentRevision ?? 0;
     seedAnalysis('doc-a', 1, [item('a1')], revision);
     const analysisRef = getLatestFullPageAnalysis('doc-a', 1, revision)?.analysisRef;
@@ -488,7 +506,7 @@ describe('itemIds analysisRef + duplicate markup ids', () => {
     }, 'appr-geo');
     expect(execution.status).toBe('failed');
     expect(execution.placed).toBe(0);
-    expect(execution.error).toMatch(/Page geometry unavailable; ask the AI to count again/);
+    expect(execution.error).toMatch(/Page geometry unavailable/);
     expect(pageMarkups('doc-a')).toHaveLength(0);
   });
 

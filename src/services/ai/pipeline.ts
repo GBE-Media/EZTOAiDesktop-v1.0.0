@@ -726,7 +726,7 @@ export async function analyzePageMaximumAccuracy(options: {
     borrowedLegend = await sheetLegend().catch(() => null);
   }
   const legendEntries = mergeLegendEntries(pageLegendEntries, borrowedLegend);
-  if (borrowedLegend && legendEntries.length > pageLegendEntries.length) {
+  if (borrowedLegend && legendEntries !== pageLegendEntries) {
     console.info('[legend] using legend sheet', { page, from: borrowedLegend.sourceLabel, count: legendEntries.length });
   } else {
     borrowedLegend = null;

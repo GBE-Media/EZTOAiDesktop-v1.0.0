@@ -1,5 +1,5 @@
 import { getAIService } from '../../aiService';
-import { groundAnswerToCountTool, lastCountPageItemsResult } from '../countGrounding';
+import { allCountPageItemsResults, groundAnswerToCountTool, lastCountPageItemsResult } from '../countGrounding';
 import { buildVerifierSystemPrompt } from '../prompts/verifier';
 import { emitAgentTrace } from '../trace';
 import { runVerificationTools } from '../verification';
@@ -45,13 +45,12 @@ export async function runVerificationPhase(input: VerifierInput): Promise<Verifi
     }
   }
 
-  const countTotals = lastCountPageItemsResult(
-    input.toolHistory?.length
-      ? input.toolHistory
-      : (input.toolHistorySummaries || []).map(summary => ({ toolId: 'count_page_items', output: tryParseJson(summary) })),
-  );
+  const countHistory = input.toolHistory?.length
+    ? input.toolHistory
+    : (input.toolHistorySummaries || []).map(summary => ({ toolId: 'count_page_items', output: tryParseJson(summary) }));
+  const countTotals = lastCountPageItemsResult(countHistory);
   if (countTotals) {
-    const grounded = groundAnswerToCountTool(input.draftMessage, countTotals);
+    const grounded = groundAnswerToCountTool(input.draftMessage, countTotals, allCountPageItemsResults(countHistory));
     if (grounded.revised) {
       input = { ...input, draftMessage: grounded.message };
       deterministic.push({

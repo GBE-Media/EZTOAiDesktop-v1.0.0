@@ -78,10 +78,11 @@ describe('cross-sheet legend', () => {
     expect(legend?.ownPage).toBe(false);
   });
 
-  it('prefers the larger, precise table read over a weak page parse', () => {
+  it('prefers a real schedule table over the noisy page parse', () => {
     const sheet = { entries: parseScheduleTables(LEGEND_SHEET), sourcePages: [92], sourceLabel: 'E-2.1' };
     expect(mergeLegendEntries([{ typeCode: 'DMX', description: 'DMX', source: 'text' }], sheet).map(e => e.typeCode)).toEqual(['A', 'B1', 'XA']);
-    const strong = ['A', 'B', 'C', 'D'].map(typeCode => ({ typeCode, description: typeCode, source: 'schedule' as const }));
-    expect(mergeLegendEntries(strong, sheet)).toBe(strong);
+    const noisy = ['R26/2620073', 'WP/GFCI', 'A-29', 'A', 'B1'].map(typeCode => ({ typeCode, description: typeCode, source: 'text' as const }));
+    expect(mergeLegendEntries(noisy, sheet).map(e => e.typeCode)).toEqual(['A', 'B1', 'XA']);
+    expect(mergeLegendEntries(noisy, { ...sheet, entries: sheet.entries.slice(0, 1) })).toBe(noisy);
   });
 });

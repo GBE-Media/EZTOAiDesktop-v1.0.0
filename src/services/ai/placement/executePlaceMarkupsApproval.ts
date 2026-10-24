@@ -1,9 +1,10 @@
+import { useCanvasStore } from '@/store/canvasStore';
 import type { CanvasMarkup, MarkupStyle } from '@/types/markup';
 import type { ApprovalRequest } from '@/types/assistant';
 import { isPageAnalysisRef } from '../agent/pageAnalysisRef';
 import { commitMarkupsByConfidence } from './confidenceGate';
 import { normalizeAgentMarkupPayload, type NormalizeDroppedRow } from './normalizeAgentMarkupPayload';
-import { placementMarkupsFromCachedItemIds } from './cachedCountMarkers';
+import { ensureCachedPageGeometry, placementMarkupsFromCachedItemIds } from './cachedCountMarkers';
 import { verifyPlacementMarkupsWithGeometryGate } from './normalizeAgentMarkupPayload';
 import type { PdfDocumentLike } from './loadPageGeometries';
 
@@ -107,6 +108,11 @@ export async function resolvePlaceMarkups(
       } };
     }
     const page = rec.page;
+    const refDocId = (rec.analysisRef as { docId?: string }).docId;
+    if (refDocId) {
+      const refPdf = useCanvasStore.getState().pdfDocuments[refDocId]?.pdfDocument;
+      await ensureCachedPageGeometry(refDocId, page, (refPdf || options.pdfDocument) as PdfDocumentLike | null);
+    }
     const fromCache = placementMarkupsFromCachedItemIds({
       itemIds,
       page,
