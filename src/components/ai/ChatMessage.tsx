@@ -13,7 +13,7 @@ import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { sanitizeAssistantVisibleText } from '@/services/ai/agent/assistantVisibleText';
-import { humanizeToolError } from '@/lib/assistantTurnPresentation';
+import { humanizeToolError, textLooksLikeRawInternals } from '@/lib/assistantTurnPresentation';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -109,8 +109,11 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
   }
   
   const recovered = Boolean(message.content && message.error);
+  // Plain-English errors (e.g. "No AI provider configured…") are shown as-is;
+  // only raw internals (JSON, tool ids, counters) get humanized, with the raw text kept in Details.
+  const errorIsRaw = message.error ? textLooksLikeRawInternals(message.error) : false;
   const errorText = message.error
-    ? humanizeToolError(message.error)
+    ? (errorIsRaw ? humanizeToolError(message.error) : message.error)
     : null;
 
   if (isUser) {
@@ -169,7 +172,15 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
             {errorText && !recovered && (
               <div className="mb-2 flex items-start gap-2 text-sm text-destructive">
                 <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-                <span>{errorText}</span>
+                <div className="min-w-0">
+                  <span>{errorText}</span>
+                  {errorIsRaw && (
+                    <details className="mt-1 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">Details</summary>
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 text-[10px]">{message.error}</pre>
+                    </details>
+                  )}
+                </div>
               </div>
             )}
             {message.content ? (
