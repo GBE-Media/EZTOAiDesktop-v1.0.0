@@ -3,6 +3,7 @@ import { NO_CONFIDENT_MATCH, normalizeMatchConfidence } from '../detection/visio
 import type { PageGeometry } from '../placement/types';
 import { pageGeometryFromUnrotated, visionLocationToDocPoint, type DisplayCrop } from '../placement/visionDisplayPctToDoc';
 import type { PageAnalysisRef } from './pageAnalysisRef';
+import { filterDetectionsByZones, type PageZone, type PageZoneKind } from '../detection/pageZones';
 export type { PageAnalysisRef } from './pageAnalysisRef';
 
 /** Compact analyze_page payload stored for reuse (no overview images). */
@@ -319,6 +320,8 @@ export interface PageItemCountResult {
   legendTypeCodes?: string[];
   verificationNotes?: string[];
   message?: string;
+  excludedByZone?: Array<{ zoneLabel: string; kind: string; count: number; itemIds: string[] }>;
+  zoneWarning?: string;
 }
 
 const QUERY_FILLER = new Set([
@@ -622,16 +625,28 @@ export function countItemsFromAnalysis(
     code?: string;
     crop?: DisplayCrop;
     section?: 'matching' | 'unresolved';
+    zones?: PageZone[];
+    includeZones?: PageZoneKind[];
   },
 ): PageItemCountResult {
   const q = query.trim();
-  const items = analysis.items || [];
+  const zoneFilter = options?.zones?.length
+    ? filterDetectionsByZones(analysis.items || [], options.zones, {
+      pageWidth: options.pageGeometry?.docWidth || options.pageWidth,
+      pageHeight: options.pageGeometry?.docHeight || options.pageHeight,
+      include: options.includeZones,
+    })
+    : null;
+  const items = (zoneFilter ? zoneFilter.kept : analysis.items) || [];
   // Prefer legend-grounded counts when present (includes zero-count legend types).
-  const allTypeCounts = {
-    ...(analysis.legendTypeCounts && Object.keys(analysis.legendTypeCounts).length > 0
-      ? analysis.legendTypeCounts
-      : analysis.typeCounts || {}),
-  };
+  // After zoning, typeCounts come from the surviving item ids — never mix schedule glyphs.
+  const allTypeCounts = zoneFilter
+    ? countsFromItems(items)
+    : {
+      ...(analysis.legendTypeCounts && Object.keys(analysis.legendTypeCounts).length > 0
+        ? analysis.legendTypeCounts
+        : analysis.typeCounts || {}),
+    };
   const knownCodes = Object.keys(allTypeCounts);
   const matchedCodes = q ? parseMatchedLegendCodes(q, knownCodes) : [];
   const matchingTypeCounts: Record<string, number> = {};
@@ -662,10 +677,22 @@ export function countItemsFromAnalysis(
     ? []
     : items.filter(item => itemMatchesQuery(item, q, matchedCodes)
       && !itemIsUnresolvedForCounts(item, legendCodes).unresolved);
-  const total = Object.values(matchingTypeCounts).reduce((sum, n) => sum + n, 0);
+  if (zoneFilter) {
+    const fromIds = countsFromItems(matchingItems);
+    for (const key of Object.keys(matchingTypeCounts)) delete matchingTypeCounts[key];
+    Object.assign(matchingTypeCounts, fromIds);
+  }
+  const total = zoneFilter
+    ? matchingItems.reduce((sum, item) => sum + (item.quantity || 1), 0)
+    : Object.values(matchingTypeCounts).reduce((sum, n) => sum + n, 0);
 
   const reliability = analysis.countReliability;
   const verificationNotes = [...(analysis.countVerificationNotes || [])];
+  if (zoneFilter?.warning) verificationNotes.push(zoneFilter.warning);
+  if (zoneFilter?.excludedByZone.length) {
+    const bits = zoneFilter.excludedByZone.map(row => `${row.count} in the ${row.zoneLabel}`).join(' and ');
+    verificationNotes.push(`Excluded ${bits}.`);
+  }
   const namedNoCode = q && matchedCodes.length === 0 && Object.keys(matchingTypeCounts).length === 0;
   if (namedNoCode) {
     verificationNotes.unshift(`No known legend codes in query "${q}"; counted 0 (not a fuzzy match).`);
@@ -775,11 +802,13 @@ export function countItemsFromAnalysis(
       countReliability: reliability,
       legendTypeCodes: analysis.legendTypeCodes,
       verificationNotes,
+      excludedByZone: zoneFilter?.excludedByZone,
+      zoneWarning: zoneFilter?.warning,
       message: (namedNoCode
         ? verificationNotes[0]
         : (q
-          ? `Counted items matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
-          : `Returned all type counts for page ${analysis.page} (${options?.source || 'cache'}).`))
+          ? `Counted ${total} item(s) matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
+          : `Counted ${total} item(s) on page ${analysis.page} (${options?.source || 'cache'}).`))
         + (namedNoCode ? '' : reliabilityNote)
         + (namedNoCode ? '' : legendNote)
         + (!namedNoCode && verificationNotes.length ? ` ${verificationNotes[0]}` : '')
@@ -810,4 +839,13 @@ export function countItemsFromAnalysis(
     break;
   }
   return packResult();
+}
+
+function countsFromItems(items: DetectedItem[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const item of items) {
+    const code = String(item.legendTypeCode || item.type || 'unknown').trim() || 'unknown';
+    out[code] = (out[code] || 0) + (item.quantity || 1);
+  }
+  return out;
 }

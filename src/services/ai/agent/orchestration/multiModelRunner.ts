@@ -284,6 +284,21 @@ async function finishWithOptionalVerify(options: {
   let finalStatus = primaryResult.finalStatus;
   let clarifyingQuestions = primaryResult.clarifyingQuestions;
 
+  if (primaryResult.finalStatus === 'completed' && primaryResult.status === 'completed') {
+    const grounded = await runVerificationPhase({
+      runId: primaryResult.runId,
+      draftMessage: assistantMessage,
+      actionsTaken: primaryResult.actionsTaken,
+      toolHistorySummaries: primaryResult.toolHistory.map(t => `${t.toolId}: ${t.result.summary}`),
+      toolHistory: primaryResult.toolHistory,
+      requireLlm: false,
+      toolContext,
+      signal: options.signal,
+    });
+    assistantMessage = grounded.finalMessage;
+    verificationSummary = grounded.summary;
+  }
+
   if (
     options.requireVerifier
     && primaryResult.finalStatus === 'completed'
@@ -298,6 +313,7 @@ async function finishWithOptionalVerify(options: {
       draftMessage: primaryResult.assistantMessage,
       actionsTaken: primaryResult.actionsTaken,
       toolHistorySummaries: primaryResult.toolHistory.map(t => `${t.toolId}: ${t.result.summary}`),
+      toolHistory: primaryResult.toolHistory,
       requireLlm: true,
       lastWriteToolId: lastWrite?.toolId,
       toolContext,

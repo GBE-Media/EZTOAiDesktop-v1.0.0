@@ -29,6 +29,7 @@ import type {
 } from '@/types/markup';
 import { TextEditOverlay } from './TextEditOverlay';
 import { countMarkerCaption, resolveMarkupDrawAppearance } from './markupDrawAppearance';
+import { getCachedPageZones } from '@/services/ai/detection/pageZones';
 import {
   computeAreaMeasurementFromPoints,
   computeLengthMeasurement,
@@ -189,6 +190,9 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     getOcrStatus,
     extractDocumentSnapData,
     setActiveSnapPoint,
+    aiPreview,
+    aiPreviewHoverId,
+    showPageZones,
   } = useCanvasStore();
 
   const { activeTool, selectedStamp, gridEnabled, rotation } = useEditorStore();
@@ -259,6 +263,52 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       
       drawMarkup(ctx, markup, isSelected, isHovered, isEraserHovered);
     });
+
+    if (aiPreview && aiPreview.docId === activeDocId) {
+      const previewRows = aiPreview.markups.filter(row => row.page === currentPage);
+      previewRows.forEach((row, index) => {
+        const hovered = aiPreviewHoverId === row.markup.id;
+        const overlay = {
+          ...row.markup,
+          aiPending: true,
+          label: row.markup.label || String(index + 1),
+        } as typeof row.markup;
+        ctx.save();
+        ctx.globalAlpha = hovered ? 1 : 0.65;
+        if (hovered) ctx.shadowColor = '#f59e0b';
+        if (hovered) ctx.shadowBlur = 16;
+        drawMarkup(ctx, overlay, false, hovered, false);
+        ctx.restore();
+      });
+    }
+
+    if (showPageZones && activeDocId) {
+      const zones = getCachedPageZones(activeDocId, currentPage) || [];
+      const palette: Record<string, string> = {
+        plan: '#10b981',
+        enlarged_plan: '#14b8a6',
+        schedule: '#6366f1',
+        legend: '#8b5cf6',
+        notes: '#f59e0b',
+        detail: '#ef4444',
+        diagram: '#3b82f6',
+        title_block: '#64748b',
+        key_plan: '#22c55e',
+        revisions: '#a855f7',
+      };
+      zones.forEach(zone => {
+        ctx.save();
+        ctx.strokeStyle = palette[zone.kind] || '#94a3b8';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 4]);
+        ctx.strokeRect(zone.bounds.x, zone.bounds.y, zone.bounds.width, zone.bounds.height);
+        ctx.setLineDash([]);
+        ctx.fillStyle = palette[zone.kind] || '#94a3b8';
+        ctx.font = '11px Arial';
+        ctx.fillText(zone.label || zone.kind, zone.bounds.x + 4, zone.bounds.y + 14);
+        ctx.restore();
+      });
+    }
     
     // Draw preview markup while drawing
     if (drawing.isDrawing && drawing.currentPoints.length > 0) {

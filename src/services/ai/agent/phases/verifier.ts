@@ -1,4 +1,5 @@
 import { getAIService } from '../../aiService';
+import { groundAnswerToCountTool, lastCountPageItemsResult } from '../countGrounding';
 import { buildVerifierSystemPrompt } from '../prompts/verifier';
 import { emitAgentTrace } from '../trace';
 import { runVerificationTools } from '../verification';
@@ -10,6 +11,7 @@ export interface VerifierInput {
   draftMessage: string;
   actionsTaken: Array<{ toolId: string; summary: string; status: string }>;
   toolHistorySummaries: string[];
+  toolHistory?: Array<{ toolId?: string; result?: { output?: unknown }; output?: unknown }>;
   requireLlm: boolean;
   lastWriteToolId?: string;
   toolContext: AssistantToolContext;
@@ -39,6 +41,23 @@ export async function runVerificationPhase(input: VerifierInput): Promise<Verifi
         toolId: input.lastWriteToolId,
         summary: result.summary,
         status: result.status,
+      });
+    }
+  }
+
+  const countTotals = lastCountPageItemsResult(
+    input.toolHistory?.length
+      ? input.toolHistory
+      : (input.toolHistorySummaries || []).map(summary => ({ toolId: 'count_page_items', output: tryParseJson(summary) })),
+  );
+  if (countTotals) {
+    const grounded = groundAnswerToCountTool(input.draftMessage, countTotals);
+    if (grounded.revised) {
+      input = { ...input, draftMessage: grounded.message };
+      deterministic.push({
+        toolId: 'count_page_items',
+        summary: grounded.issues.join('; ') || 'Grounded counts to count_page_items',
+        status: 'completed',
       });
     }
   }
@@ -110,6 +129,15 @@ export async function runVerificationPhase(input: VerifierInput): Promise<Verifi
     finalMessage,
     blockedClarification,
   };
+}
+
+function tryParseJson(raw: string): unknown {
+  try {
+    const cleaned = String(raw || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    return JSON.parse(cleaned);
+  } catch {
+    return { message: raw };
+  }
 }
 
 function parseVerifierJson(raw: string): {

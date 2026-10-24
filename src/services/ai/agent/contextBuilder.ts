@@ -1,4 +1,6 @@
 import type { TradeType } from '../providers/types';
+import { listOpenDocuments } from '../documentRef';
+import { useCanvasStore } from '@/store/canvasStore';
 
 export interface AgentContextInput {
   userIntent: string;
@@ -65,9 +67,7 @@ export function buildAgentContext(input: AgentContextInput): {
     `- User intent: ${truncate(input.userIntent, 500)}`,
     `- Trade: ${input.trade}`,
     `- Screen: ${input.screen || 'editor'}`,
-    input.documentName
-      ? `- Document: ${input.documentName} (page ${input.currentPage || '?'}${input.totalPages ? ` / ${input.totalPages}` : ''})`
-      : '- Document: none open',
+    ...openDocumentLines(input.documentId),
     input.projectDocumentsSummary
       ? `\n## Project documents\n${truncate(input.projectDocumentsSummary, 2_400)}`
       : null,
@@ -91,4 +91,18 @@ export function buildAgentContext(input: AgentContextInput): {
 function truncate(value: string | undefined, max: number): string | undefined {
   if (!value) return undefined;
   return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+function openDocumentLines(activeId?: string | null): string[] {
+  const docs = listOpenDocuments();
+  const canvas = useCanvasStore.getState();
+  if (!docs.length) return ['- Document: none open'];
+  return [
+    '- Open documents (Always pass documentId exactly as listed in [id: …]):',
+    ...docs.map(doc => {
+      const pages = canvas.pdfDocuments[doc.id]?.totalPages || 0;
+      const active = (activeId && doc.id === activeId) || doc.id === canvas.activeDocId;
+      return `- [id: ${doc.id}] ${doc.name} (pages ${pages})${active ? ' ← active' : ''}`;
+    }),
+  ];
 }

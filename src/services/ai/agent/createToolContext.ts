@@ -34,6 +34,9 @@ import { searchCatalog } from '../catalog/searchCatalog';
 import { executeLinkCatalog } from '../catalog/attachProductToMarkup';
 import { allIndexedPages } from '../projectIndex/store';
 import { compactProjectDocuments } from '../projectIndex/summaries';
+import { resolveDocumentRef } from '../documentRef';
+import { ensurePageZones } from '../detection/pageZones';
+import type { PageZoneKind } from '../detection/pageZones';
 
 export interface CreateAgentToolContextOptions {
   runId: string;
@@ -89,6 +92,13 @@ function normalizeScopedAnalysisRegion(
   return clamped;
 }
 
+function resolveToolDocument(raw: Record<string, unknown>): { docId: string } | { error: string } {
+  const ref = typeof raw.documentId === 'string' ? raw.documentId.trim() : undefined;
+  const resolved = resolveDocumentRef(ref);
+  if ('error' in resolved) return { error: resolved.error };
+  return { docId: resolved.docId };
+}
+
 /**
  * Default analyze_page adapter: runs the Takeoff maximum-accuracy pipeline on the
  * active PDF. Returns a compact payload (no overviewImage base64). Override via
@@ -120,12 +130,11 @@ async function defaultAnalyzePage(
   }
 
   const canvas = useCanvasStore.getState();
-  if (typeof raw.documentId === 'string' && raw.documentId.trim() && !canvas.pdfDocuments[raw.documentId.trim()]) {
-    return { status: 'failed', message: `Unknown documentId ${raw.documentId.trim()}` };
+  const resolved = resolveToolDocument(raw);
+  if ('error' in resolved) {
+    return { status: 'failed', message: resolved.error };
   }
-  const docId = typeof raw.documentId === 'string' && raw.documentId.trim()
-    ? raw.documentId.trim()
-    : canvas.activeDocId;
+  const docId = resolved.docId;
   const pdfData = docId ? canvas.pdfDocuments[docId] : null;
   const pdfDoc = pdfData?.pdfDocument;
   const pageWidth = pdfData?.originalPageWidth;
@@ -203,6 +212,7 @@ async function defaultAnalyzePage(
   }
 
   try {
+    const pageZones = await ensurePageZones(docId, page);
     const result = await analyzePageMaximumAccuracy({
       pdfDoc,
       page,
@@ -211,6 +221,7 @@ async function defaultAnalyzePage(
       trade: options.trade,
       userPrompt: prompt,
       analysisRegion,
+      pageZones,
       getCachedText: pageNumber => (
         docId === useCanvasStore.getState().activeDocId ? canvas.getTextContent(pageNumber) : []
       ),
@@ -297,12 +308,11 @@ async function defaultExtractPageText(
   }
 
   const canvas = useCanvasStore.getState();
-  if (typeof raw.documentId === 'string' && raw.documentId.trim() && !canvas.pdfDocuments[raw.documentId.trim()]) {
-    return { status: 'failed', message: `Unknown documentId ${raw.documentId.trim()}` };
+  const resolved = resolveToolDocument(raw);
+  if ('error' in resolved) {
+    return { status: 'failed', message: resolved.error };
   }
-  const docId = typeof raw.documentId === 'string' && raw.documentId.trim()
-    ? raw.documentId.trim()
-    : canvas.activeDocId;
+  const docId = resolved.docId;
   const pdfData = docId ? canvas.pdfDocuments[docId] : null;
   const pdfDoc = pdfData?.pdfDocument;
   const pageWidth = pdfData?.originalPageWidth;
@@ -414,6 +424,9 @@ async function defaultCountPageItems(
     : undefined;
   const code = typeof raw.code === 'string' ? raw.code.trim() : '';
   const section = raw.section === 'unresolved' ? 'unresolved' as const : undefined;
+  const includeZones = Array.isArray(raw.include)
+    ? raw.include.filter((value): value is PageZoneKind => typeof value === 'string')
+    : undefined;
 
   if (page == null) {
     return {
@@ -423,13 +436,16 @@ async function defaultCountPageItems(
   }
 
   const canvas = useCanvasStore.getState();
-  if (typeof raw.documentId === 'string' && raw.documentId.trim() && !canvas.pdfDocuments[raw.documentId.trim()]) {
-    return { status: 'failed', message: `Unknown documentId ${raw.documentId.trim()}` };
+  const resolved = resolveToolDocument(raw);
+  if ('error' in resolved) {
+    const asked = typeof raw.documentId === 'string' && raw.documentId.trim();
+    return {
+      status: asked ? 'failed' : 'unavailable',
+      message: asked ? resolved.error : 'No PDF document is open for counting page items.',
+    };
   }
-  const docId = typeof raw.documentId === 'string' && raw.documentId.trim()
-    ? raw.documentId.trim()
-    : canvas.activeDocId;
-  if (!docId) {
+  const docId = resolved.docId;
+  if (!docId || !canvas.pdfDocuments[docId]) {
     return {
       status: 'unavailable',
       message: 'No PDF document is open for counting page items.',
@@ -446,6 +462,7 @@ async function defaultCountPageItems(
       docHeight: pdfData.originalPageHeight,
     })
     : await ensurePageGeometry(page);
+  const zones = await ensurePageZones(docId, page);
   if (cached?.analysis) {
     return countItemsFromAnalysis(cached.analysis, query, {
       source: 'cache',
@@ -455,6 +472,8 @@ async function defaultCountPageItems(
       limit,
       code: code || undefined,
       section,
+      zones,
+      includeZones,
     });
   }
 
@@ -486,6 +505,8 @@ async function defaultCountPageItems(
     limit,
     code: code || undefined,
     section,
+    zones,
+    includeZones,
   });
 }
 
@@ -561,6 +582,23 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
       trade: options.trade,
       signal: options.signal,
     })),
+
+    getPageLayout: async (input) => {
+      const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};
+      const page = typeof raw.page === 'number' ? raw.page : useCanvasStore.getState().getCurrentPage() || 1;
+      const resolved = resolveToolDocument(raw);
+      if ('error' in resolved) return { status: 'failed', message: resolved.error };
+      const zones = await ensurePageZones(resolved.docId, page);
+      return {
+        status: 'completed',
+        documentId: resolved.docId,
+        page,
+        zones,
+        message: zones.length
+          ? `Mapped ${zones.length} zone(s) on page ${page}.`
+          : 'No layout zones found.',
+      };
+    },
 
     searchDocument: options.searchDocument || (async query => {
       const { page, docId } = getDocMeta();
@@ -695,8 +733,9 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
       }
       const canvas = useCanvasStore.getState();
       const editor = useEditorStore.getState();
-      if (documentId && !canvas.pdfDocuments[documentId]) return;
-      const target = documentId || canvas.activeDocId;
+      const resolved = resolveDocumentRef(documentId);
+      if ('error' in resolved) return;
+      const target = resolved.docId;
       if (target && target !== canvas.activeDocId) {
         editor.setActiveDocument(target);
         canvas.setActiveDocId(target);

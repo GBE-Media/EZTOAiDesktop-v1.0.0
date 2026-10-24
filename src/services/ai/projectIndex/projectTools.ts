@@ -6,7 +6,7 @@ import { allIndexedPages, indexStatus } from './store';
 import { searchIndexedPages } from './searchIndex';
 import { readSpecSection } from './readSpec';
 import { compactProjectDocuments, formatCitationLabel, sheetIndex, specIndex } from './summaries';
-import { unknownDocumentResult } from './unknownDoc';
+import { resolvedDocumentId, unknownDocumentResult } from './unknownDoc';
 import type { EvidenceCitation } from '@/types/assistant';
 import type { SearchHit } from './types';
 
@@ -220,10 +220,11 @@ export function createProjectIndexTools(): AssistantToolDefinition[] {
       execute: async (context, input) => {
         const unknown = unknownDocumentResult(input.documentId);
         if (unknown) return unknown;
+        const documentId = resolvedDocumentId(input.documentId) || input.documentId;
         const maxChars = Math.min(input.maxChars ?? 6000, 6000);
         const pages = [];
         for (const page of input.pages) {
-          const extracted = await context.extractPageText({ page, documentId: input.documentId }) as {
+          const extracted = await context.extractPageText({ page, documentId }) as {
             text?: string;
             context?: string;
             source?: string;
@@ -231,7 +232,7 @@ export function createProjectIndexTools(): AssistantToolDefinition[] {
             message?: string;
           };
           const text = String(extracted?.text || extracted?.context || extracted?.message || '').slice(0, maxChars);
-          pages.push({ documentId: input.documentId, page, source: extracted?.source, text });
+          pages.push({ documentId, page, source: extracted?.source, text });
         }
         return {
           status: 'completed',

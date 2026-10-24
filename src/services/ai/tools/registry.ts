@@ -21,7 +21,7 @@ import {
   updateMarkupsSchema,
 } from './mutationSchemas';
 import { analyzePageInputSchema } from './analyzePageSchema';
-import { unknownDocumentResult } from '../projectIndex/unknownDoc';
+import { resolvedDocumentId, unknownDocumentResult } from '../projectIndex/unknownDoc';
 
 const boundsSchema = z.object({
   x: z.number(),
@@ -168,6 +168,10 @@ const coreTools: AssistantToolDefinition[] = [
         .describe('Page matchingItems (default) or unresolvedItems. Use section=unresolved with offset=nextUnresolvedOffset.'),
       documentId: z.string().min(1).optional()
         .describe('Open document id. Defaults to the active tab; analysis does not switch tabs.'),
+      include: z.array(z.enum([
+        'plan', 'enlarged_plan', 'schedule', 'legend', 'notes', 'detail', 'diagram', 'title_block', 'key_plan', 'revisions',
+      ])).optional()
+        .describe('Also count symbols in these non-plan zones (e.g. enlarged_plan when the user asks).'),
     }),
     execute: async (context, input) => {
       if (!context.countPageItems) {
@@ -268,6 +272,33 @@ const coreTools: AssistantToolDefinition[] = [
     },
   },
   {
+    id: 'get_page_layout',
+    title: 'Read page layout zones',
+    description:
+      'Return plan / schedule / legend / notes / detail / title-block zones for a sheet. '
+      + 'Call this before counting a sheet you have not zoned. Use schedules and legends only to identify types, never as quantities.',
+    risk: 'read',
+    requiresConfirmation: false,
+    undoable: false,
+    schema: z.object({
+      page: z.number().int().positive(),
+      documentId: z.string().min(1).optional(),
+    }),
+    execute: async (context, input) => {
+      const unknown = unknownDocumentResult(input.documentId);
+      if (unknown) return unknown;
+      if (!context.getPageLayout) {
+        return {
+          status: 'failed',
+          summary: 'get_page_layout adapter is not wired.',
+          output: { status: 'unavailable' },
+        };
+      }
+      const output = await context.getPageLayout(input);
+      return { status: 'completed', summary: 'Mapped the sheet layout.', output };
+    },
+  },
+  {
     id: 'navigate_page',
     title: 'Open cited page',
     description: 'Navigate the canvas to a cited page and region.',
@@ -282,8 +313,9 @@ const coreTools: AssistantToolDefinition[] = [
     execute: async (context, input) => {
       const unknown = unknownDocumentResult(input.documentId);
       if (unknown) return unknown;
-      if (input.documentId) {
-        context.navigateToPage(input.page, input.bounds, input.documentId);
+      const documentId = resolvedDocumentId(input.documentId) || input.documentId;
+      if (documentId) {
+        context.navigateToPage(input.page, input.bounds, documentId);
       } else {
         context.navigateToPage(input.page, input.bounds);
       }

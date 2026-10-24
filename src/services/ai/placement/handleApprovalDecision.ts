@@ -6,6 +6,7 @@ import type { AssistantToolContext } from '../tools/types';
 import { executeApprovedAssistantAction } from '../tools/registry';
 import { executePlaceMarkupsApproval } from './executePlaceMarkupsApproval';
 import { resumeTaskAfterApproval } from '../agent';
+import { resolveDocumentRef } from '../documentRef';
 
 const inFlightApprovals = new Set<string>();
 
@@ -97,6 +98,7 @@ export async function handleApprovalDecision(
 
   try {
     if (decision === 'rejected') {
+      useCanvasStore.getState().clearAiPreview();
       useAIChatStore.getState().resolveApproval(approval.id, 'rejected');
       await continueAgent('rejected');
       return 'handled';
@@ -108,13 +110,14 @@ export async function handleApprovalDecision(
       const payload = approval.payload && typeof approval.payload === 'object'
         ? approval.payload as { documentId?: string; page?: number; analysisRef?: { docId?: string; page?: number } }
         : {};
-      const docId = payload.documentId || payload.analysisRef?.docId || canvas.activeDocId;
-      if (payload.documentId && !canvas.pdfDocuments[payload.documentId]) {
-        const failedResult = { status: 'failed' as const, error: 'Unknown documentId', placed: 0 };
-        useAIChatStore.getState().resolveApproval(approval.id, 'failed', 'Unknown documentId', failedResult);
+      const resolved = resolveDocumentRef(payload.documentId || payload.analysisRef?.docId);
+      if ('error' in resolved) {
+        const failedResult = { status: 'failed' as const, error: resolved.error, placed: 0 };
+        useAIChatStore.getState().resolveApproval(approval.id, 'failed', resolved.error, failedResult);
         await continueAgent('approved', failedResult);
         return 'handled';
       }
+      const docId = resolved.docId;
       if (docId && canvas.pdfDocuments[docId] && docId !== canvas.activeDocId) {
         canvas.setActiveDocId(docId);
         useEditorStore.getState().setActiveDocument(docId);
@@ -133,6 +136,7 @@ export async function handleApprovalDecision(
         setPendingPlacements: useAIChatStore.getState().setPendingPlacements,
         getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
       });
+      useCanvasStore.getState().clearAiPreview();
     } else {
       const toolContext = deps.createEditorToolContext(approval.runId, approval.messageId);
       executionResult = await executeApprovedAssistantAction(approval, toolContext);

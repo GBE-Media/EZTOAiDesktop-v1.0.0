@@ -1,4 +1,4 @@
-/**
+﻿/**
  * BidveraAi Agent Assistant Panel
  * Docked agent (tool loop, approvals, verification) — replaces the old one-shot chat drawer.
  */
@@ -84,6 +84,9 @@ import { startProjectIndexer } from '@/services/ai/projectIndex/scheduler';
 import { allIndexedPages } from '@/services/ai/projectIndex/store';
 import { compactProjectDocuments, formatProjectDocumentsSummary } from '@/services/ai/projectIndex/summaries';
 import { detectFollowUpOffer } from '@/lib/followUpOffer';
+import { inferTrade } from '@/services/ai/inferTrade';
+import { setLiveAiPreview } from '@/services/ai/placement/aiPreview';
+import { resolveDocumentRef } from '@/services/ai/documentRef';
 
 /** @deprecated Prefer AgentAssistantDrawer — same implementation. */
 export function AiChatDrawer() {
@@ -96,21 +99,12 @@ export function AgentAssistantDrawer() {
   const stickToBottomRef = useRef(true);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [pageSelection, setPageSelection] = useState('current');
   const [productMapOpen, setProductMapOpen] = useState(false);
   const [productMapKeys, setProductMapKeys] = useState<string[]>([]);
   const [productMapValues, setProductMapValues] = useState<Record<string, string>>({});
   const [pendingCountMap, setPendingCountMap] = useState<Record<string, number>>({});
-  const [placeMarkupsOpen, setPlaceMarkupsOpen] = useState(false);
-  const [pendingMarkups, setPendingMarkups] = useState<Array<{ page: number; markup: CanvasMarkup }>>([]);
   const [pendingDetectedKeys, setPendingDetectedKeys] = useState<string[]>([]);
   const [pendingAssistantId, setPendingAssistantId] = useState<string | null>(null);
-  const [takeoffOpen, setTakeoffOpen] = useState(false);
-  const [takeoffPrompt, setTakeoffPrompt] = useState('');
-  const [takeoffScope, setTakeoffScope] = useState<'ask' | 'viewport' | 'full' | 'selection'>('ask');
-  const highAccuracy = true;
-  const [visibleOnly, setVisibleOnly] = useState(false);
-  const [takeoffError, setTakeoffError] = useState<string | null>(null);
   const [calibrationTypeInput, setCalibrationTypeInput] = useState('');
   const [createNodeType, setCreateNodeType] = useState<'product' | 'folder' | 'assembly'>('product');
   const [createNodeName, setCreateNodeName] = useState('');
@@ -126,6 +120,8 @@ export function AgentAssistantDrawer() {
     updateMessage,
     clearMessages,
     selectedTrade,
+    lastInferredTrade,
+    recordInferredTrade,
     placementMode,
     pipelineStatus,
     setPipelineStatus,
@@ -224,8 +220,8 @@ export function AgentAssistantDrawer() {
   
   const totalPages = activeDocId ? pdfDocuments[activeDocId]?.totalPages || 0 : 0;
   const selectedPages = useMemo(
-    () => parsePageSelection(pageSelection, totalPages, currentPage || 1),
-    [pageSelection, totalPages, currentPage]
+    () => (currentPage ? [currentPage] : []),
+    [currentPage]
   );
 
   const queueMarkupApproval = useCallback((options: {
@@ -234,7 +230,12 @@ export function AgentAssistantDrawer() {
     markups: Array<{ page: number; markup: CanvasMarkup }>;
     description: string;
   }) => {
-    setPendingMarkups(options.markups);
+    const canvas = useCanvasStore.getState();
+    setLiveAiPreview({
+      approvalId: `queued_${options.runId}`,
+      docId: canvas.activeDocId || '',
+      markups: options.markups,
+    });
     setPendingDetectedKeys([]);
     setPendingAssistantId(options.assistantMsgId);
     const approval = proposeAssistantMutation('place_markups', {
@@ -266,7 +267,7 @@ export function AgentAssistantDrawer() {
     runId,
     messageId,
     signal,
-    trade: useAIChatStore.getState().selectedTrade,
+    trade: useAIChatStore.getState().lastInferredTrade || useAIChatStore.getState().selectedTrade,
     placeMarkups: async (payload) => {
       const canvas = useCanvasStore.getState();
       const docId = canvas.activeDocId;
@@ -457,6 +458,16 @@ export function AgentAssistantDrawer() {
     images?: string[],
     options?: { forcePipeline?: boolean; scope?: 'full' | 'viewport' | 'selection'; highAccuracy?: boolean; visibleOnly?: boolean }
   ) => {
+    const indexed = allIndexedPages().find(page => page.docId === (useCanvasStore.getState().activeDocId || ''))
+      || allIndexedPages()[0];
+    const trade = inferTrade({
+      message: content,
+      sheetDiscipline: indexed?.discipline,
+      documentName: activeDocumentRecord?.name || indexed?.documentName,
+      conversationTrade: lastInferredTrade || selectedTrade,
+    });
+    recordInferredTrade(trade);
+    useCanvasStore.getState().clearAiPreview();
     // AI service uses proxy by default - no local API keys needed
     // Just need to be authenticated
     
@@ -792,7 +803,16 @@ export function AgentAssistantDrawer() {
             pdfDocument: docData?.pdfDocument || null,
           });
           if (normalized.markups.length > 0) {
-            setPendingMarkups(normalized.markups);
+            const payload = approval.payload && typeof approval.payload === 'object'
+              ? approval.payload as { documentId?: string }
+              : {};
+            const resolved = resolveDocumentRef(payload.documentId);
+            const docId = 'docId' in resolved ? resolved.docId : (useCanvasStore.getState().activeDocId || '');
+            setLiveAiPreview({
+              approvalId: approval.id,
+              docId,
+              markups: normalized.markups,
+            });
             setPendingAssistantId(assistantMsgId);
           }
         }
@@ -910,32 +930,6 @@ export function AgentAssistantDrawer() {
   );
   const hasProducts = productOptions.length > 0;
 
-  const openTakeoffDialog = useCallback(() => {
-    setTakeoffError(null);
-    setTakeoffOpen(true);
-  }, []);
-
-  const handleConfirmTakeoff = useCallback(() => {
-    const prompt = takeoffPrompt.trim() || 'Run a takeoff for the selected area.';
-    const resolvedScope = takeoffScope === 'ask' ? 'viewport' : takeoffScope;
-
-    if (resolvedScope === 'selection' && !selectionAvailable) {
-      setTakeoffError('Select a region on the canvas before running takeoff.');
-      setAiSelectionActive(true);
-      setTakeoffOpen(false);
-      return;
-    }
-
-    if (resolvedScope === 'viewport' && !viewportAvailable) {
-      setTakeoffError('Unable to determine the viewport. Try zooming or fit-to-canvas and retry.');
-      return;
-    }
-
-    setTakeoffOpen(false);
-    setTakeoffError(null);
-    handleSendMessage(prompt, undefined, { forcePipeline: true, scope: resolvedScope, highAccuracy, visibleOnly });
-  }, [handleSendMessage, selectionAvailable, setAiSelectionActive, takeoffPrompt, takeoffScope, viewportAvailable, highAccuracy, visibleOnly]);
-
   const handleCreateNode = useCallback(async () => {
     const name = createNodeName.trim();
     if (!name || !user) return;
@@ -986,52 +980,6 @@ export function AgentAssistantDrawer() {
     }
     setCreateNodeName('');
   }, [createNodeName, createNodeParentId, createNodeType, nodes, queueMutation, user]);
-
-  const applyPendingMarkups = useCallback(() => {
-    if (!pendingMarkups.length) {
-      setPlaceMarkupsOpen(false);
-      return;
-    }
-
-    commitMarkupsByConfidence({
-      markups: pendingMarkups,
-      forceConfirm: placementMode === 'confirm',
-      addAIMarkupBatch,
-      setPendingPlacements,
-      getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
-    });
-
-    if (pendingDetectedKeys.length > 0) {
-      setProductMapKeys(pendingDetectedKeys);
-      setProductMapValues({});
-      setProductMapOpen(true);
-    }
-
-    if (pendingAssistantId) {
-      // Append rather than overwrite - the assistant's actual chat answer may
-      // already be in this message (e.g. when pointers came from normal chat).
-      const existing = messages.find((message) => message.id === pendingAssistantId);
-      const count = pendingMarkups.length;
-      const suffix = `\n\n✓ Placed ${count} marker${count === 1 ? '' : 's'} on the canvas.`;
-      updateMessage(pendingAssistantId, {
-        content: `${existing?.content || ''}${suffix}`,
-      });
-    }
-
-    setPendingMarkups([]);
-    setPendingDetectedKeys([]);
-    setPendingAssistantId(null);
-    setPlaceMarkupsOpen(false);
-  }, [
-    addAIMarkupBatch,
-    messages,
-    pendingAssistantId,
-    pendingDetectedKeys,
-    pendingMarkups,
-    placementMode,
-    setPendingPlacements,
-    updateMessage,
-  ]);
 
   useEffect(() => {
     const handleApproval = (event: Event) => {
@@ -1175,21 +1123,17 @@ export function AgentAssistantDrawer() {
             page={currentPage || 1}
             trade={selectedTrade}
             onSelectConversation={value => void selectConversation(value)}
-            onNewConversation={() => createConversation()}
+            onNewConversation={() => {
+              useCanvasStore.getState().clearAiPreview();
+              createConversation();
+            }}
             onClose={closeDrawer}
             onOpenSettings={() => setSettingsOpen(true)}
             onClearChat={clearMessages}
           />
           
           {/* Primary assistant controls — always visible, visually secondary */}
-          <AiToolbar
-            onRunTakeoff={openTakeoffDialog}
-            pageSelection={activeDocId && totalPages > 0 ? pageSelection : undefined}
-            onPageSelectionChange={setPageSelection}
-            pageSummary={activeDocId && totalPages > 0
-              ? (selectedPages.length ? `${selectedPages.length}/${totalPages}` : `0/${totalPages}`)
-              : undefined}
-          />
+          <AiToolbar />
           
           {/* Messages */}
           <div className="relative min-h-0 flex-1">
@@ -1213,31 +1157,23 @@ export function AgentAssistantDrawer() {
                   Ask about this plan, counts, or markups.
                 </p>
                 <div className="w-full max-w-[300px] space-y-2">
-                  <QuickPrompt
-                    text="Count all lighting fixtures"
-                    onClick={() => handleSendMessage('Count all lighting fixtures')}
-                    disabled={!isAIAvailable || isLoading}
-                  />
-                  <QuickPrompt
-                    text="Place count markers"
-                    onClick={() => handleSendMessage('Place count markers')}
-                    disabled={!isAIAvailable || isLoading}
-                  />
-                  <QuickPrompt
-                    text="Summarize this sheet"
-                    onClick={() => handleSendMessage('Summarize this sheet')}
-                    disabled={!isAIAvailable || isLoading}
-                  />
-                  <QuickPrompt
-                    text="What does the spec require for receptacles, and how many are on E-100?"
-                    onClick={() => handleSendMessage('What does the spec require for receptacles, and how many are on E-100?')}
-                    disabled={!isAIAvailable || isLoading}
-                  />
-                  <QuickPrompt
-                    text="Find every sheet that references panel LP-2."
-                    onClick={() => handleSendMessage('Find every sheet that references panel LP-2.')}
-                    disabled={!isAIAvailable || isLoading}
-                  />
+                  {(() => {
+                    const sheet = (activeDocumentRecord?.name || '').match(/\b([A-Z]{1,3}-\d{1,3}[A-Z]?)\b/)?.[1] || 'this sheet';
+                    const chips = [
+                      `Count fixtures on ${sheet}`,
+                      `Check specs for fixture type A`,
+                      'Place count markers',
+                      'Map types to products',
+                    ];
+                    return chips.map(text => (
+                      <QuickPrompt
+                        key={text}
+                        text={text}
+                        onClick={() => handleSendMessage(text)}
+                        disabled={!isAIAvailable || isLoading}
+                      />
+                    ));
+                  })()}
                 </div>
               </div>
             ) : (
@@ -1262,21 +1198,18 @@ export function AgentAssistantDrawer() {
           {/* Input */}
           <AssistantComposer
             onSend={(message, images) => {
-              if (message.trim().toLowerCase().startsWith('/takeoff')) {
-                const prompt = message.replace(/^\/takeoff\s*/i, '') || 'Run a takeoff for the active page.';
-                void handleSendMessage(prompt, images, { forcePipeline: true, scope: 'full', highAccuracy: true });
-                return;
-              }
               void handleSendMessage(message, images);
             }}
             isLoading={isLoading || pipelineStatus.isRunning}
             disabled={!isAIAvailable || waitingForUser}
-            onStop={activeRun ? () => cancelTask(activeRun.id) : undefined}
+            onStop={activeRun ? () => {
+              useCanvasStore.getState().clearAiPreview();
+              cancelTask(activeRun.id);
+            } : undefined}
             contextChips={[
               activeDocumentRecord?.name || 'No document',
               `Page ${currentPage || 1}`,
-              selectedTrade,
-              takeoffScope === 'ask' ? 'Active page' : takeoffScope,
+              lastInferredTrade || selectedTrade,
             ]}
           />
       </div>
@@ -1287,171 +1220,6 @@ export function AgentAssistantDrawer() {
         onOpenChange={setSettingsOpen}
       />
 
-      <Dialog open={takeoffOpen} onOpenChange={setTakeoffOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>AI Takeoff</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>What should the AI do?</Label>
-              <Textarea
-                value={takeoffPrompt}
-                onChange={(event) => setTakeoffPrompt(event.target.value)}
-                placeholder="Example: Count all doors and windows in this area."
-                className="min-h-[80px]"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>Scope</Label>
-              <Select value={takeoffScope} onValueChange={(value) => setTakeoffScope(value as typeof takeoffScope)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose scope" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ask">Ask each time</SelectItem>
-                  <SelectItem value="viewport">Visible viewport</SelectItem>
-                  <SelectItem value="full">Full page</SelectItem>
-                  <SelectItem value="selection">Selected region</SelectItem>
-                </SelectContent>
-              </Select>
-              {takeoffScope === 'selection' && (
-                <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                  <span>{selectionAvailable ? 'Selection ready' : 'No selection yet'}</span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      setAiSelectionActive(true);
-                      setTakeoffOpen(false);
-                    }}
-                  >
-                    Select region
-                  </Button>
-                </div>
-              )}
-              {takeoffScope === 'viewport' && (
-                <div className="text-xs text-muted-foreground">
-                  {viewportAvailable ? 'Viewport will be used' : 'Viewport not ready yet'}
-                </div>
-              )}
-            </div>
-            <div className="space-y-2 rounded-md border border-border px-3 py-2">
-              <Label>Symbol calibration (optional)</Label>
-              <div className="flex items-center gap-2">
-                <Input
-                  value={calibrationTypeInput}
-                  onChange={(event) => setCalibrationTypeInput(event.target.value)}
-                  placeholder="Fixture type (e.g., Type A)"
-                />
-                <Button
-                  type="button"
-                  variant={aiCalibrationActive ? 'secondary' : 'outline'}
-                  onClick={() => {
-                    const type = calibrationTypeInput.trim();
-                    if (!type) return;
-                    setAiCalibrationType(type);
-                    setAiCalibrationActive(!aiCalibrationActive);
-                  }}
-                >
-                  {aiCalibrationActive ? 'Stop' : 'Start'}
-                </Button>
-              </div>
-              {aiCalibrationType && (
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{aiCalibrationActive ? 'Click 3-5 examples on the page' : 'Calibration paused'}</span>
-                  <span>{calibrationSampleCount} samples</span>
-                </div>
-              )}
-              <div className="flex items-center justify-between text-xs text-muted-foreground">
-                <span>Detect matching symbols and preview on canvas.</span>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  onClick={() => requestAiSymbolDetection()}
-                  disabled={!aiCalibrationType || calibrationSampleCount < 3}
-                >
-                  Detect symbols
-                </Button>
-              </div>
-              {aiCalibrationType && calibrationSampleCount > 0 && calibrationSampleCount < 3 && (
-                <div className="text-xs text-muted-foreground">
-                  Add at least 3 samples before detecting symbols.
-                </div>
-              )}
-            </div>
-            <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
-              <div>
-                <p className="text-sm font-medium">Maximum Accuracy</p>
-                <p className="text-xs text-muted-foreground">Always uses overview, tile, OCR, reconciliation, and verification passes.</p>
-              </div>
-              <input
-                type="checkbox"
-                checked={highAccuracy}
-                disabled
-                className="h-4 w-4"
-              />
-            </div>
-            <div className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
-              <div>
-                <p className="text-sm font-medium">Visible-only</p>
-                <p className="text-xs text-muted-foreground">Ignore schedule/legend totals. Count only symbols on the plan.</p>
-              </div>
-              <input
-                type="checkbox"
-                checked={visibleOnly}
-                onChange={(event) => setVisibleOnly(event.target.checked)}
-                className="h-4 w-4"
-              />
-            </div>
-            {takeoffError && (
-              <div className="text-xs text-destructive">{takeoffError}</div>
-            )}
-          </div>
-          <div className="flex justify-end gap-2 mt-4">
-            <Button variant="outline" onClick={() => setTakeoffOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleConfirmTakeoff} disabled={!isAIAvailable || isLoading}>
-              Run Takeoff
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={placeMarkupsOpen} onOpenChange={setPlaceMarkupsOpen}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Place markups?</DialogTitle>
-            <DialogDescription>
-              The AI wants to mark {pendingMarkups.length} location{pendingMarkups.length === 1 ? '' : 's'} on the canvas. Place them?
-            </DialogDescription>
-          </DialogHeader>
-          <div className="flex justify-end gap-2 mt-4">
-            <Button
-              variant="outline"
-              onClick={() => {
-                if (pendingAssistantId) {
-                  // Append rather than overwrite - keep the assistant's actual answer intact.
-                  const existing = messages.find((message) => message.id === pendingAssistantId);
-                  updateMessage(pendingAssistantId, {
-                    content: `${existing?.content || ''}\n\nMarkups not placed.`,
-                  });
-                }
-                setPendingMarkups([]);
-                setPendingDetectedKeys([]);
-                setPendingAssistantId(null);
-                setPlaceMarkupsOpen(false);
-              }}
-            >
-              No
-            </Button>
-            <Button onClick={applyPendingMarkups}>Yes, place</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
 
       <Dialog open={productMapOpen} onOpenChange={setProductMapOpen}>
         <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden flex flex-col">
@@ -1627,39 +1395,6 @@ function QuickPrompt({
       {text}
     </button>
   );
-}
-
-function parsePageSelection(input: string, totalPages: number, currentPage: number): number[] {
-  if (!totalPages) return [];
-  const normalized = input.trim().toLowerCase();
-  if (!normalized || normalized === 'current') return [currentPage];
-  if (normalized === 'all') {
-    return Array.from({ length: totalPages }, (_, i) => i + 1);
-  }
-  
-  const pages = new Set<number>();
-  const tokens = normalized.split(',').map(token => token.trim()).filter(Boolean);
-  
-  for (const token of tokens) {
-    if (token.includes('-')) {
-      const [startRaw, endRaw] = token.split('-');
-      const start = Math.max(1, Math.min(totalPages, parseInt(startRaw, 10)));
-      const end = Math.max(1, Math.min(totalPages, parseInt(endRaw, 10)));
-      if (Number.isNaN(start) || Number.isNaN(end)) continue;
-      const [rangeStart, rangeEnd] = start <= end ? [start, end] : [end, start];
-      for (let i = rangeStart; i <= rangeEnd; i += 1) {
-        pages.add(i);
-      }
-    } else {
-      const page = parseInt(token, 10);
-      if (!Number.isNaN(page) && page >= 1 && page <= totalPages) {
-        pages.add(page);
-      }
-    }
-  }
-  
-  if (pages.size === 0) return [currentPage];
-  return Array.from(pages).sort((a, b) => a - b);
 }
 
 function extractTypeCounts(analysisResults: BlueprintAnalysisResult[]): Record<string, number> {

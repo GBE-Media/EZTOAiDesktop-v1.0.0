@@ -79,6 +79,7 @@ describe('clarification templates', () => {
   it('maps agent statuses to human progress labels', () => {
     expect(labelForAgentStatus('thinking')).toBe('Reviewing estimate context');
     expect(labelForAgentStatus('running_tool', 'getProjectContext')).toBe('Running getProjectContext');
+    expect(labelForAgentStatus('running_tool', 'get_page_layout')).toBe('Finding the drawing area…');
     expect(labelForAgentStatus('routing', 'intake')).toBe('Reading request');
   });
 });

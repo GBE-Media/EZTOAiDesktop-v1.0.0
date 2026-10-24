@@ -1,5 +1,6 @@
 import type { ClarificationRequest } from '@/types/assistant';
 import { useAIChatStore } from '@/store/aiChatStore';
+import { useCanvasStore } from '@/store/canvasStore';
 import {
   runPipeline,
   type PipelineOptions,
@@ -290,6 +291,7 @@ export function cancelTask(runId: string): void {
   cancelAssistantRun(runId);
   useAIChatStore.getState().cancelRun(runId);
   clearAgentSession(runId);
+  useCanvasStore.getState().clearAiPreview();
 }
 
 function emitPipelineQuestion(

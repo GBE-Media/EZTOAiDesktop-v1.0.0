@@ -16,6 +16,7 @@ export interface AssistantToolContext {
   extractPageText: (input: unknown) => Promise<unknown>;
   /** Count/filter detections from cached (or fresh) page analysis. */
   countPageItems?: (input: unknown) => Promise<unknown>;
+  getPageLayout?: (input: unknown) => Promise<unknown>;
   searchDocument: (query: string) => Promise<EvidenceCitation[]>;
   inspectCatalog: () => unknown;
   /** Structured catalog search returning real product IDs (Products panel store). */
