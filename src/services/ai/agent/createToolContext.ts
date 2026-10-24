@@ -1,3 +1,4 @@
+import { loadSheetLegend } from '../detection/sheetLegend';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useEditorStore } from '@/store/editorStore';
@@ -234,6 +235,7 @@ async function defaultAnalyzePage(
       userPrompt: prompt,
       analysisRegion,
       pageZones,
+      sheetLegend: () => loadSheetLegend(pdfDoc, docId, page, startedRevision),
       getCachedText: pageNumber => (
         docId === useCanvasStore.getState().activeDocId ? canvas.getTextContent(pageNumber) : []
       ),

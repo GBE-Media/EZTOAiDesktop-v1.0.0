@@ -349,8 +349,29 @@ function formatInlineText(text: string, options?: FormatOptions): React.ReactNod
 
 function formatContentLine(lines: string[], i: number, options?: FormatOptions): React.ReactNode {
   {
-    const line = lines[i];
-    const listPrefix = line.startsWith('- ') || line.startsWith('• ') ? 2 : 0;
+    const rawLine = lines[i];
+    // Markdown headings (#, ##, ###, ####) render as section titles, not literal hashes.
+    const heading = rawLine.match(/^\s{0,3}(#{1,4})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      const level = heading[1].length;
+      return (
+        <div
+          key={i}
+          className={cn(
+            'text-foreground',
+            level <= 2 ? 'mt-3 mb-1 text-[15px] font-semibold' : 'mt-3 mb-0.5 text-sm font-semibold',
+            i === 0 && 'mt-0',
+          )}
+        >
+          {formatInlineText(heading[2].replace(/\*\*/g, ''), options)}
+        </div>
+      );
+    }
+    // Bullets: "-", "*", "•", "▪" — indented ones are nested.
+    const bullet = rawLine.match(/^(\s*)([-*•▪])\s+(.*)$/);
+    const nested = !!bullet && bullet[1].length >= 2;
+    const line = bullet ? `- ${bullet[3]}` : rawLine;
+    const listPrefix = bullet ? 2 : 0;
     const numberedMatch = line.match(/^(\d+)\.\s/);
     const contentLine = listPrefix
       ? line.slice(2)
@@ -396,7 +417,7 @@ function formatContentLine(lines: string[], i: number, options?: FormatOptions):
 
     if (listPrefix) {
       return (
-        <div key={i} className="flex gap-2">
+        <div key={i} className={cn('flex gap-2', nested && 'pl-4')}>
           <span className="text-muted-foreground">•</span>
           <span>{formattedLine}</span>
         </div>
