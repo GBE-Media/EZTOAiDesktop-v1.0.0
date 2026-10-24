@@ -28,6 +28,7 @@ import {
   TabsTrigger,
 } from '@/components/ui/tabs';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
+import { useCanvasStore } from '@/store/canvasStore';
 import { getAIService } from '@/services/ai/aiService';
 import type { AIProviderType } from '@/services/ai/providers/types';
 import { cn } from '@/lib/utils';
@@ -52,6 +53,8 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
     autoExtractLocation,
     setAutoExtractLocation,
   } = useAISettingsStore();
+  const showPageZones = useCanvasStore(state => state.showPageZones);
+  const setShowPageZones = useCanvasStore(state => state.setShowPageZones);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -76,7 +79,7 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
               <div className="text-sm">
                 <p className="font-medium text-violet-500">AI Powered by BidveraAi</p>
                 <p className="text-muted-foreground text-xs mt-1">
-                  AI features are included with your subscription. Stage models are assigned automatically for Run Takeoff. No API keys required.
+                  AI features are included with your subscription. Stage models are assigned automatically. No API keys required.
                 </p>
               </div>
             </div>
@@ -183,6 +186,13 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
                 description="Automatically detect project location from title block"
                 checked={autoExtractLocation}
                 onCheckedChange={setAutoExtractLocation}
+              />
+
+              <ToggleOption
+                label="Show page zones"
+                description="Outline plan, schedule, notes, details, and title block on the drawing"
+                checked={showPageZones}
+                onCheckedChange={setShowPageZones}
               />
             </div>
           </TabsContent>

@@ -2,6 +2,9 @@ import { Check, Copy, ShieldCheck, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
+import { useCanvasStore } from '@/store/canvasStore';
+import { useEditorStore } from '@/store/editorStore';
+import { focusAiPreview } from '@/services/ai/placement/aiPreview';
 import type { ApprovalRequest } from '@/types/assistant';
 
 /** Format optional approval.preview (typed as unknown) for the card body. */
@@ -119,6 +122,12 @@ export function ApprovalCardView({
   const droppedLines = uniqueDroppedLines(approval.executionResult?.dropped);
   const collapseDrops = droppedLines.length > 6;
   const pills = approvalStatPills(approval);
+  const preview = useCanvasStore(state => state.aiPreview);
+  const setHover = useCanvasStore(state => state.setAiPreviewHoverId);
+  const sheetName = useEditorStore(state =>
+    state.documents.find(doc => doc.id === preview?.docId)?.name || preview?.docId || 'sheet');
+  const previewCount = preview?.approvalId === approval.id ? preview.markups.length : 0;
+  const previewPage = preview?.markups[0]?.page;
 
   return (
     <div className="my-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-3 shadow-sm">
@@ -135,6 +144,37 @@ export function ApprovalCardView({
                 </span>
               ))}
             </div>
+          )}
+          {previewCount > 0 && approval.status === 'pending' && (
+            <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-emerald-500/20 bg-background/60 px-2 py-1.5">
+              <p className="text-[11px] text-muted-foreground">
+                Previewing {previewCount} marker{previewCount === 1 ? '' : 's'} on {sheetName}
+                {previewPage ? ` p.${previewPage}` : ''}
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 px-2 text-[10px]"
+                onClick={() => focusAiPreview()}
+              >
+                Show on drawing
+              </Button>
+            </div>
+          )}
+          {previewCount > 0 && approval.status === 'pending' && (
+            <ul className="mt-1 max-h-28 overflow-auto text-[11px] text-muted-foreground">
+              {preview?.markups.slice(0, 40).map((row, index) => (
+                <li
+                  key={row.markup.id}
+                  className="cursor-pointer rounded px-1 py-0.5 hover:bg-emerald-500/10"
+                  onMouseEnter={() => setHover(row.markup.id)}
+                  onMouseLeave={() => setHover(null)}
+                >
+                  {index + 1}. {row.markup.label || row.markup.type} · p.{row.page}
+                </li>
+              ))}
+            </ul>
           )}
           {previewText && (
             <details

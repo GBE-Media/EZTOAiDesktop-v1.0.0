@@ -33,6 +33,7 @@ export type IndexedPageRecord = {
   needsOcr: boolean;
   classifierVersion?: string;
   passages?: SearchPassage[];
+  zones?: import('../detection/pageZones').PageZone[];
 };
 
 export type SearchHit = {

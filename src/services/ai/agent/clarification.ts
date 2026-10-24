@@ -116,7 +116,17 @@ export const AGENT_PROGRESS_LABELS: Record<string, string> = {
 };
 
 export function labelForAgentStatus(status: string, detail?: string): string {
-  if (status === 'running_tool' && detail) return `Running ${detail}`;
+  if (status === 'running_tool' && detail) {
+    const id = String(detail);
+    if (id === 'get_page_layout') return 'Finding the drawing area…';
+    if (id === 'count_page_items') return 'Counting fixtures…';
+    if (id === 'analyze_page') return 'Reading the sheet…';
+    if (id === 'place_markups' || id === 'propose_callouts') return 'Preparing markers…';
+    if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(id)) {
+      return id.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase());
+    }
+    return `Running ${detail}`;
+  }
   if (status === 'routing' && detail === 'intake') return AGENT_PROGRESS_LABELS.intake;
   return AGENT_PROGRESS_LABELS[status] || detail || status;
 }

@@ -28,19 +28,25 @@ export function RunStepList({ runId }: { runId: string }) {
 
   return (
     <ol className="space-y-1.5">
-      {run.steps.map(step => (
-        <RunStepRow
-          key={step.id}
-          label={stepTitle(step.label, step.toolActivity?.toolId)}
-          status={step.status}
-          summary={step.summary ? friendlyStatusLine(step.summary) : undefined}
-          error={step.error}
-          toolId={step.toolActivity?.toolId}
-          input={step.toolActivity?.input}
-          output={step.toolActivity?.output}
-          citations={step.citations}
-        />
-      ))}
+      {run.steps.map((step, index) => {
+        const toolId = step.toolActivity?.toolId;
+        const recovered = step.status === 'error' && run.steps.slice(index + 1).some(later =>
+          later.status === 'completed' && later.toolActivity?.toolId === toolId);
+        return (
+          <RunStepRow
+            key={step.id}
+            label={stepTitle(step.label, toolId)}
+            status={recovered ? 'retried' : step.status}
+            summary={step.summary ? friendlyStatusLine(step.summary) : undefined}
+            error={recovered ? undefined : step.error}
+            retriedNote={recovered ? 'retried' : undefined}
+            toolId={toolId}
+            input={step.toolActivity?.input}
+            output={step.toolActivity?.output}
+            citations={step.citations}
+          />
+        );
+      })}
     </ol>
   );
 }
@@ -50,13 +56,14 @@ function RunStepRow(props: {
   status: string;
   summary?: string;
   error?: string;
+  retriedNote?: string;
   toolId?: string;
   input?: unknown;
   output?: unknown;
   citations?: EvidenceCitation[];
 }) {
   const [open, setOpen] = useState(false);
-  const hasDetail = !!(props.toolId || props.input != null || props.output != null || props.error);
+  const hasDetail = !!(props.toolId || props.input != null || props.output != null || props.error || props.retriedNote);
   return (
     <li className="flex gap-2 text-xs">
       <div className="pt-0.5">
@@ -64,6 +71,8 @@ function RunStepRow(props: {
           <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
         ) : props.status === 'error' ? (
           <XCircle className="h-3 w-3 text-destructive" />
+        ) : props.status === 'retried' ? (
+          <Circle className="h-3 w-3 text-muted-foreground/50" />
         ) : props.status === 'completed' ? (
           <CheckCircle2 className="h-3 w-3 text-muted-foreground" />
         ) : (
@@ -102,6 +111,7 @@ function RunStepRow(props: {
         )}
         {open && hasDetail && (
           <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-background/80 p-2 text-[10px] text-muted-foreground">
+            {props.retriedNote ? 'retried\n' : ''}
             {props.toolId ? `${props.toolId}\n` : ''}
             {props.error ? `${props.error}\n` : ''}
             {props.input != null ? `input: ${JSON.stringify(props.input, null, 2)}\n` : ''}

@@ -10,6 +10,7 @@ import {
   capturePageVisionBundle,
   type PageTileRegion,
 } from './imageCapture';
+import { skipTilesCoveredByNonPlanZones, type PageZone } from './detection/pageZones';
 import {
   getTextContentWithBounds,
   groupTextIntoLines,
@@ -650,6 +651,7 @@ export interface MaximumAccuracyPageResult {
   analysis: BlueprintAnalysisResult;
   overviewImage: string;
   textEvidence: PageTextEvidence;
+  skippedTiles?: number;
 }
 
 export async function analyzePageMaximumAccuracy(options: {
@@ -665,6 +667,7 @@ export async function analyzePageMaximumAccuracy(options: {
   getCachedText?: (page: number) => TextItemWithBounds[];
   setCachedText?: (page: number, items: TextItemWithBounds[]) => void;
   onProgress?: (message: string, progress: number) => void;
+  pageZones?: PageZone[];
 }): Promise<MaximumAccuracyPageResult> {
   const {
     pdfDoc,
@@ -679,6 +682,7 @@ export async function analyzePageMaximumAccuracy(options: {
     getCachedText,
     setCachedText,
     onProgress,
+    pageZones,
   } = options;
 
   onProgress?.(`Rendering high-resolution page ${page}...`, 5);
@@ -686,6 +690,18 @@ export async function analyzePageMaximumAccuracy(options: {
     capturePageVisionBundle(pdfDoc, page, pageWidth, pageHeight, { region: analysisRegion }),
     extractPageTextEvidence(pdfDoc, page, pageWidth, pageHeight, getCachedText, setCachedText),
   ]);
+  let skippedTiles = 0;
+  if (pageZones?.length && bundle.tiles.length) {
+    const filtered = skipTilesCoveredByNonPlanZones(
+      bundle.tiles.map(tile => tile.region),
+      pageZones,
+      { width: pageWidth, height: pageHeight },
+    );
+    skippedTiles = filtered.skipped.length;
+    const keptIds = new Set(filtered.kept.map(region => `${region.x}:${region.y}:${region.width}:${region.height}`));
+    bundle.tiles = bundle.tiles.filter(tile =>
+      keptIds.has(`${tile.region.x}:${tile.region.y}:${tile.region.width}:${tile.region.height}`));
+  }
   const textContext = visibleOnly || !textEvidence.context
     ? ''
     : `${textEvidence.source === 'ocr' ? 'OCR' : 'Native PDF'} text evidence:\n${textEvidence.context}`;
@@ -903,6 +919,7 @@ ${JSON.stringify(items.map(item => ({
   return {
     overviewImage: bundle.overview.base64,
     textEvidence,
+    skippedTiles,
     analysis: {
       ...overview,
       page,

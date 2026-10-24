@@ -63,6 +63,15 @@ export async function loadCachedPages(docFp: string, numPages = 0): Promise<Inde
   }
 }
 
+export function rememberIndexedPages(
+  docId: string,
+  documentName: string,
+  docFp: string,
+  pages: IndexedPageRecord[],
+): IndexedPageRecord[] {
+  return rebindCachedPages(docFp, docId, documentName, pages);
+}
+
 export function rebindCachedPages(
   docFp: string,
   docId: string,

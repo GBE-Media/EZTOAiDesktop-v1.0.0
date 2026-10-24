@@ -61,8 +61,9 @@ interface AIChatState {
   messages: ChatMessage[];
   isLoading: boolean;
   
-  // Trade selection
+  // Trade selection (read-only inferred; selectedTrade kept as alias for lastInferredTrade)
   selectedTrade: TradeType;
+  lastInferredTrade: TradeType;
   
   // Placement mode
   placementMode: PlacementMode;
@@ -118,6 +119,7 @@ interface AIChatState {
   ) => void;
   
   setSelectedTrade: (trade: TradeType) => void;
+  recordInferredTrade: (trade: TradeType) => void;
   setPlacementMode: (mode: PlacementMode) => void;
   
   setPipelineStatus: (status: Partial<PipelineStatus>) => void;
@@ -140,6 +142,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   messages: [],
   isLoading: false,
   selectedTrade: 'electrical',
+  lastInferredTrade: 'electrical',
   placementMode: 'confirm',
   pipelineStatus: {
     isRunning: false,
@@ -214,6 +217,8 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
     if (stored) {
       set({
         conversation: stored.conversation,
+        lastInferredTrade: stored.conversation.trade || 'electrical',
+        selectedTrade: stored.conversation.trade || 'electrical',
         conversationList: snapshots.map(snapshot => snapshot.conversation),
         conversationContextId: contextId,
         conversationHydrated: true,
@@ -233,7 +238,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
       id: `conversation_${contextId}_${Date.now()}`,
       contextId,
       title,
-      trade: get().selectedTrade,
+      trade: get().lastInferredTrade || get().selectedTrade,
       createdAt: now,
       updatedAt: now,
     };
@@ -257,7 +262,7 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
       id: `conversation_${contextId}_${Date.now()}`,
       contextId,
       title,
-      trade: get().selectedTrade,
+      trade: get().lastInferredTrade || get().selectedTrade,
       createdAt: now,
       updatedAt: now,
     };
@@ -419,7 +424,8 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
   }),
   
   // Trade selection
-  setSelectedTrade: (trade) => set({ selectedTrade: trade }),
+  setSelectedTrade: (trade) => set({ selectedTrade: trade, lastInferredTrade: trade }),
+  recordInferredTrade: (trade) => set({ lastInferredTrade: trade, selectedTrade: trade }),
   
   // Placement mode
   setPlacementMode: (mode) => set({ placementMode: mode }),
@@ -501,7 +507,7 @@ export async function flushAssistantSnapshot(): Promise<void> {
   await writeAssistantSnapshot({
     id: current.conversation.id,
     contextId: current.conversationContextId,
-    conversation: { ...current.conversation, trade: current.selectedTrade, updatedAt },
+    conversation: { ...current.conversation, trade: current.lastInferredTrade || current.selectedTrade, updatedAt },
     messages: current.messages,
     runs: Object.values(current.runs),
     approvals: Object.values(current.approvals),

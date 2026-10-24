@@ -6,6 +6,7 @@ export const FRIENDLY_TOOL_LABELS: Record<string, string> = {
   analyze_page: 'Read the page',
   search_catalog: 'Searched products',
   get_takeoff_summary: 'Checked the takeoff',
+  get_page_layout: 'Mapped the sheet',
 };
 
 const PROCESS_BLOCK_TYPES = new Set(['activity', 'progress', 'tool-result']);

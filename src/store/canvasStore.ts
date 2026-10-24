@@ -158,6 +158,14 @@ interface CanvasState {
   aiCalibrationSamples: Record<string, Record<number, Record<string, { x: number; y: number }[]>>>;
   aiSymbolMap: Record<string, Record<number, Record<string, { x: number; y: number }[]>>>;
   aiSymbolDetectionRequested: boolean;
+
+  aiPreview: {
+    approvalId: string;
+    docId: string;
+    markups: Array<{ page: number; markup: CanvasMarkup }>;
+  } | null;
+  aiPreviewHoverId: string | null;
+  showPageZones: boolean;
 }
 
 interface CanvasActions {
@@ -282,6 +290,10 @@ interface CanvasActions {
   getAiSymbolMapForPage: (docId: string, page: number) => Record<string, { x: number; y: number }[]>;
   requestAiSymbolDetection: () => void;
   clearAiSymbolDetectionRequest: () => void;
+  setAiPreview: (preview: CanvasState['aiPreview']) => void;
+  clearAiPreview: () => void;
+  setAiPreviewHoverId: (id: string | null) => void;
+  setShowPageZones: (show: boolean) => void;
   
   // History actions
   undo: () => void;
@@ -349,6 +361,9 @@ const initialState: CanvasState = {
   aiCalibrationSamples: {},
   aiSymbolMap: {},
   aiSymbolDetectionRequested: false,
+  aiPreview: null,
+  aiPreviewHoverId: null,
+  showPageZones: false,
 };
 
 // Helper to get current document data
@@ -588,6 +603,7 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
         aiCalibrationSamples: restAiCal,
         aiSymbolMap: restAiSym,
         activeDocId: state.activeDocId === docId ? null : state.activeDocId,
+        aiPreview: state.aiPreview?.docId === docId ? null : state.aiPreview,
       };
     });
   },
@@ -607,6 +623,8 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
       pdfDocuments: {},
       activeDocId: null,
       pageCalibrationsByDoc: {},
+      aiPreview: null,
+      aiPreviewHoverId: null,
     });
   },
   
@@ -1446,6 +1464,11 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   requestAiSymbolDetection: () => set({ aiSymbolDetectionRequested: true }),
 
   clearAiSymbolDetectionRequest: () => set({ aiSymbolDetectionRequested: false }),
+
+  setAiPreview: (preview) => set({ aiPreview: preview, aiPreviewHoverId: null }),
+  clearAiPreview: () => set({ aiPreview: null, aiPreviewHoverId: null }),
+  setAiPreviewHoverId: (id) => set({ aiPreviewHoverId: id }),
+  setShowPageZones: (show) => set({ showPageZones: show }),
   
   // Direct setter for undo/redo operations (bypasses history)
   setMarkupsForPage: (page, markups) => {
