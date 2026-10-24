@@ -89,25 +89,30 @@ export function resolveDocumentRef(ref?: string): ResolveDocumentRefResult {
   if (sheetDocs.length === 1) return { docId: sheetDocs[0], how: 'index' };
   if (sheetDocs.length > 1) return { error: formatUnknownDocumentError(q) };
 
-  const bySubstring = docs.filter(doc =>
-    doc.name.toLowerCase().includes(lower) || doc.id.toLowerCase().includes(lower),
-  );
-  if (bySubstring.length === 1) return { docId: bySubstring[0].id, how: 'name' };
-  if (bySubstring.length > 1) return { error: formatUnknownDocumentError(q) };
-
   if (/^\d+$/.test(q)) {
     const tab = Number(q);
     if (tab >= 1 && tab <= docs.length) {
       return { docId: docs[tab - 1].id, how: 'index' };
     }
+    return { error: formatUnknownDocumentError(q) };
   }
 
-  if (docs.length === 1) return { docId: docs[0].id, how: 'active' };
-  if (active && canvas.pdfDocuments[active] && docs.length === 1) {
-    return { docId: active, how: 'active' };
+  if (q.length >= 3) {
+    const bySubstring = docs.filter(doc =>
+      doc.name.toLowerCase().includes(lower) || doc.id.toLowerCase().includes(lower),
+    );
+    if (bySubstring.length === 1) return { docId: bySubstring[0].id, how: 'name' };
   }
 
+  // An explicit ref that matches nothing must fail (with the valid list) so the
+  // model self-corrects — never silently retarget another document.
   return { error: formatUnknownDocumentError(q) };
+}
+
+/** Compact "which doc did we use" note for tool outputs. */
+export function describeResolvedDocument(ref: string | undefined, resolved: { docId: string; how: DocumentRefHow }) {
+  const doc = listOpenDocuments().find(row => row.id === resolved.docId);
+  return { documentId: resolved.docId, name: doc?.name || resolved.docId, how: resolved.how, requested: ref || null };
 }
 
 export function resolveOrFail(ref?: string): { docId: string; how: DocumentRefHow } | { error: string } {

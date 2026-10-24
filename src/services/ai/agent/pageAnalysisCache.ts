@@ -1,6 +1,7 @@
 import type { BlueprintAnalysisResult, DetectedItem } from '../providers/types';
 import { NO_CONFIDENT_MATCH, normalizeMatchConfidence } from '../detection/visionLegendClassification';
 import type { PageGeometry } from '../placement/types';
+import { getRenderPageSize } from '../placement/coords';
 import { pageGeometryFromUnrotated, visionLocationToDocPoint, type DisplayCrop } from '../placement/visionDisplayPctToDoc';
 import type { PageAnalysisRef } from './pageAnalysisRef';
 import { filterDetectionsByZones, type PageZone, type PageZoneKind } from '../detection/pageZones';
@@ -632,9 +633,8 @@ export function countItemsFromAnalysis(
   const q = query.trim();
   const zoneFilter = options?.zones?.length
     ? filterDetectionsByZones(analysis.items || [], options.zones, {
-      pageWidth: options.pageGeometry?.docWidth || options.pageWidth,
-      pageHeight: options.pageGeometry?.docHeight || options.pageHeight,
       include: options.includeZones,
+      toPagePct: cropToPagePct(options.crop, options.pageGeometry),
     })
     : null;
   const items = (zoneFilter ? zoneFilter.kept : analysis.items) || [];
@@ -848,4 +848,22 @@ function countsFromItems(items: DetectedItem[]): Record<string, number> {
     out[code] = (out[code] || 0) + (item.quantity || 1);
   }
   return out;
+}
+
+/**
+ * Vision locations are percent of the captured image. When the capture was a
+ * crop (display points), map them back to percent of the whole displayed page
+ * so they line up with page zones.
+ */
+function cropToPagePct(
+  crop: DisplayCrop | undefined,
+  page: PageGeometry | undefined,
+): ((loc: { x: number; y: number }) => { x: number; y: number }) | undefined {
+  if (!crop || !page || crop.width <= 0 || crop.height <= 0) return undefined;
+  const display = getRenderPageSize({ ...page, renderScale: 1 });
+  if (display.width <= 0 || display.height <= 0) return undefined;
+  return (loc) => ({
+    x: ((crop.x + (loc.x / 100) * crop.width) / display.width) * 100,
+    y: ((crop.y + (loc.y / 100) * crop.height) / display.height) * 100,
+  });
 }

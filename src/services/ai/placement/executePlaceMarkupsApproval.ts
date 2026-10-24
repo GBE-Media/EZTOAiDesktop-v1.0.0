@@ -49,21 +49,26 @@ function readItemIds(payload: unknown): string[] {
   return rec.itemIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0);
 }
 
-export async function executePlaceMarkupsApproval(options: {
+export type ResolvePlaceMarkupsOptions = {
   approval: ApprovalRequest;
   page: number;
   pageWidth: number;
   pageHeight: number;
   defaultStyle: MarkupStyle;
   pdfDocument?: PdfDocumentLike | null;
-  placementMode?: 'auto' | 'confirm';
-  addAIMarkupBatch: (
-    markups: Array<{ page: number; markup: CanvasMarkup }>,
-    pending?: boolean,
-  ) => { ok: boolean; placed: number; reason?: string } | void;
-  setPendingPlacements: (rows: Array<{ id: string; type: string; page: number; data: unknown }>) => void;
-  getPendingPlacements: () => Array<{ id: string; type: string; page: number; data: unknown }>;
-}): Promise<MarkupExecutionResult> {
+};
+
+/**
+ * Turn a place_markups / propose_callouts approval into concrete canvas markups
+ * WITHOUT committing them. Used by both the live preview and the real placement
+ * so the user previews exactly what will be placed.
+ */
+export async function resolvePlaceMarkups(
+  options: ResolvePlaceMarkupsOptions,
+): Promise<
+  | { ok: true; markups: Array<{ page: number; markup: CanvasMarkup }>; dropped: MarkupExecutionResult['dropped'] }
+  | { ok: false; failure: MarkupExecutionResult }
+> {
   const payload = options.approval.payload;
   const itemIds = readItemIds(payload);
   const rows = payloadRows(payload);
@@ -77,7 +82,7 @@ export async function executePlaceMarkupsApproval(options: {
     const rec = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
     if (typeof rec.page !== 'number' || !Number.isInteger(rec.page) || rec.page <= 0) {
       const reason = 'place_markups with itemIds requires page';
-      return {
+      return { ok: false, failure: {
         status: 'failed',
         placed: 0,
         autoCommitted: 0,
@@ -86,11 +91,11 @@ export async function executePlaceMarkupsApproval(options: {
         dropped: itemIds.map(itemId => ({ itemId, reason })),
         error: reason,
         perMarker: itemIds.map(itemId => ({ itemId, reason })),
-      };
+      } };
     }
     if (!isPageAnalysisRef(rec.analysisRef)) {
       const reason = 'place_markups with itemIds requires analysisRef';
-      return {
+      return { ok: false, failure: {
         status: 'failed',
         placed: 0,
         autoCommitted: 0,
@@ -99,7 +104,7 @@ export async function executePlaceMarkupsApproval(options: {
         dropped: itemIds.map(itemId => ({ itemId, reason })),
         error: reason,
         perMarker: itemIds.map(itemId => ({ itemId, reason })),
-      };
+      } };
     }
     const page = rec.page;
     const fromCache = placementMarkupsFromCachedItemIds({
@@ -128,7 +133,7 @@ export async function executePlaceMarkupsApproval(options: {
     const mixed = rows
       .map((row, index) => (!isLegacyMarkupPair(row) ? `row ${index + 1}: not a {page, markup} pair` : null))
       .filter((value): value is string => !!value);
-    return {
+    return { ok: false, failure: {
       status: 'failed',
       placed: 0,
       autoCommitted: 0,
@@ -137,7 +142,7 @@ export async function executePlaceMarkupsApproval(options: {
       dropped: mixed.map((reason, index) => ({ index, reason })),
       error: `Mixed payload is not a full {page, markup} set (${mixed[0]})`,
       perMarker: mixed.map((reason, index) => ({ index, reason })),
-    };
+    } };
   } else {
     const normalized = await normalizeAgentMarkupPayload({
       payload,
@@ -158,7 +163,7 @@ export async function executePlaceMarkupsApproval(options: {
       const detail = first
         ? `row ${typeof first.index === 'number' ? first.index + 1 : '?'}: ${first.reason}`
         : 'no point/points';
-      return {
+      return { ok: false, failure: {
         status: 'failed',
         placed: 0,
         autoCommitted: 0,
@@ -167,9 +172,25 @@ export async function executePlaceMarkupsApproval(options: {
         dropped,
         error: `0 of ${rows.length} markers had usable coordinates (${detail})`,
         perMarker: dropped,
-      };
+      } };
     }
   }
+
+  return { ok: true, markups, dropped };
+}
+
+export async function executePlaceMarkupsApproval(options: ResolvePlaceMarkupsOptions & {
+  placementMode?: 'auto' | 'confirm';
+  addAIMarkupBatch: (
+    markups: Array<{ page: number; markup: CanvasMarkup }>,
+    pending?: boolean,
+  ) => { ok: boolean; placed: number; reason?: string } | void;
+  setPendingPlacements: (rows: Array<{ id: string; type: string; page: number; data: unknown }>) => void;
+  getPendingPlacements: () => Array<{ id: string; type: string; page: number; data: unknown }>;
+}): Promise<MarkupExecutionResult> {
+  const resolved = await resolvePlaceMarkups(options);
+  if ('failure' in resolved) return resolved.failure;
+  const { markups, dropped } = resolved;
 
   if (markups.length === 0) {
     return {

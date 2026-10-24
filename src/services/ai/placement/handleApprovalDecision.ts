@@ -6,7 +6,7 @@ import type { AssistantToolContext } from '../tools/types';
 import { executeApprovedAssistantAction } from '../tools/registry';
 import { executePlaceMarkupsApproval } from './executePlaceMarkupsApproval';
 import { resumeTaskAfterApproval } from '../agent';
-import { resolveDocumentRef } from '../documentRef';
+import { resolveApprovalTarget } from './approvalTarget';
 
 const inFlightApprovals = new Set<string>();
 
@@ -107,28 +107,25 @@ export async function handleApprovalDecision(
     let executionResult: unknown;
     if (approval.toolId === 'place_markups' || approval.toolId === 'propose_callouts') {
       const canvas = useCanvasStore.getState();
-      const payload = approval.payload && typeof approval.payload === 'object'
-        ? approval.payload as { documentId?: string; page?: number; analysisRef?: { docId?: string; page?: number } }
-        : {};
-      const resolved = resolveDocumentRef(payload.documentId || payload.analysisRef?.docId);
-      if ('error' in resolved) {
-        const failedResult = { status: 'failed' as const, error: resolved.error, placed: 0 };
-        useAIChatStore.getState().resolveApproval(approval.id, 'failed', resolved.error, failedResult);
+      const target = resolveApprovalTarget(approval, { pageWidth: deps.pageWidth, pageHeight: deps.pageHeight });
+      if ('error' in target) {
+        useCanvasStore.getState().clearAiPreview();
+        const failedResult = { status: 'failed' as const, error: target.error, placed: 0 };
+        useAIChatStore.getState().resolveApproval(approval.id, 'failed', target.error, failedResult);
         await continueAgent('approved', failedResult);
         return 'handled';
       }
-      const docId = resolved.docId;
-      if (docId && canvas.pdfDocuments[docId] && docId !== canvas.activeDocId) {
+      const docId = target.docId;
+      if (canvas.pdfDocuments[docId] && docId !== canvas.activeDocId) {
         canvas.setActiveDocId(docId);
         useEditorStore.getState().setActiveDocument(docId);
       }
-      const pdf = docId ? canvas.pdfDocuments[docId] : null;
-      const page = payload.page || payload.analysisRef?.page || canvas.getCurrentPage() || 1;
+      const pdf = canvas.pdfDocuments[docId];
       executionResult = await executePlaceMarkupsApproval({
         approval,
-        page,
-        pageWidth: pdf?.originalPageWidth || deps.pageWidth,
-        pageHeight: pdf?.originalPageHeight || deps.pageHeight,
+        page: target.page,
+        pageWidth: target.pageWidth,
+        pageHeight: target.pageHeight,
         defaultStyle: deps.defaultStyle,
         pdfDocument: pdf?.pdfDocument || null,
         placementMode: deps.placementMode,

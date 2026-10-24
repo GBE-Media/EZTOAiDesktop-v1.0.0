@@ -34,7 +34,7 @@ import { searchCatalog } from '../catalog/searchCatalog';
 import { executeLinkCatalog } from '../catalog/attachProductToMarkup';
 import { allIndexedPages } from '../projectIndex/store';
 import { compactProjectDocuments } from '../projectIndex/summaries';
-import { resolveDocumentRef } from '../documentRef';
+import { describeResolvedDocument, resolveDocumentRef } from '../documentRef';
 import { ensurePageZones } from '../detection/pageZones';
 import type { PageZoneKind } from '../detection/pageZones';
 
@@ -92,11 +92,21 @@ function normalizeScopedAnalysisRegion(
   return clamped;
 }
 
-function resolveToolDocument(raw: Record<string, unknown>): { docId: string } | { error: string } {
-  const ref = typeof raw.documentId === 'string' ? raw.documentId.trim() : undefined;
+function resolveToolDocument(
+  raw: Record<string, unknown>,
+): { docId: string; resolvedAs: ReturnType<typeof describeResolvedDocument> } | { error: string; noDocument: boolean } {
+  const ref = typeof raw.documentId === 'string' && raw.documentId.trim() ? raw.documentId.trim() : undefined;
   const resolved = resolveDocumentRef(ref);
-  if ('error' in resolved) return { error: resolved.error };
-  return { docId: resolved.docId };
+  if ('error' in resolved) {
+    // No explicit ref and nothing open → "unavailable", not an unknown-id failure.
+    const noDocument = !ref && Object.keys(useCanvasStore.getState().pdfDocuments).length === 0;
+    return { error: resolved.error, noDocument };
+  }
+  return { docId: resolved.docId, resolvedAs: describeResolvedDocument(ref, resolved) };
+}
+
+function withResolvedAs<T>(result: T, resolvedAs: unknown): T {
+  return result && typeof result === 'object' ? { ...(result as object), resolvedAs } as T : result;
 }
 
 /**
@@ -132,7 +142,9 @@ async function defaultAnalyzePage(
   const canvas = useCanvasStore.getState();
   const resolved = resolveToolDocument(raw);
   if ('error' in resolved) {
-    return { status: 'failed', message: resolved.error };
+    return resolved.noDocument
+      ? { status: 'unavailable', message: 'No PDF document is open for page analysis.' }
+      : { status: 'failed', message: resolved.error };
   }
   const docId = resolved.docId;
   const pdfData = docId ? canvas.pdfDocuments[docId] : null;
@@ -310,7 +322,9 @@ async function defaultExtractPageText(
   const canvas = useCanvasStore.getState();
   const resolved = resolveToolDocument(raw);
   if ('error' in resolved) {
-    return { status: 'failed', message: resolved.error };
+    return resolved.noDocument
+      ? { status: 'unavailable', message: 'No PDF document is open for page text extraction.' }
+      : { status: 'failed', message: resolved.error };
   }
   const docId = resolved.docId;
   const pdfData = docId ? canvas.pdfDocuments[docId] : null;
@@ -464,7 +478,7 @@ async function defaultCountPageItems(
     : await ensurePageGeometry(page);
   const zones = await ensurePageZones(docId, page);
   if (cached?.analysis) {
-    return countItemsFromAnalysis(cached.analysis, query, {
+    return withResolvedAs(countItemsFromAnalysis(cached.analysis, query, {
       source: 'cache',
       pageGeometry,
       analysisRef: cached.analysisRef,
@@ -474,7 +488,7 @@ async function defaultCountPageItems(
       section,
       zones,
       includeZones,
-    });
+    }), resolved.resolvedAs);
   }
 
   // Cache miss: ALWAYS run a broad, unprompted full-page analysis, then filter
@@ -497,7 +511,7 @@ async function defaultCountPageItems(
   }
 
   const latest = getLatestFullPageAnalysis(docId, page, contentRevision);
-  return countItemsFromAnalysis(analyzed.analysis, query, {
+  return withResolvedAs(countItemsFromAnalysis(analyzed.analysis, query, {
     source: 'fresh_analysis',
     pageGeometry,
     analysisRef: latest?.analysisRef || analyzed.analysisRef,
@@ -507,7 +521,7 @@ async function defaultCountPageItems(
     section,
     zones,
     includeZones,
-  });
+  }), resolved.resolvedAs);
 }
 
 /**
@@ -592,6 +606,7 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
       return {
         status: 'completed',
         documentId: resolved.docId,
+        resolvedAs: resolved.resolvedAs,
         page,
         zones,
         message: zones.length

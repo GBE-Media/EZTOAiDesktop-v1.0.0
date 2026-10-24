@@ -60,9 +60,10 @@ describe('resolveDocumentRef', () => {
     }
   });
 
-  it('falls back to the only open document', () => {
+  it('uses the active document when no ref is given, but never guesses for an explicit unknown ref', () => {
     seedDoc('only', 'Sheet.pdf');
-    expect(resolveDocumentRef('no-such')).toEqual({ docId: 'only', how: 'active' });
+    expect(resolveDocumentRef(undefined)).toEqual({ docId: 'only', how: 'active' });
+    expect('error' in resolveDocumentRef('no-such')).toBe(true);
   });
 
   it('uses the resolver at each of the seven document lookup call sites', () => {
@@ -73,7 +74,8 @@ describe('resolveDocumentRef', () => {
       ['services/ai/projectIndex/unknownDoc.ts', 'resolveDocumentRef'],
       ['services/ai/projectIndex/projectTools.ts', 'unknownDocumentResult'],
       ['services/ai/tools/registry.ts', 'unknownDocumentResult'],
-      ['services/ai/placement/handleApprovalDecision.ts', 'resolveDocumentRef'],
+      ['services/ai/placement/approvalTarget.ts', 'resolveDocumentRef'],
+      ['services/ai/placement/handleApprovalDecision.ts', 'resolveApprovalTarget'],
     ];
     for (const [rel, token] of sites) {
       const text = readFileSync(resolve(root, rel.replace(/\//g, '\\').includes('\\') ? rel : rel), 'utf8');
@@ -81,5 +83,20 @@ describe('resolveDocumentRef', () => {
     }
     const ctx = readFileSync(resolve(root, 'services/ai/agent/createToolContext.ts'), 'utf8');
     expect(ctx.split('resolveToolDocument(').length - 1).toBeGreaterThanOrEqual(3);
+  });
+
+  it('resolves "1" to the first open tab when no bracket code matches', () => {
+    seedDoc('doc-a', 'E-201.pdf');
+    seedDoc('doc-b', 'E-301.pdf');
+    const resolved = resolveDocumentRef('1');
+    expect('error' in resolved).toBe(false);
+    if (!('error' in resolved)) expect(resolved.docId).toBe('doc-a');
+  });
+
+  it('fails an unknown explicit ref with the valid list instead of guessing the only doc', () => {
+    seedDoc('doc-a', 'E-201.pdf');
+    const resolved = resolveDocumentRef('doc-ghost');
+    expect('error' in resolved).toBe(true);
+    if ('error' in resolved) expect(resolved.error).toMatch(/E-201\.pdf/);
   });
 });

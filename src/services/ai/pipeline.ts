@@ -692,7 +692,11 @@ export async function analyzePageMaximumAccuracy(options: {
   ]);
   let skippedTiles = 0;
   if (pageZones?.length && bundle.tiles.length) {
-    const filtered = skipTilesCoveredByNonPlanZones(bundle.tiles.map(tile => tile.region), pageZones);
+    const filtered = skipTilesCoveredByNonPlanZones(
+      bundle.tiles.map(tile => tile.region),
+      pageZones,
+      { width: pageWidth, height: pageHeight },
+    );
     skippedTiles = filtered.skipped.length;
     const keptIds = new Set(filtered.kept.map(region => `${region.x}:${region.y}:${region.width}:${region.height}`));
     bundle.tiles = bundle.tiles.filter(tile =>

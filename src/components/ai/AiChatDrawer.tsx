@@ -85,7 +85,7 @@ import { allIndexedPages } from '@/services/ai/projectIndex/store';
 import { compactProjectDocuments, formatProjectDocumentsSummary } from '@/services/ai/projectIndex/summaries';
 import { detectFollowUpOffer } from '@/lib/followUpOffer';
 import { inferTrade } from '@/services/ai/inferTrade';
-import { setLiveAiPreview } from '@/services/ai/placement/aiPreview';
+import { startAiPreviewSync } from '@/services/ai/placement/aiPreviewSync';
 import { resolveDocumentRef } from '@/services/ai/documentRef';
 
 /** @deprecated Prefer AgentAssistantDrawer — same implementation. */
@@ -230,12 +230,7 @@ export function AgentAssistantDrawer() {
     markups: Array<{ page: number; markup: CanvasMarkup }>;
     description: string;
   }) => {
-    const canvas = useCanvasStore.getState();
-    setLiveAiPreview({
-      approvalId: `queued_${options.runId}`,
-      docId: canvas.activeDocId || '',
-      markups: options.markups,
-    });
+    // The live canvas preview is driven by startAiPreviewSync once the approval exists.
     setPendingDetectedKeys([]);
     setPendingAssistantId(options.assistantMsgId);
     const approval = proposeAssistantMutation('place_markups', {
@@ -788,33 +783,10 @@ export function AgentAssistantDrawer() {
       }
 
       if (agentResult.status === 'needs_approval' && agentResult.approvalRequest) {
+        // Canvas preview is handled by startAiPreviewSync (covers resumed approvals too).
         const approval = agentResult.approvalRequest;
         if (approval.toolId === 'place_markups' || approval.toolId === 'propose_callouts') {
-          const pageWidthPx = docData?.originalPageWidth || pageWidth;
-          const pageHeightPx = docData?.originalPageHeight || pageHeight;
-          const normalized = await normalizeAgentMarkupPayload({
-            payload: approval.payload,
-            page: currentPage || 1,
-            pageWidth: pageWidthPx,
-            pageHeight: pageHeightPx,
-            idPrefix: `agent_${assistantMsgId}`,
-            messageId: assistantMsgId,
-            defaultStyle,
-            pdfDocument: docData?.pdfDocument || null,
-          });
-          if (normalized.markups.length > 0) {
-            const payload = approval.payload && typeof approval.payload === 'object'
-              ? approval.payload as { documentId?: string }
-              : {};
-            const resolved = resolveDocumentRef(payload.documentId);
-            const docId = 'docId' in resolved ? resolved.docId : (useCanvasStore.getState().activeDocId || '');
-            setLiveAiPreview({
-              approvalId: approval.id,
-              docId,
-              markups: normalized.markups,
-            });
-            setPendingAssistantId(assistantMsgId);
-          }
+          setPendingAssistantId(assistantMsgId);
         }
         return;
       }
@@ -851,6 +823,8 @@ export function AgentAssistantDrawer() {
       }
     }
   }, [
+    lastInferredTrade,
+    recordInferredTrade,
     addMessage,
     setPipelineStatus,
     messages,
@@ -895,6 +869,14 @@ export function AgentAssistantDrawer() {
       window.removeEventListener('bidveraai:quick-reply', retry);
     };
   }, [handleSendMessage]);
+
+  useEffect(() => startAiPreviewSync({
+    getDefaultStyle: () => useCanvasStore.getState().defaultStyle,
+    getFallbackSize: () => {
+      const canvas = useCanvasStore.getState();
+      return { pageWidth: canvas.pageWidth, pageHeight: canvas.pageHeight };
+    },
+  }), []);
   
   // Handle keyboard shortcut to open drawer
   useEffect(() => {

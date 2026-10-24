@@ -169,9 +169,9 @@ const coreTools: AssistantToolDefinition[] = [
       documentId: z.string().min(1).optional()
         .describe('Open document id. Defaults to the active tab; analysis does not switch tabs.'),
       include: z.array(z.enum([
-        'plan', 'enlarged_plan', 'schedule', 'legend', 'notes', 'detail', 'diagram', 'title_block', 'key_plan', 'revisions',
+        'plan', 'enlarged_plan', 'demo_plan', 'photometric', 'schedule', 'legend', 'notes', 'detail', 'diagram', 'title_block', 'key_plan', 'revisions',
       ])).optional()
-        .describe('Also count symbols in these non-plan zones (e.g. enlarged_plan when the user asks).'),
+        .describe('Also count symbols in these non-plan zones (e.g. enlarged_plan or demo_plan when the user asks).'),
     }),
     execute: async (context, input) => {
       if (!context.countPageItems) {

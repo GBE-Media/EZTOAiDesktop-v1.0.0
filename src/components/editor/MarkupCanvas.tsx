@@ -30,6 +30,7 @@ import type {
 import { TextEditOverlay } from './TextEditOverlay';
 import { countMarkerCaption, resolveMarkupDrawAppearance } from './markupDrawAppearance';
 import { getCachedPageZones } from '@/services/ai/detection/pageZones';
+import { pageGeometryFromUnrotated, visionDisplayPctRectToDoc } from '@/services/ai/placement/visionDisplayPctToDoc';
 import {
   computeAreaMeasurementFromPoints,
   computeLengthMeasurement,
@@ -287,6 +288,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       const palette: Record<string, string> = {
         plan: '#10b981',
         enlarged_plan: '#14b8a6',
+        demo_plan: '#f97316',
+        photometric: '#0ea5e9',
         schedule: '#6366f1',
         legend: '#8b5cf6',
         notes: '#f59e0b',
@@ -296,16 +299,26 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         key_plan: '#22c55e',
         revisions: '#a855f7',
       };
+      const cachedGeometry = useCanvasStore.getState().getPageGeometry(currentPage);
+      const zoneGeometry = pageGeometryFromUnrotated({
+        pageNumber: currentPage,
+        docWidth: cachedGeometry?.docWidth || width,
+        docHeight: cachedGeometry?.docHeight || height,
+        rotationDeg: cachedGeometry?.rotationDeg ?? 0,
+      });
       zones.forEach(zone => {
+        if (zone.source === 'sheet') return;
+        // Zone bounds are display-percent; markups live in unrotated doc points.
+        const rect = visionDisplayPctRectToDoc(zone.bounds, zoneGeometry);
         ctx.save();
         ctx.strokeStyle = palette[zone.kind] || '#94a3b8';
         ctx.lineWidth = 2;
         ctx.setLineDash([8, 4]);
-        ctx.strokeRect(zone.bounds.x, zone.bounds.y, zone.bounds.width, zone.bounds.height);
+        ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
         ctx.setLineDash([]);
         ctx.fillStyle = palette[zone.kind] || '#94a3b8';
         ctx.font = '11px Arial';
-        ctx.fillText(zone.label || zone.kind, zone.bounds.x + 4, zone.bounds.y + 14);
+        ctx.fillText(zone.label || zone.kind, rect.x + 4, rect.y + 14);
         ctx.restore();
       });
     }
@@ -455,7 +468,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       }
       
     }
-  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit]);
+  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit, aiPreview, aiPreviewHoverId, showPageZones, activeDocId, currentPage]);
 
   useEffect(() => {
     draw();
