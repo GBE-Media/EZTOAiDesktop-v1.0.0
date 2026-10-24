@@ -85,6 +85,7 @@ import { startProjectIndexer } from '@/services/ai/projectIndex/scheduler';
 import { allIndexedPages } from '@/services/ai/projectIndex/store';
 import { compactProjectDocuments, formatProjectDocumentsSummary } from '@/services/ai/projectIndex/summaries';
 import { detectFollowUpOffer } from '@/lib/followUpOffer';
+import { offerAfterCount } from '@/lib/nextStepOffer';
 import { inferTrade } from '@/services/ai/inferTrade';
 import { startAiPreviewSync } from '@/services/ai/placement/aiPreviewSync';
 import { resolveDocumentRef } from '@/services/ai/documentRef';
@@ -774,7 +775,8 @@ export function AgentAssistantDrawer() {
       }
 
       if (agentResult.status === 'completed' && !runSignal.aborted) {
-        const offer = detectFollowUpOffer(answerText);
+        const offer = detectFollowUpOffer(answerText)
+          || offerAfterCount(agentResult.toolHistory as Parameters<typeof offerAfterCount>[0]);
         if (offer) {
           useAIChatStore.getState().addMessageBlock(assistantMsgId, {
             id: `block_followup_${assistantMsgId}`,

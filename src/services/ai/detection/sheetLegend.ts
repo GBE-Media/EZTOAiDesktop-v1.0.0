@@ -113,11 +113,11 @@ export function loadSheetLegend(
 }
 
 /**
- * The schedule-table reader is precise (codes from the TYPE/MARK column only), so when it finds
- * more types than the page-text parser, use it; otherwise keep the page parse.
+ * The schedule-table reader is precise (codes from the TYPE/MARK column only), so whenever it
+ * finds a real schedule (2+ types) use it; the page-text parser picks up panel / note codes.
  */
 export function mergeLegendEntries(pageEntries: LegendEntry[], sheet: SheetLegend | null): LegendEntry[] {
-  if (!sheet || sheet.entries.length <= pageEntries.length) return pageEntries;
+  if (!sheet || sheet.entries.length < 2) return pageEntries;
   return sheet.entries;
 }
 

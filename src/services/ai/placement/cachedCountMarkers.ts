@@ -7,6 +7,8 @@ import { CONFIDENCE_REVIEW, type PageGeometry } from './types';
 import { pageGeometryFromUnrotated, visionLocationToDocPoint, type DisplayCrop } from './visionDisplayPctToDoc';
 import type { DocPoint } from './types';
 import type { MarkupStyle } from '@/types/markup';
+import { cacheGet, cacheSet } from '@/lib/pageCache';
+import { loadPageGeometries, type PdfDocumentLike } from './loadPageGeometries';
 
 export type CachedItemLookupDrop = { itemId: string; reason: string };
 
@@ -111,7 +113,8 @@ export function lookupCachedPageItems(options: {
       error: 'Page was re-analyzed after counting; ask the AI to count again',
     };
   }
-  const stored = canvas.getPageGeometry(options.page);
+  // Geometry of the counted document's page (not whichever tab is active).
+  const stored = cacheGet<PageGeometry>('geometry', docId, options.page) || null;
   if (!stored) {
     return {
       items: [],
@@ -227,4 +230,23 @@ export function placementMarkupsFromCachedItemIds(options: {
   });
 
   return { markups, dropped };
+}
+
+/**
+ * Make sure the page geometry (size + rotation) for a counted page is cached for that document.
+ * Counting does not always load it, so placement / preview load it on demand.
+ */
+export async function ensureCachedPageGeometry(
+  docId: string,
+  page: number,
+  pdfDocument?: PdfDocumentLike | null,
+): Promise<boolean> {
+  if (cacheGet<PageGeometry>('geometry', docId, page)) return true;
+  const doc = pdfDocument || (useCanvasStore.getState().pdfDocuments[docId]?.pdfDocument as PdfDocumentLike | undefined);
+  if (!doc || typeof (doc as { getPage?: unknown }).getPage !== 'function') return false;
+  const { geometryByPage } = await loadPageGeometries({ pageNumbers: [page], pdfDocument: doc });
+  const geometry = geometryByPage.get(page);
+  if (!geometry) return false;
+  cacheSet('geometry', docId, page, { ...geometry, pageNumber: page });
+  return true;
 }

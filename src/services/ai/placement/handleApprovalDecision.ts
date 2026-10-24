@@ -1,3 +1,4 @@
+import { offerAfterPlacement } from '@/lib/nextStepOffer';
 import type { MarkupStyle } from '@/types/markup';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
@@ -82,6 +83,26 @@ export async function handleApprovalDecision(
       });
       if (result.status === 'failed') {
         live.finishRun(approval.runId, 'error', assistantMessage);
+      } else if (result.status === 'completed' && resumeDecision === 'approved') {
+        // Guided next step: placed count markers → offer suggested runs.
+        const placed = (executionResult as { placed?: number } | undefined)?.placed;
+        const payload = (approval.payload || {}) as { page?: number; analysisRef?: { page?: number } };
+        const offer = offerAfterPlacement({
+          approvalToolId: approval.toolId,
+          placed,
+          page: payload.page || payload.analysisRef?.page,
+          history: result.toolHistory as Parameters<typeof offerAfterPlacement>[0]['history'],
+          trade: useAIChatStore.getState().selectedTrade,
+        });
+        if (offer) {
+          live.addMessageBlock(approval.messageId, {
+            id: `block_followup_runs_${approval.id}`,
+            type: 'follow-up',
+            messageId: approval.messageId,
+            question: offer.question,
+            options: offer.options,
+          });
+        }
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
