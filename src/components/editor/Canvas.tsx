@@ -834,7 +834,7 @@ export function Canvas() {
   }
 
   return (
-    <div className="flex-1 flex flex-col bg-canvas overflow-hidden">
+    <div className="flex-1 flex flex-col bg-canvas overflow-hidden h-full min-h-0">
       {/* Page navigation */}
       {pdfDocument && totalPages > 1 && (
         <div className="flex items-center justify-center gap-2 py-2 border-b border-panel-border bg-panel-header">
@@ -869,7 +869,7 @@ export function Canvas() {
       {/* Main canvas area */}
       <div 
         ref={containerRef}
-        className={`flex-1 overflow-hidden relative ${
+        className={`flex-1 min-h-0 overflow-hidden relative ${
           isPanning
             ? 'cursor-grabbing'
             : activeTool === 'pan' || spacePanHeld
