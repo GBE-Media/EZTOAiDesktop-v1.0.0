@@ -114,7 +114,9 @@ export function groupAssistantBlocks(
   const processBlocks: AssistantMessageBlock[] = [];
   const visibleBlocks: AssistantMessageBlock[] = [];
   for (const block of list) {
-    if (block.type === 'activity' || block.type === 'progress') {
+    // The result card is a recap of tools/warnings; the answer itself is the
+    // message body, so the recap lives with the process details, not beside it.
+    if (block.type === 'activity' || block.type === 'progress' || block.type === 'result') {
       processBlocks.push(block);
       continue;
     }

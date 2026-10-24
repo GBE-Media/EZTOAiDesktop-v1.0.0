@@ -83,6 +83,7 @@ import { AssistantComposer } from './AssistantComposer';
 import { startProjectIndexer } from '@/services/ai/projectIndex/scheduler';
 import { allIndexedPages } from '@/services/ai/projectIndex/store';
 import { compactProjectDocuments, formatProjectDocumentsSummary } from '@/services/ai/projectIndex/summaries';
+import { detectFollowUpOffer } from '@/lib/followUpOffer';
 
 /** @deprecated Prefer AgentAssistantDrawer — same implementation. */
 export function AiChatDrawer() {
@@ -762,6 +763,19 @@ export function AgentAssistantDrawer() {
         return;
       }
 
+      if (agentResult.status === 'completed' && !runSignal.aborted) {
+        const offer = detectFollowUpOffer(answerText);
+        if (offer) {
+          useAIChatStore.getState().addMessageBlock(assistantMsgId, {
+            id: `block_followup_${assistantMsgId}`,
+            type: 'follow-up',
+            messageId: assistantMsgId,
+            question: offer.question,
+            options: offer.options,
+          });
+        }
+      }
+
       if (agentResult.status === 'needs_approval' && agentResult.approvalRequest) {
         const approval = agentResult.approvalRequest;
         if (approval.toolId === 'place_markups' || approval.toolId === 'propose_callouts') {
@@ -855,7 +869,11 @@ export function AgentAssistantDrawer() {
       if (detail?.content) void handleSendMessage(detail.content, detail.images);
     };
     window.addEventListener('bidveraai:retry', retry);
-    return () => window.removeEventListener('bidveraai:retry', retry);
+    window.addEventListener('bidveraai:quick-reply', retry);
+    return () => {
+      window.removeEventListener('bidveraai:retry', retry);
+      window.removeEventListener('bidveraai:quick-reply', retry);
+    };
   }, [handleSendMessage]);
   
   // Handle keyboard shortcut to open drawer

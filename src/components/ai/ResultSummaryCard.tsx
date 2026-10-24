@@ -3,13 +3,11 @@ import type { AssistantResultSummary } from '@/types/assistant';
 
 export function ResultSummaryCard({ result }: { result: AssistantResultSummary }) {
   return (
-    <div className="my-2 rounded-lg border border-border bg-muted/15 p-3">
+    <div className="my-2 rounded-lg border border-border bg-muted/15 p-3" data-testid="result-recap">
       <div className="flex items-start gap-2">
         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-foreground">Result</div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground whitespace-pre-wrap">{result.summary}</div>
-        </div>
+        {/* The answer text is already the message body — never repeat it here. */}
+        <div className="text-xs font-medium text-foreground">What I did</div>
       </div>
 
       {result.actionsTaken && result.actionsTaken.length > 0 && (

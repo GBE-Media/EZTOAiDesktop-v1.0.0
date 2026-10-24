@@ -4,6 +4,7 @@ import { ApprovalCard } from './ApprovalCard';
 import { EvidenceCard } from './EvidenceCard';
 import { QuestionCard } from './QuestionCard';
 import { ResultSummaryCard } from './ResultSummaryCard';
+import { FollowUpCard } from './FollowUpCard';
 import { AssistantMarkdown } from './AssistantMarkdown';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 import { groupAssistantBlocks } from '@/lib/assistantTurnPresentation';
@@ -48,6 +49,8 @@ export const AssistantMessageBlocks = memo(function AssistantMessageBlocks({
               return <QuestionCard key={block.id} clarificationId={block.clarificationId} />;
             case 'result':
               return <ResultSummaryCard key={block.id} result={block.result} />;
+            case 'follow-up':
+              return <FollowUpCard key={block.id} block={block} />;
             case 'artifact':
               return (
                 <div key={block.id} className="rounded-xl border border-border p-3">

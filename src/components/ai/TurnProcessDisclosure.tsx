@@ -2,6 +2,7 @@ import { memo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import type { AssistantMessageBlock } from '@/types/assistant';
+import { ResultSummaryCard } from './ResultSummaryCard';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { cn } from '@/lib/utils';
 import { collapsedProcessLabel, friendlyStatusLine } from '@/lib/assistantTurnPresentation';
@@ -18,6 +19,9 @@ export const TurnProcessDisclosure = memo(function TurnProcessDisclosure({
   const processBlocks = blocks;
   const activity = processBlocks.find(block => block.type === 'activity');
   const runId = activity && activity.type === 'activity' ? activity.runId : undefined;
+  const resultBlocks = processBlocks.filter(
+    (block): block is Extract<AssistantMessageBlock, { type: 'result' }> => block.type === 'result',
+  );
   const run = useAIChatStore(state => (runId ? state.runs[runId] : undefined));
   const label = collapsedProcessLabel(run, processBlocks);
 
@@ -48,7 +52,11 @@ export const TurnProcessDisclosure = memo(function TurnProcessDisclosure({
       <CollapsibleContent>
         {open ? (
           <div className="border-t border-border/80 px-3 py-2" data-testid="turn-process-details">
-            {runId ? <RunStepList runId={runId} /> : (
+            {runId ? <RunStepList runId={runId} /> : null}
+            {resultBlocks.map(block => (
+              <ResultSummaryCard key={block.id} result={block.result} />
+            ))}
+            {runId ? null : (
               <div className="space-y-1.5">
                 {processBlocks.map(block => {
                   if (block.type === 'progress') {
