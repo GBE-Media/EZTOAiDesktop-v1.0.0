@@ -1,4 +1,4 @@
-import type { ClarificationOption } from '@/types/assistant';
+import type { AssistantFocus, ClarificationOption } from '@/types/assistant';
 
 /** BidveraAi common clarification chips keyed by step / intent. */
 export const BIDVERA_QUESTION_TEMPLATES: Record<string, ClarificationOption[]> = {
@@ -112,14 +112,34 @@ export function validateModelClarificationOptions(
 
     seenIds.add(trimmedId);
     seenValues.add(trimmedValue);
+    const focus = parseAssistantFocus((raw as Record<string, unknown>).focus);
     normalized.push({
       id: trimmedId,
       label: trimmedLabel,
       value: trimmedValue,
+      ...(focus ? { focus } : {}),
     });
   }
 
   return normalized;
+}
+
+/** Validate a model-supplied focus {documentId?, page, bounds?, label?}. */
+export function parseAssistantFocus(value: unknown): AssistantFocus | undefined {
+  if (!isPlainObject(value)) return undefined;
+  const page = Number(value.page);
+  if (!Number.isInteger(page) || page < 1) return undefined;
+  const focus: AssistantFocus = { page };
+  if (typeof value.documentId === 'string' && value.documentId.trim()) focus.documentId = value.documentId.trim();
+  if (typeof value.label === 'string' && value.label.trim()) focus.label = value.label.trim().slice(0, 120);
+  if (isPlainObject(value.bounds)) {
+    const b = value.bounds;
+    const rect = { x: Number(b.x), y: Number(b.y), width: Number(b.width), height: Number(b.height) };
+    if ([rect.x, rect.y, rect.width, rect.height].every(Number.isFinite) && rect.width > 0 && rect.height > 0) {
+      focus.bounds = rect;
+    }
+  }
+  return focus;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

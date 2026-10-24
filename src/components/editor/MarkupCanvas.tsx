@@ -28,6 +28,7 @@ import type {
   StampPreset,
 } from '@/types/markup';
 import { TextEditOverlay } from './TextEditOverlay';
+import { isRunMarkup, recomputeRunMarkup } from '@/services/ai/runs/overlay';
 import { countMarkerCaption, resolveMarkupDrawAppearance } from './markupDrawAppearance';
 import { getCachedPageZones } from '@/services/ai/detection/pageZones';
 import { pageGeometryFromUnrotated, visionDisplayPctRectToDoc } from '@/services/ai/placement/visionDisplayPctToDoc';
@@ -56,7 +57,10 @@ const STAMP_PRESETS: Record<StampPreset, { label: string; color: string; bgColor
 
 // Note: Count marker numbers are no longer tracked - total is shown in tab bar
 
-type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'start' | 'end';
+type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'start' | 'end' | `v${number}`;
+
+const vertexIndexOf = (handle: ResizeHandle): number | null =>
+  handle.startsWith('v') ? Number(handle.slice(1)) : null;
 
 interface ResizeState {
   handle: ResizeHandle;
@@ -650,6 +654,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           ctx.fill();
         }
         ctx.stroke();
+        if (m.aiRun?.kind === 'homerun' && m.label) drawRunLabel(ctx, m);
         break;
       }
       
@@ -850,6 +855,41 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       drawSelectionHandles(ctx, markup);
     }
     
+    ctx.restore();
+  };
+
+  // Home-run tag at the middle of the longest segment (constant on-screen size)
+  const drawRunLabel = (ctx: CanvasRenderingContext2D, m: PolygonMarkup) => {
+    let best = 0;
+    let bestLen = -1;
+    for (let i = 0; i + 1 < m.points.length; i += 1) {
+      const len = Math.hypot(m.points[i + 1].x - m.points[i].x, m.points[i + 1].y - m.points[i].y);
+      if (len > bestLen) { bestLen = len; best = i; }
+    }
+    const a = m.points[best];
+    const b = m.points[best + 1];
+    if (!a || !b) return;
+    const scale = zoom / 100;
+    const fontSize = 10 / scale;
+    const text = m.label || '';
+    ctx.save();
+    ctx.shadowBlur = 0;
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+    const w = ctx.measureText(text).width + 8 / scale;
+    const h = fontSize + 6 / scale;
+    const cx = (a.x + b.x) / 2;
+    const cy = (a.y + b.y) / 2;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+    ctx.strokeStyle = m.style.strokeColor;
+    ctx.lineWidth = 1 / scale;
+    ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
+    ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
+    ctx.fillStyle = m.style.strokeColor;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, cx, cy);
     ctx.restore();
   };
 
@@ -1287,6 +1327,30 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     return null;
   };
 
+  // Suggested runs: re-size conductors / conduit / VD after their geometry changes
+  const refreshRunMarkup = (id: string) => {
+    const canvasState = useCanvasStore.getState();
+    const latest = (canvasState.getMarkupsByPage(canvasState.activeDocId || undefined)[currentPage] || [])
+      .find(m => m.id === id);
+    if (!latest || !isRunMarkup(latest)) return;
+    const next = recomputeRunMarkup(latest);
+    if (next) updateMarkup(currentPage, id, { label: next.label, aiNote: next.aiNote, aiRun: next.aiRun } as Partial<CanvasMarkup>);
+  };
+
+  const nearestSegmentIndex = (pts: Point[], p: Point): number | null => {
+    const tolerance = 8 / (zoom / 100);
+    let best: { i: number; d: number } | null = null;
+    for (let i = 0; i + 1 < pts.length; i += 1) {
+      const a = pts[i];
+      const b = pts[i + 1];
+      const len2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+      const t = len2 ? Math.max(0, Math.min(1, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / len2)) : 0;
+      const d = Math.hypot(p.x - (a.x + t * (b.x - a.x)), p.y - (a.y + t * (b.y - a.y)));
+      if (d <= tolerance && (!best || d < best.d)) best = { i, d };
+    }
+    return best ? best.i : null;
+  };
+
   // Check if a point is on a resize handle (point is in PDF space)
   const getResizeHandle = (point: Point, markup: CanvasMarkup): ResizeHandle | null => {
     const handleSize = 10 / (zoom / 100); // Adjust handle hit area for zoom
@@ -1317,6 +1381,14 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       if (isNearPoint(m.startX, m.startY)) return 'start';
       if (isNearPoint(m.endX, m.endY)) return 'end';
     }
+
+    // Vertex handles (polyline / polygon / cloud) — drag any point
+    if ((markup.type === 'polyline' || markup.type === 'polygon' || markup.type === 'cloud') && 'points' in markup) {
+      const pts = (markup as PolygonMarkup).points;
+      for (let i = 0; i < pts.length; i += 1) {
+        if (isNearPoint(pts[i].x, pts[i].y)) return `v${i}`;
+      }
+    }
     
     return null;
   };
@@ -1340,7 +1412,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       case 'end':
         return 'move';
       default:
-        return 'default';
+        return handle && vertexIndexOf(handle) !== null ? 'move' : 'default';
     }
   };
 
@@ -1518,6 +1590,18 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         }
       }
       
+      // Double-click a selected polyline segment to add a bend point
+      if (markup && e.detail === 2 && markup.type === 'polyline' && selectedMarkupIds.includes(markup.id)) {
+        const pts = (markup as PolygonMarkup).points;
+        const at = nearestSegmentIndex(pts, point);
+        if (at !== null) {
+          const next = [...pts.slice(0, at + 1), { x: point.x, y: point.y }, ...pts.slice(at + 1)];
+          updateMarkup(currentPage, markup.id, { points: next } as Partial<CanvasMarkup>);
+          refreshRunMarkup(markup.id);
+          return;
+        }
+      }
+
       if (markup) {
         // Double-click to edit text
         if (e.detail === 2 && (markup.type === 'text' || markup.type === 'callout')) {
@@ -1707,6 +1791,16 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         } as any);
       }
       
+      // Vertex drag (polyline / polygon / cloud)
+      const vertex = vertexIndexOf(handle);
+      if (vertex !== null && 'points' in originalMarkup) {
+        const pts = (originalMarkup as PolygonMarkup).points.map(p => ({ ...p }));
+        if (pts[vertex]) {
+          pts[vertex] = { x: pts[vertex].x + dx, y: pts[vertex].y + dy };
+          updateMarkup(currentPage, originalMarkup.id, { points: pts } as Partial<CanvasMarkup>);
+        }
+      }
+
       // Handle line/arrow resize
       if ('startX' in originalMarkup) {
         const m = originalMarkup as LineMarkup;
@@ -1826,8 +1920,10 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const handleMouseUp = async (e: MouseEvent<HTMLCanvasElement>) => {
     // End resizing
     if (resizing) {
+      const editedId = resizing.originalMarkup.id;
       setResizing(null);
       endEditorInteraction();
+      refreshRunMarkup(editedId);
       return;
     }
     

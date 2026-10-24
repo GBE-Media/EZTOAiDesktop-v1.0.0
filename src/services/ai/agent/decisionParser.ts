@@ -1,3 +1,4 @@
+import { parseAssistantFocus } from './clarificationTemplates';
 import type { AgentModelDecision, AgentToolCallRequest } from './types';
 
 /** Parse model JSON (or prose fallback) into an agent decision. */
@@ -56,6 +57,8 @@ export function parseAgentDecision(raw: string): AgentModelDecision {
     if (Array.isArray(obj.options)) {
       decision.options = obj.options as NonNullable<typeof decision.options>;
     }
+    const focus = parseAssistantFocus(obj.focus);
+    if (focus) decision.focus = focus;
     return decision;
   }
 

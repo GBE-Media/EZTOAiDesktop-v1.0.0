@@ -51,6 +51,41 @@ export interface BaseMarkup {
   aiLinkedItemId?: string;    // Links to AI detected item
   calloutRef?: number;        // Numbered chat mention [N]
   messageId?: string;         // Assistant message that proposed this callout
+  /** Suggested-run overlay data (home runs / branch circuitry / keep-out areas). */
+  aiRun?: AiRunMeta;
+}
+
+/** Circuit data a suggested run needs to re-size itself after the user drags its points. */
+export interface AiRunCircuit {
+  id: string;
+  label?: string;
+  loadAmps?: number;
+  loadVA?: number;
+  voltage: number;
+  phase: 1 | 3;
+  continuous?: boolean;
+  ocpdAmps?: number;
+  /** Branch length beyond the home run to this circuit's farthest device, feet. */
+  branchFt: number;
+}
+
+export interface AiRunMeta {
+  runId: string;
+  kind: 'homerun' | 'branch' | 'keepout';
+  /** Feet per document point used for lengths. */
+  ftPerPt: number;
+  lengthFt: number;
+  circuits?: AiRunCircuit[];
+  settings?: {
+    wiringMethod: 'EMT' | 'PVC40' | 'RMC' | 'MC';
+    material: 'cu' | 'al';
+    vdTargetPct: number;
+    verticalFt: number;
+    necEdition: number;
+  };
+  /** Latest computed summary (shown as the run label). */
+  summary?: string;
+  vdPct?: number;
 }
 
 export interface RectangleMarkup extends BaseMarkup {

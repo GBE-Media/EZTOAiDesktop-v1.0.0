@@ -22,6 +22,18 @@ import {
 } from './mutationSchemas';
 import { analyzePageInputSchema } from './analyzePageSchema';
 import { resolvedDocumentId, unknownDocumentResult } from '../projectIndex/unknownDoc';
+import { allIndexedPages } from '../projectIndex/store';
+
+const normSheet = (value: string) => value.toUpperCase().replace(/[^A-Z0-9.]/g, '');
+
+/** Sheet number → indexed page (prefers the given document). */
+export function findSheet(sheetNumber: string, documentId?: string): { docId: string; page: number } | null {
+  const target = normSheet(sheetNumber);
+  if (!target) return null;
+  const hits = allIndexedPages().filter(row => row.sheetNumber && normSheet(row.sheetNumber) === target);
+  const hit = hits.find(row => row.docId === documentId) || hits[0];
+  return hit ? { docId: hit.docId, page: hit.page } : null;
+}
 
 const boundsSchema = z.object({
   x: z.number(),
@@ -300,26 +312,48 @@ const coreTools: AssistantToolDefinition[] = [
   },
   {
     id: 'navigate_page',
-    title: 'Open cited page',
-    description: 'Navigate the canvas to a cited page and region.',
+    title: 'Open page',
+    description:
+      'Take the user to a page, sheet or region (auto, no approval). Use when the user asks to go to / open / '
+      + 'show a page, sheet (sheetNumber like "E-201") or spec section, and to show what you are asking about. '
+      + 'bounds are document points from tool results.',
     risk: 'navigate',
     requiresConfirmation: false,
     undoable: false,
     schema: z.object({
-      page: z.number().int().positive(),
+      page: z.number().int().positive().optional(),
+      sheetNumber: z.string().min(1).optional().describe('Drawing sheet number, e.g. "E-201". Resolved through the project index.'),
       bounds: boundsSchema,
       documentId: z.string().min(1).optional(),
     }),
     execute: async (context, input) => {
       const unknown = unknownDocumentResult(input.documentId);
       if (unknown) return unknown;
-      const documentId = resolvedDocumentId(input.documentId) || input.documentId;
-      if (documentId) {
-        context.navigateToPage(input.page, input.bounds, documentId);
-      } else {
-        context.navigateToPage(input.page, input.bounds);
+      let documentId = resolvedDocumentId(input.documentId) || input.documentId;
+      let page = input.page;
+      if (input.sheetNumber) {
+        const hit = findSheet(input.sheetNumber, documentId);
+        if (!hit && !page) {
+          return {
+            status: 'failed',
+            summary: `Sheet ${input.sheetNumber} was not found in the indexed documents.`,
+            output: { status: 'not_found', sheetNumber: input.sheetNumber },
+          };
+        }
+        if (hit) {
+          documentId = hit.docId;
+          page = hit.page;
+        }
       }
-      return { status: 'completed', summary: `Opened page ${input.page}.` };
+      if (!page) {
+        return { status: 'failed', summary: 'Give a page or sheetNumber.', output: { status: 'invalid_input' } };
+      }
+      if (documentId) {
+        context.navigateToPage(page, input.bounds, documentId);
+      } else {
+        context.navigateToPage(page, input.bounds);
+      }
+      return { status: 'completed', summary: `Opened ${input.sheetNumber ? `sheet ${input.sheetNumber} (page ${page})` : `page ${page}`}.`, output: { documentId, page } };
     },
   },
   createTypedMutationTool({

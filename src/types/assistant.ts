@@ -99,10 +99,41 @@ export interface ApprovalRequest {
   toolCallId?: string;
 }
 
+/** A place in a document the assistant wants the user to look at. */
+export interface AssistantFocus {
+  documentId?: string;
+  page: number;
+  /** Document points (PDF page points at scale 1, top-left origin). */
+  bounds?: { x: number; y: number; width: number; height: number };
+  label?: string;
+}
+
+/** One side of a discrepancy (what the drawing / spec says, with its exact location). */
+export interface DiscrepancySide {
+  documentId?: string;
+  documentName?: string;
+  page: number;
+  sheetNumber?: string;
+  section?: string;
+  bounds?: { x: number; y: number; width: number; height: number };
+  excerpt: string;
+}
+
+export interface Discrepancy {
+  id: string;
+  title: string;
+  severity: 'high' | 'medium' | 'low';
+  drawing: DiscrepancySide;
+  spec: DiscrepancySide;
+  recommendation?: string;
+  createdAt: string;
+}
+
 export interface ClarificationOption {
   id: string;
   label: string;
   value: string;
+  focus?: AssistantFocus;
 }
 
 export interface ClarificationRequest {
@@ -115,6 +146,8 @@ export interface ClarificationRequest {
   options: ClarificationOption[];
   allowMultiSelect?: boolean;
   allowFreeform?: boolean;
+  /** What on the drawings/specs the question is about (auto-navigated, "Show on drawing"). */
+  focus?: AssistantFocus;
   status: ClarificationStatus;
   createdAt: string;
   resolvedAt?: string;
@@ -142,6 +175,7 @@ export type AssistantMessageBlock =
   | { id: string; type: 'progress'; label: string; status: 'running' | 'completed' | 'failed' }
   | { id: string; type: 'result'; result: AssistantResultSummary }
   | { id: string; type: 'tool-result'; activity: ToolActivity }
+  | { id: string; type: 'discrepancies'; discrepancies: Discrepancy[] }
   | {
       id: string;
       type: 'follow-up';

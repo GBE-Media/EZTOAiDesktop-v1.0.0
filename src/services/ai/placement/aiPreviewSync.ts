@@ -2,11 +2,11 @@ import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import type { ApprovalRequest } from '@/types/assistant';
 import type { MarkupStyle } from '@/types/markup';
-import { resolveApprovalTarget } from './approvalTarget';
+import { resolveApprovalTarget, suggestedRunMarkups } from './approvalTarget';
 import { resolvePlaceMarkups } from './executePlaceMarkupsApproval';
 import { setLiveAiPreview } from './aiPreview';
 
-const PREVIEW_TOOLS = new Set(['place_markups', 'propose_callouts']);
+const PREVIEW_TOOLS = new Set(['place_markups', 'propose_callouts', 'suggest_runs']);
 
 export type AiPreviewSyncDeps = {
   getDefaultStyle: () => MarkupStyle;
@@ -15,6 +15,12 @@ export type AiPreviewSyncDeps = {
 
 /** Build and show the live preview for one pending approval (exactly what Approve would place). */
 export async function previewApproval(approval: ApprovalRequest, deps: AiPreviewSyncDeps): Promise<boolean> {
+  if (approval.toolId === 'suggest_runs') {
+    const rows = suggestedRunMarkups(approval);
+    if ('error' in rows) return false;
+    setLiveAiPreview({ approvalId: approval.id, docId: rows.docId, markups: rows.markups });
+    return true;
+  }
   const target = resolveApprovalTarget(approval, deps.getFallbackSize());
   if ('error' in target) return false;
   const pdf = useCanvasStore.getState().pdfDocuments[target.docId];

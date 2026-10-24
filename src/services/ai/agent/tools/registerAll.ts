@@ -2,6 +2,8 @@ import { registerAssistantTools } from '../../tools/registry';
 import { createTakeoffDomainTools } from './takeoffTools';
 import { createEstimatingStubTools } from './estimatingTools';
 import { createProjectIndexTools } from '../../projectIndex/projectTools';
+import { createSuggestRunsTool } from '../../runs/suggestRunsTool';
+import { createFlagDiscrepanciesTool } from '../../discrepancies/discrepancyTool';
 
 let registered = false;
 
@@ -19,6 +21,8 @@ export function registerAllAgentTools(): void {
     ...createTakeoffDomainTools(),
     ...createEstimatingStubTools(),
     ...createProjectIndexTools(),
+    createSuggestRunsTool(),
+    createFlagDiscrepanciesTool(),
   ]);
   registered = true;
 }

@@ -189,7 +189,9 @@ export type AgentModelDecision =
       message: string;
       questions: string[];
       /** Clickable choices for the primary question (message / questions[0]). */
-      options?: Array<{ id: string; label: string; value: string }>;
+      options?: Array<{ id: string; label: string; value: string; focus?: import('@/types/assistant').AssistantFocus }>;
+      /** Where on the drawings/specs the question is about. */
+      focus?: import('@/types/assistant').AssistantFocus;
     };
 
 export interface AgentTraceEvent {

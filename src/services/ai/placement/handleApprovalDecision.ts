@@ -6,7 +6,7 @@ import type { AssistantToolContext } from '../tools/types';
 import { executeApprovedAssistantAction } from '../tools/registry';
 import { executePlaceMarkupsApproval } from './executePlaceMarkupsApproval';
 import { resumeTaskAfterApproval } from '../agent';
-import { resolveApprovalTarget } from './approvalTarget';
+import { resolveApprovalTarget, suggestedRunMarkups } from './approvalTarget';
 
 const inFlightApprovals = new Set<string>();
 
@@ -134,6 +134,9 @@ export async function handleApprovalDecision(
         getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
       });
       useCanvasStore.getState().clearAiPreview();
+    } else if (approval.toolId === 'suggest_runs') {
+      executionResult = placeSuggestedRuns(approval);
+      useCanvasStore.getState().clearAiPreview();
     } else {
       const toolContext = deps.createEditorToolContext(approval.runId, approval.messageId);
       executionResult = await executeApprovedAssistantAction(approval, toolContext);
@@ -174,4 +177,18 @@ export async function handleApprovalDecision(
       useAIChatStore.getState().setApprovalExecuting(approvalId, false);
     }
   }
+}
+
+/** Commit an approved suggested-run overlay to its document (one undo step). */
+export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarkups>[0]): { status: 'completed' | 'failed'; placed: number; error?: string } {
+  const rows = suggestedRunMarkups(approval);
+  if ('error' in rows) return { status: 'failed', placed: 0, error: rows.error };
+  const canvas = useCanvasStore.getState();
+  if (rows.docId !== canvas.activeDocId) {
+    canvas.setActiveDocId(rows.docId);
+    useEditorStore.getState().setActiveDocument(rows.docId);
+  }
+  const result = useCanvasStore.getState().addAIMarkupBatch(rows.markups, false);
+  if (!result.ok) return { status: 'failed', placed: 0, error: result.reason || 'Could not place runs' };
+  return { status: 'completed', placed: result.placed };
 }

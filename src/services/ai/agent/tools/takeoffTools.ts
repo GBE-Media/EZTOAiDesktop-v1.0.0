@@ -89,30 +89,6 @@ export function createTakeoffDomainTools(): AssistantToolDefinition[] {
       },
     },
     {
-      id: 'getRunSuggestions',
-      title: 'Get run suggestions',
-      description: 'Generate homerun / run routing suggestions from current takeoff items.',
-      risk: 'read',
-      requiresConfirmation: false,
-      undoable: false,
-      schema: z.object({
-        layoutType: z.enum(['conduit', 'homerun', 'duct', 'pipe', 'vent']).default('homerun'),
-      }),
-      execute: async (context, input) => {
-        if (!context.getRunSuggestions) {
-          return {
-            status: 'stub',
-            summary: 'Run suggestion adapter is not wired.',
-            stubReason: 'getRunSuggestions adapter missing',
-            suggestedUserMessage: 'Run suggestions are unavailable in this session.',
-            output: { status: 'stub' },
-          };
-        }
-        const output = await context.getRunSuggestions(input);
-        return { status: 'completed', summary: 'Generated run suggestions.', output };
-      },
-    },
-    {
       id: 'applyMaterialCountAdjustments',
       title: 'Apply material count adjustments',
       description: 'Adjust product-linked measurement counts after user approval.',

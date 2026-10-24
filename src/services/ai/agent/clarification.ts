@@ -1,5 +1,6 @@
 import { useAIChatStore } from '@/store/aiChatStore';
-import type { ClarificationOption, ClarificationRequest } from '@/types/assistant';
+import type { AssistantFocus, ClarificationOption, ClarificationRequest } from '@/types/assistant';
+import { openAssistantFocus } from '@/lib/openCitation';
 import type { AgentTurnResult } from './types';
 import { resolveClarificationOptions, inferClarificationStepKey } from './clarificationTemplates';
 
@@ -16,6 +17,7 @@ export interface EmitClarificationOptions {
   stepKey?: string;
   allowMultiSelect?: boolean;
   allowFreeform?: boolean;
+  focus?: AssistantFocus;
 }
 
 /** Persist a clarification record, attach a question block, and park the run. */
@@ -44,6 +46,7 @@ export function emitClarificationQuestion(options: EmitClarificationOptions): Cl
     options: resolvedOptions,
     allowMultiSelect: options.allowMultiSelect,
     allowFreeform: options.allowFreeform ?? true,
+    ...(options.focus ? { focus: options.focus } : {}),
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
@@ -65,6 +68,9 @@ export function emitClarificationQuestion(options: EmitClarificationOptions): Cl
     clarificationId: clarification.id,
   });
   store.finishRun(options.runId, 'waiting-clarification');
+  // Take the user to what the question is about.
+  const focus = clarification.focus || (resolvedOptions.length === 1 ? resolvedOptions[0].focus : undefined);
+  if (focus) openAssistantFocus(focus);
   return clarification;
 }
 

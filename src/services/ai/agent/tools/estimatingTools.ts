@@ -43,7 +43,6 @@ export function createEstimatingStubTools(): AssistantToolDefinition[] {
     stubTool('getCustomerRequirements', 'Get customer requirements', 'Read customer requirements for the bid.'),
     stubTool('updateEstimateLineItems', 'Update estimate line items', 'Mutate estimate line items.', 'write', true),
     stubTool('saveLayoutSuggestion', 'Save layout suggestion', 'Persist a layout suggestion.', 'write', true),
-    stubTool('saveRunSuggestion', 'Save run suggestion', 'Persist a run suggestion.', 'write', true),
     stubTool('updateCodeComplianceNotes', 'Update code compliance notes', 'Persist compliance notes.', 'write', true),
     stubTool('createFollowUpQuestions', 'Create follow-up questions', 'Persist clarifying questions for the estimate.', 'write', true),
     stubTool('createBidSummary', 'Create bid summary', 'Create a formal bid summary artifact.', 'write', true),

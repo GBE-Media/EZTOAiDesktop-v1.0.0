@@ -39,6 +39,21 @@ export function decideRoutingPolicy(intake: IntakeResult): RoutingDecision & { n
     });
   }
 
+  // Suggested runs / home runs / conduit layout.
+  if (/\b(home ?runs?|branch circuit\w*|conduit runs?|suggest\w* runs?|wire runs?|runs? (for|to) (the )?panel)\b/i.test(normalizedMessage)) {
+    return base({
+      path: 'invoke_primary',
+      taskType: 'layout',
+      complexity: 'medium',
+      risk: 'medium',
+      preferTools: true,
+      requireVerifier: false,
+      reason: 'Run layout request; count devices then suggest_runs (approval-gated overlay)',
+      suggestedTools: ['count_page_items', 'search_project', 'read_spec_section', 'suggest_runs'],
+      needsLlmRouter: false,
+    });
+  }
+
   // Spec / cross-document questions: search the project index, not single-page vision.
   if (/\b(spec|csi|masterformat|section\s+\d{2}|manufacturer|submittal|per spec|project manual)\b/i.test(normalizedMessage)
     || /\b(across (the )?(drawings|docs|documents)|every sheet)\b/i.test(normalizedMessage)) {
@@ -50,7 +65,7 @@ export function decideRoutingPolicy(intake: IntakeResult): RoutingDecision & { n
       preferTools: true,
       requireVerifier: false,
       reason: 'Spec or cross-document request; use project index tools',
-      suggestedTools: ['search_project', 'read_spec_section', 'get_sheet_index', 'count_page_items', 'list_project_documents'],
+      suggestedTools: ['search_project', 'read_spec_section', 'get_sheet_index', 'navigate_page', 'flag_discrepancies', 'count_page_items', 'list_project_documents'],
       needsLlmRouter: false,
     });
   }
@@ -124,7 +139,7 @@ export function decideRoutingPolicy(intake: IntakeResult): RoutingDecision & { n
       requireVerifier: false,
       reason: 'Context or layout request; primary agent with read tools',
       suggestedTools: taskType === 'layout'
-        ? ['getLayoutSuggestions', 'getRunSuggestions', 'getTakeoffSummary']
+        ? ['count_page_items', 'suggest_runs', 'getLayoutSuggestions']
         : ['getProjectContext', 'getTakeoffSummary', 'getMaterialCounts'],
       needsLlmRouter: false,
     });
