@@ -28,6 +28,7 @@ export interface ElectronAPI {
   saveFileDirect: (data: ArrayBuffer, filePath: string) => Promise<SaveFileDirectResult>;
   hashFile: (filePath: string) => Promise<{ success: boolean; sha256?: string; byteLength?: number; error?: string }>;
   snapshotOriginal: (filePath: string) => Promise<{ success: boolean; path?: string; sha256?: string; error?: string }>;
+  releaseSnapshot: (filePath: string) => Promise<{ success: boolean; error?: string }>;
   readAllowedFile: (filePath: string) => Promise<{ buffer: ArrayBuffer; path: string; name: string } | null>;
   writeProjectAsset: (payload: {
     projectPath: string;

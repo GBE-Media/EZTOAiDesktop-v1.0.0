@@ -6,9 +6,12 @@ import {
   allowLocalPath,
   assetDestPath,
   fileUrlForPath,
+  hashBufferSha256,
   hashFileSha256,
   isAllowedLocalPath,
+  pdfCacheDir,
   projectAssetsDir,
+  prunePdfCache,
   serveAllowedFile,
 } from './fileProtocol';
 
@@ -401,6 +404,7 @@ ipcMain.handle('dialog:saveFile', async (_, data: ArrayBuffer, defaultName: stri
 // Save Direct - overwrites existing file without dialog
 ipcMain.handle('dialog:saveFileDirect', async (_, data: ArrayBuffer, filePath: string) => {
   try {
+    if (!isAllowedLocalPath(filePath)) return { success: false, error: 'not-allowed' };
     fs.writeFileSync(filePath, Buffer.from(data));
     allowLocalPath(filePath);
     if (filePath.toLowerCase().endsWith('.bidveraai')) {
@@ -426,6 +430,19 @@ ipcMain.handle('fs:snapshotOriginal', async (_, filePath: string) => {
   }
   allowLocalPath(dest);
   return { success: true, path: dest, sha256 };
+});
+
+ipcMain.handle('fs:releaseSnapshot', async (_, filePath: string) => {
+  if (!filePath || !isAllowedLocalPath(filePath)) return { success: false, error: 'not-allowed' };
+  const cacheDir = pdfCacheDir(app.getPath('userData'));
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(path.resolve(cacheDir))) return { success: false, error: 'not-cache' };
+  try {
+    if (fs.existsSync(resolved)) fs.unlinkSync(resolved);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
 });
 
 ipcMain.handle('fs:hashFile', async (_, filePath: string) => {
@@ -503,13 +520,23 @@ ipcMain.handle('project:writeAsset', async (_, payload: {
     }
     fs.copyFileSync(payload.sourcePath, tmp);
   } else if (payload.data) {
-    fs.writeFileSync(tmp, Buffer.from(payload.data));
+    const buf = Buffer.from(payload.data);
+    const actual = hashBufferSha256(buf);
+    if (actual.toLowerCase() !== sha256.toLowerCase()) {
+      return { success: false, error: 'hash-mismatch' };
+    }
+    fs.writeFileSync(tmp, buf);
   } else {
     return { success: false, error: 'no-source' };
   }
+  const actual = await hashFileSha256(tmp);
+  if (actual.toLowerCase() !== sha256.toLowerCase()) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    return { success: false, error: 'hash-mismatch' };
+  }
   fs.renameSync(tmp, dest);
 
-  const writtenHash = sha256.toLowerCase();
+  const writtenHash = actual.toLowerCase();
   return {
     success: true,
     skipped: false,
@@ -677,6 +704,7 @@ app.whenReady().then(() => {
     const served = await serveAllowedFile(request.url, request.headers.get('Range'));
     return new Response(served.body, { status: served.status, headers: served.headers });
   });
+  prunePdfCache(pdfCacheDir(app.getPath('userData')));
 
   // #region agent log
   log('electron/main.ts:app.whenReady', 'App ready', { isDev, isPackaged: app.isPackaged, __dirname, fileToOpen });

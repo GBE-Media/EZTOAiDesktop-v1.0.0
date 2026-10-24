@@ -10,6 +10,15 @@ import { encodeBase64Chunked, sha256Hex } from '@/lib/base64Chunks';
 const PROJECT_VERSION = '2';
 const PROJECT_EXTENSION = 'bidveraai';
 
+export function markupsForProjectSave(
+  doc: { markups?: unknown[] },
+  pdfLoaded: boolean,
+  canvasMarkups: unknown[],
+): unknown[] {
+  if (!pdfLoaded) return doc.markups || [];
+  return canvasMarkups;
+}
+
 function dirname(filePath: string): string {
   return filePath.replace(/[\\/][^\\/]+$/, '');
 }
@@ -45,7 +54,7 @@ export function useProjectSave() {
         pages: doc.pages,
         currentPage: doc.currentPage,
         zoom: doc.zoom,
-        markups: getMarkupsByPage(docId) ? Object.values(getMarkupsByPage(docId)).flat() : (doc.markups || []),
+        markups: markupsForProjectSave(doc, false, []),
         measurements: doc.measurements,
       } as ProjectDocument;
     }

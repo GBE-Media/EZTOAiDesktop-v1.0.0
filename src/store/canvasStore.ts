@@ -195,7 +195,7 @@ interface CanvasActions {
   getTextContent: (page: number) => TextItemWithBounds[];
   setTextContent: (page: number, items: TextItemWithBounds[]) => void;
   getTextWords: (page: number) => TextWord[];
-  setTextWords: (page: number, words: TextWord[]) => void;
+  setTextWords: (page: number, words: TextWord[], options?: { pin?: boolean }) => void;
   getOcrStatus: () => { status: 'none' | 'running' | 'completed' | 'failed'; progress: number };
   setOcrStatus: (status: 'none' | 'running' | 'completed' | 'failed', progress?: number) => void;
   
@@ -427,10 +427,10 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     return cacheGet<TextWord[]>('words', state.activeDocId, page) || [];
   },
   
-  setTextWords: (page, words) => {
+  setTextWords: (page, words, options) => {
     const state = get();
     if (!state.activeDocId) return;
-    cacheSet('words', state.activeDocId, page, words, { pin: true });
+    cacheSet('words', state.activeDocId, page, words, { pin: !!options?.pin });
   },
   
   getOcrStatus: () => {
@@ -560,6 +560,10 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
   removeDocument: (docId) => {
     clearPageAnalysisCache(docId);
     cacheClearDoc(docId);
+    const source = get().pdfDocuments[docId]?.pdfSource;
+    if (source?.source === 'file' && /[/\\]pdf-cache[/\\]/i.test(source.path)) {
+      void window.electronAPI?.releaseSnapshot?.(source.path);
+    }
     const doomed = get().pdfDocuments[docId]?.pdfDocument;
     try {
       doomed?.destroy?.();

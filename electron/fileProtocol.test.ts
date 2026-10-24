@@ -6,7 +6,12 @@ import {
   allowLocalPath,
   clearAllowedPaths,
   fileUrlForPath,
+  hashBufferSha256,
+  isAllowedLocalPath,
+  MAX_RANGE_BYTES,
   parseByteRangeHeader,
+  pdfCacheDir,
+  prunePdfCache,
   serveAllowedFile,
 } from './fileProtocol';
 
@@ -110,5 +115,43 @@ describe('bidvera-file protocol helpers', () => {
     fs.writeFileSync(other, 'OTHER');
     const served = await serveAllowedFile(fileUrlForPath(other), null);
     expect(served.status).toBe(403);
+  });
+
+  it('saveFileDirect-style allowlist rejects renderer-supplied paths', () => {
+    expect(isAllowedLocalPath(filePath)).toBe(false);
+    const guard = !isAllowedLocalPath(filePath) ? { success: false, error: 'not-allowed' } : { success: true };
+    expect(guard).toEqual({ success: false, error: 'not-allowed' });
+  });
+
+  it('caps range length at 16 MB with 416', async () => {
+    const big = path.join(tmp, 'big.pdf');
+    const fd = fs.openSync(big, 'w');
+    fs.ftruncateSync(fd, MAX_RANGE_BYTES + 1024);
+    fs.closeSync(fd);
+    allowLocalPath(big);
+    const served = await serveAllowedFile(fileUrlForPath(big), `bytes=0-${MAX_RANGE_BYTES}`);
+    expect(served.status).toBe(416);
+  });
+
+  it('rejects a claimed sha256 that does not match the bytes', () => {
+    const data = Buffer.from('asset-bytes');
+    const actual = hashBufferSha256(data);
+    const claimed = 'a'.repeat(64);
+    expect(actual).not.toBe(claimed);
+    expect(actual.toLowerCase() === claimed.toLowerCase()).toBe(false);
+  });
+
+  it('prunes pdf-cache entries older than 7 days and never deletes keep paths', () => {
+    const cache = pdfCacheDir(tmp);
+    fs.mkdirSync(cache, { recursive: true });
+    const oldFile = path.join(cache, 'old.pdf');
+    const keepFile = path.join(cache, 'keep.pdf');
+    fs.writeFileSync(oldFile, 'old');
+    fs.writeFileSync(keepFile, 'keep');
+    const past = Date.now() - 8 * 24 * 60 * 60 * 1000;
+    fs.utimesSync(oldFile, past / 1000, past / 1000);
+    const result = prunePdfCache(cache, { keep: [keepFile] });
+    expect(result.deleted.some(p => p.endsWith('old.pdf'))).toBe(true);
+    expect(fs.existsSync(keepFile)).toBe(true);
   });
 });

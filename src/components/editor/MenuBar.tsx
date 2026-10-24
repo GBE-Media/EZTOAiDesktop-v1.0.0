@@ -285,8 +285,9 @@ export function MenuBar() {
         const page = await pdfDoc.getPage(pageNum);
         const viewport = page.getViewport({ scale: 1 });
         const pageArea = viewport.width * viewport.height;
-        
-        if (textItems.length === 0 || isScannedDocument(textItems.length, pageArea)) {
+        const usedOcr = textItems.length === 0 || isScannedDocument(textItems.length, pageArea);
+
+        if (usedOcr) {
           // Step 2: Fall back to Tesseract.js OCR for scanned pages
           console.log(`Page ${pageNum}: Using Tesseract.js OCR (scanned document detected)`);
           
@@ -321,7 +322,7 @@ export function MenuBar() {
         
         // Convert to word-level data for professional highlighting
         const words = getWordsFromTextItems(textItems);
-        setTextWords(pageNum, words);
+        setTextWords(pageNum, words, { pin: usedOcr });
         
         // Update progress
         const progress = Math.round(((i + 1) / pageRange.length) * 100);

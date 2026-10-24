@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('dialog:saveFileDirect', data, filePath),
   hashFile: (filePath: string) => ipcRenderer.invoke('fs:hashFile', filePath),
   snapshotOriginal: (filePath: string) => ipcRenderer.invoke('fs:snapshotOriginal', filePath),
+  releaseSnapshot: (filePath: string) => ipcRenderer.invoke('fs:releaseSnapshot', filePath),
   readAllowedFile: (filePath: string) => ipcRenderer.invoke('fs:readAllowedFile', filePath),
   writeProjectAsset: (payload: {
     projectPath: string;

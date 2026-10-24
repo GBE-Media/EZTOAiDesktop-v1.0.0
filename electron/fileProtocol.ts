@@ -44,6 +44,8 @@ export function assetDestPath(projectPath: string, sha256: string): string {
   return path.join(projectAssetsDir(projectPath), `${sha256}.pdf`);
 }
 
+export const MAX_RANGE_BYTES = 16 * 1024 * 1024;
+
 export type ByteRange = { start: number; end: number; size: number };
 
 export function parseByteRangeHeader(header: string | null | undefined, size: number): ByteRange | 'invalid' | null {
@@ -69,6 +71,51 @@ export function parseByteRangeHeader(header: string | null | undefined, size: nu
   }
   if (start < 0 || end < start || start >= size) return 'invalid';
   return { start, end: Math.min(end, size - 1), size };
+}
+
+export function hashBufferSha256(data: Buffer | Uint8Array): string {
+  return crypto.createHash('sha256').update(data).digest('hex');
+}
+
+export function pdfCacheDir(userDataPath: string): string {
+  return path.join(userDataPath, 'pdf-cache');
+}
+
+export function prunePdfCache(
+  cacheDir: string,
+  options?: { maxAgeMs?: number; maxBytes?: number; keep?: string[] },
+): { deleted: string[] } {
+  const maxAgeMs = options?.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000;
+  const maxBytes = options?.maxBytes ?? 5 * 1024 * 1024 * 1024;
+  const keep = new Set((options?.keep || []).map(p => normalizeFsPath(p)));
+  if (!fs.existsSync(cacheDir)) return { deleted: [] };
+  const now = Date.now();
+  const entries = fs.readdirSync(cacheDir)
+    .map(name => {
+      const full = path.join(cacheDir, name);
+      const stat = fs.statSync(full);
+      return { full, stat };
+    })
+    .filter(entry => entry.stat.isFile());
+  const deleted: string[] = [];
+  for (const entry of entries) {
+    if (keep.has(normalizeFsPath(entry.full))) continue;
+    if (now - entry.stat.mtimeMs > maxAgeMs) {
+      fs.unlinkSync(entry.full);
+      deleted.push(entry.full);
+    }
+  }
+  const remaining = entries.filter(entry => !deleted.includes(entry.full) && fs.existsSync(entry.full));
+  remaining.sort((a, b) => a.stat.mtimeMs - b.stat.mtimeMs);
+  let total = remaining.reduce((sum, entry) => sum + entry.stat.size, 0);
+  for (const entry of remaining) {
+    if (total <= maxBytes) break;
+    if (keep.has(normalizeFsPath(entry.full))) continue;
+    fs.unlinkSync(entry.full);
+    total -= entry.stat.size;
+    deleted.push(entry.full);
+  }
+  return { deleted };
 }
 
 export function hashFileSha256(filePath: string): Promise<string> {
@@ -122,13 +169,8 @@ export async function serveAllowedFile(requestUrl: string, rangeHeader: string |
   if (range === 'invalid') return rangeUnsatisfiable(size);
   if (range) {
     const length = range.end - range.start + 1;
-    const body = Buffer.alloc(length);
-    const handle = await fs.promises.open(filePath, 'r');
-    try {
-      await handle.read(body, 0, length, range.start);
-    } finally {
-      await handle.close();
-    }
+    if (length > MAX_RANGE_BYTES) return rangeUnsatisfiable(size);
+    const nodeStream = fs.createReadStream(filePath, { start: range.start, end: range.end });
     return {
       status: 206,
       headers: {
@@ -137,7 +179,7 @@ export async function serveAllowedFile(requestUrl: string, rangeHeader: string |
         'Content-Range': `bytes ${range.start}-${range.end}/${size}`,
         'Content-Length': String(length),
       },
-      body,
+      body: Readable.toWeb(nodeStream) as ReadableStream<Uint8Array>,
     };
   }
 

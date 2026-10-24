@@ -2,7 +2,24 @@ import { useCallback } from 'react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { exportPdfWithMarkups, downloadPdf } from '@/lib/pdfExport';
+import { retargetPdfDocument } from '@/lib/pdfLoader';
 import { toast } from 'sonner';
+
+export async function snapshotAndRetargetOpenDocument(
+  docId: string,
+  sourcePath: string,
+): Promise<'ok' | 'snapshot-failed' | 'not-retargetable'> {
+  if (!window.electronAPI?.snapshotOriginal) return 'snapshot-failed';
+  const snap = await window.electronAPI.snapshotOriginal(sourcePath);
+  if (!snap.success || !snap.path) return 'snapshot-failed';
+  const canvas = useCanvasStore.getState();
+  canvas.setPdfSource(docId, { source: 'file', path: snap.path });
+  const proxy = canvas.pdfDocuments[docId]?.pdfDocument;
+  if (proxy && !retargetPdfDocument(proxy, `bidvera-file://local/?p=${encodeURIComponent(snap.path)}`)) {
+    return 'not-retargetable';
+  }
+  return 'ok';
+}
 
 interface SaveResult {
   success: boolean;
@@ -43,6 +60,21 @@ export function useSave() {
     if (!doc) return false;
 
     toast.loading('Preparing to save...', { id: 'save-pdf' });
+
+    const canvas = useCanvasStore.getState();
+    const source = canvas.pdfDocuments[doc.id]?.pdfSource;
+    if (source?.source === 'file') {
+      const retargeted = await snapshotAndRetargetOpenDocument(doc.id, source.path);
+      if (retargeted !== 'ok') {
+        toast.error(
+          retargeted === 'not-retargetable'
+            ? 'Save aborted (document not retargetable)'
+            : 'Could not snapshot original; save aborted',
+          { id: 'save-pdf' },
+        );
+        return false;
+      }
+    }
 
     const arrayBuffer = await getExportedPdfBytes();
     if (!arrayBuffer) {
@@ -119,10 +151,16 @@ export function useSave() {
       try {
         const canvas = useCanvasStore.getState();
         const source = canvas.pdfDocuments[doc.id]?.pdfSource;
-        if (source?.source === 'file' && source.path === doc.path && window.electronAPI?.snapshotOriginal) {
-          const snap = await window.electronAPI.snapshotOriginal(source.path);
-          if (snap.success && snap.path) {
-            canvas.setPdfSource(doc.id, { source: 'file', path: snap.path });
+        if (source?.source === 'file') {
+          const retargeted = await snapshotAndRetargetOpenDocument(doc.id, source.path);
+          if (retargeted !== 'ok') {
+            toast.error(
+              retargeted === 'not-retargetable'
+                ? 'Save aborted (document not retargetable)'
+                : 'Could not snapshot original; save aborted',
+              { id: 'save-pdf' },
+            );
+            return false;
           }
         }
         console.log('[SAVE] Saving directly to:', doc.path);

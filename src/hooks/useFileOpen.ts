@@ -64,7 +64,9 @@ export function useFileOpen() {
 
   const processFileFromDisk = useCallback(async (filePath: string, fileName: string, url?: string) => {
     try {
-      const { document: pdfDoc, numPages } = await loadPDFFromUrl(url || bidveraFileUrl(filePath));
+      const { document: pdfDoc, numPages } = await loadPDFFromUrl(url || bidveraFileUrl(filePath), {
+        onReadError: () => toast.error('PDF file is no longer readable — reopen it'),
+      });
       await attachPdf(pdfDoc, numPages, fileName, filePath);
     } catch (error) {
       console.error('Failed to load PDF from disk:', error);

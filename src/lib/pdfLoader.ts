@@ -7,22 +7,43 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 const renderTasks = new WeakMap<HTMLCanvasElement, pdfjsLib.RenderTask>();
 const renderSeq = new WeakMap<HTMLCanvasElement, number>();
+const rangeTransports = new WeakMap<object, { url: string }>();
 
 export function cancelCanvasRender(canvas: HTMLCanvasElement): void {
   renderTasks.get(canvas)?.cancel();
   renderSeq.set(canvas, (renderSeq.get(canvas) ?? 0) + 1);
 }
 
+export function retargetPdfDocument(document: object, url: string): boolean {
+  const transport = rangeTransports.get(document);
+  if (!transport) return false;
+  transport.url = url;
+  return true;
+}
+
 export function createPdfRangeTransport(
   url: string,
   size: number,
+  onFatal: (error: Error) => void = () => {},
 ): pdfjsLib.PDFDataRangeTransport {
   class FileRangeTransport extends pdfjsLib.PDFDataRangeTransport {
+    url = url;
     requestDataRange(begin: number, end: number) {
-      fetch(url, { headers: { Range: `bytes=${begin}-${end - 1}` } })
-        .then(r => r.arrayBuffer())
-        .then(b => this.onDataRange(begin, new Uint8Array(b)))
-        .catch(() => this.onDataRange(begin, new Uint8Array(0)));
+      const attempt = async (tries: number): Promise<void> => {
+        try {
+          const response = await fetch(this.url, { headers: { Range: `bytes=${begin}-${end - 1}` } });
+          if (response.status !== 206) throw new Error(`Range ${begin}-${end - 1} failed (${response.status})`);
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          if (bytes.byteLength !== end - begin) {
+            throw new Error(`Short range read ${bytes.byteLength}/${end - begin}`);
+          }
+          this.onDataRange(begin, bytes);
+        } catch (error) {
+          if (tries > 0) return attempt(tries - 1);
+          onFatal(error as Error);
+        }
+      };
+      void attempt(1);
     }
   }
   return new FileRangeTransport(size, new Uint8Array(0));
@@ -66,20 +87,30 @@ export async function loadPDF(
 
 export async function loadPDFFromUrl(
   url: string,
-  options?: { rangeChunkSize?: number },
+  options?: { rangeChunkSize?: number; onReadError?: (error: Error) => void },
 ): Promise<LoadedPDF> {
   const head = await fetch(url, { headers: { Range: 'bytes=0-0' } });
   if (head.status !== 206) throw new Error(`PDF open failed (${head.status})`);
   const contentRange = head.headers.get('Content-Range');
   const size = Number(contentRange?.split('/')[1]);
   if (!Number.isFinite(size) || size <= 0) throw new Error('PDF open failed (missing size)');
+  let fatal: ((error: Error) => void) | null = null;
+  const transport = createPdfRangeTransport(url, size, (error) => fatal?.(error));
   const loadingTask = pdfjsLib.getDocument({
-    range: createPdfRangeTransport(url, size),
+    range: transport,
     rangeChunkSize: options?.rangeChunkSize ?? (1 << 20),
     disableAutoFetch: true,
     disableStream: true,
   });
-  const document = await loadingTask.promise;
+  const failed = new Promise<never>((_, reject) => {
+    fatal = (error) => {
+      reject(error);
+      void loadingTask.destroy();
+    };
+  });
+  const document = await Promise.race([loadingTask.promise, failed]);
+  fatal = (error) => options?.onReadError?.(error);
+  rangeTransports.set(document, transport as unknown as { url: string });
   return {
     document,
     numPages: document.numPages,

@@ -129,7 +129,9 @@ export function useProjectOpen() {
             }
             const url = `bidvera-file://local/?p=${encodeURIComponent(assetPath)}`;
             console.log('[PROJECT-OPEN] Loading PDF from fileRef...');
-            const loaded = await loadPDFFromUrl(url);
+            const loaded = await loadPDFFromUrl(url, {
+              onReadError: () => toast.error('PDF file is no longer readable — reopen it'),
+            });
             pdfDoc = loaded.document;
             numPages = loaded.numPages;
             pdfSource = { source: 'file', path: assetPath };
