@@ -1,5 +1,6 @@
 import { useCanvasStore } from '@/store/canvasStore';
 import type { ApprovalRequest } from '@/types/assistant';
+import type { CanvasMarkup } from '@/types/markup';
 import { resolveDocumentRef } from '../documentRef';
 
 export type ApprovalTarget = {
@@ -32,4 +33,18 @@ export function resolveApprovalTarget(
     pageWidth: pdf?.originalPageWidth || fallback.pageWidth,
     pageHeight: pdf?.originalPageHeight || fallback.pageHeight,
   };
+}
+
+/** Markups of a suggest_runs approval (already in document coordinates), with fresh ids. */
+export function suggestedRunMarkups(
+  approval: ApprovalRequest,
+): { docId: string; markups: Array<{ page: number; markup: CanvasMarkup }> } | { error: string } {
+  const payload = approval.payload && typeof approval.payload === 'object'
+    ? approval.payload as { documentId?: string; markups?: Array<{ page: number; markup: CanvasMarkup }> }
+    : {};
+  const resolved = resolveDocumentRef(payload.documentId);
+  if ('error' in resolved) return { error: resolved.error };
+  const markups = (payload.markups || []).filter(row => row && row.markup && Number.isFinite(row.page));
+  if (!markups.length) return { error: 'No runs to place.' };
+  return { docId: resolved.docId, markups };
 }

@@ -726,21 +726,6 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
       });
     },
 
-    getRunSuggestions: async (input: unknown) => {
-      const layoutType = (input as { layoutType?: string })?.layoutType || 'homerun';
-      const { docId, page, pdf } = getDocMeta();
-      const markups: CanvasMarkup[] = docId
-        ? (useCanvasStore.getState().getMarkupsByPage(docId)[page || 1] || [])
-        : [];
-      const items = markupsToDetectedItems(markups, options.trade);
-      return suggestLayoutsFromItems(items, {
-        trade: options.trade,
-        layoutType: layoutType as 'conduit' | 'homerun' | 'duct' | 'pipe' | 'vent',
-        pageWidth: pdf?.originalPageWidth || 1000,
-        pageHeight: pdf?.originalPageHeight || 1000,
-      });
-    },
-
     navigateToPage: (page, bounds, documentId) => {
       if (options.navigateToPage) {
         options.navigateToPage(page, bounds, documentId);

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { HelpCircle } from 'lucide-react';
+import { HelpCircle, LocateFixed } from 'lucide-react';
+import { openAssistantFocus } from '@/lib/openCitation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
@@ -93,6 +94,16 @@ export function QuestionCard({ clarificationId }: { clarificationId: string }) {
           {clarification.description && (
             <div className="mt-0.5 text-[11px] text-muted-foreground">{clarification.description}</div>
           )}
+          {clarification.focus && (
+            <button
+              type="button"
+              onClick={() => clarification.focus && openAssistantFocus(clarification.focus)}
+              className="mt-1.5 inline-flex items-center gap-1 rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+            >
+              <LocateFixed className="h-3 w-3" />
+              {clarification.focus.label ? `Show ${clarification.focus.label}` : 'Show on drawing'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -107,7 +118,11 @@ export function QuestionCard({ clarificationId }: { clarificationId: string }) {
                     key={option.id}
                     type="button"
                     disabled={submitting}
-                    onClick={() => toggleOption(option.value)}
+                    onClick={() => {
+                      toggleOption(option.value);
+                      if (option.focus) openAssistantFocus(option.focus);
+                    }}
+                    title={option.focus ? 'Selecting this also shows it on the drawing' : undefined}
                     className={cn(
                       'rounded-md border px-2.5 py-1 text-[11px] transition-colors',
                       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
@@ -116,6 +131,7 @@ export function QuestionCard({ clarificationId }: { clarificationId: string }) {
                         : 'border-border bg-background text-muted-foreground hover:border-foreground/25 hover:text-foreground',
                     )}
                   >
+                    {option.focus && <LocateFixed className="mr-1 inline h-3 w-3 align-[-2px]" />}
                     {option.label}
                   </button>
                 );

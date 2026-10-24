@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
+import { workspaceConversationContextId, workspaceConversationTitle } from '@/lib/workspaceConversation';
 import { Sparkles, AlertCircle, Loader2, FolderPlus, PackagePlus, Boxes } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -178,10 +179,12 @@ export function AgentAssistantDrawer() {
     registerAllAgentTools();
   }, []);
 
+  // One conversation for the whole workspace/project — switching documents keeps the same chat.
+  const workspaceContextId = workspaceConversationContextId(documents, user?.id);
+  const workspaceTitle = workspaceConversationTitle(documents);
   useEffect(() => {
-    const contextId = activeDocId || (user?.id ? `user:${user.id}:general` : 'local:general');
-    void setConversationContext(contextId, activeDocumentRecord?.name || 'General assistant');
-  }, [activeDocId, activeDocumentRecord?.name, setConversationContext, user?.id]);
+    void setConversationContext(workspaceContextId, workspaceTitle);
+  }, [workspaceContextId, workspaceTitle, setConversationContext]);
   
   // Initialize settings on mount
   useEffect(() => {
@@ -503,7 +506,8 @@ export function AgentAssistantDrawer() {
         .slice(-10)
         .map(m => ({
           role: m.role as 'user' | 'assistant',
-          content: m.content,
+          // Older turns are context only; cap them so one long answer doesn't bloat every request.
+          content: m.content.length > 1500 ? `${m.content.slice(0, 1500)}…` : m.content,
         }));
       
       const shouldRunPipeline = options?.forcePipeline === true;

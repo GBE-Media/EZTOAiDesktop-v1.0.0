@@ -234,6 +234,19 @@ export const useAIChatStore = create<AIChatState>((set, get) => ({
     }
 
     const now = new Date().toISOString();
+    // First save of an unsaved workspace as a project: carry the open chat over instead of
+    // starting an empty thread.
+    const previous = get();
+    if (
+      contextId.startsWith('project:')
+      && previous.conversation
+      && previous.messages.length > 0
+      && /(^local:workspace$|:workspace$)/.test(previous.conversationContextId || '')
+    ) {
+      const carried: AssistantConversation = { ...previous.conversation, contextId, title, updatedAt: now };
+      set({ conversation: carried, conversationList: [carried], conversationContextId: contextId, conversationHydrated: true });
+      return;
+    }
     const conversation: AssistantConversation = {
       id: `conversation_${contextId}_${Date.now()}`,
       contextId,

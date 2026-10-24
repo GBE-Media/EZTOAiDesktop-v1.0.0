@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react';
 import type { AssistantMessageBlock } from '@/types/assistant';
 import { ApprovalCard } from './ApprovalCard';
 import { EvidenceCard } from './EvidenceCard';
+import { DiscrepancyCard } from './DiscrepancyCard';
 import { QuestionCard } from './QuestionCard';
 import { ResultSummaryCard } from './ResultSummaryCard';
 import { FollowUpCard } from './FollowUpCard';
@@ -47,6 +48,8 @@ export const AssistantMessageBlocks = memo(function AssistantMessageBlocks({
               );
             case 'question':
               return <QuestionCard key={block.id} clarificationId={block.clarificationId} />;
+            case 'discrepancies':
+              return <DiscrepancyCard key={block.id} discrepancies={block.discrepancies} />;
             case 'result':
               return <ResultSummaryCard key={block.id} result={block.result} />;
             case 'follow-up':

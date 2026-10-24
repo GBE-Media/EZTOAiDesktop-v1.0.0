@@ -41,7 +41,6 @@ export interface AssistantToolContext {
   getMaterialCounts?: () => unknown;
   getConversationContext?: () => unknown;
   getLayoutSuggestions?: (input: unknown) => Promise<unknown> | unknown;
-  getRunSuggestions?: (input: unknown) => Promise<unknown> | unknown;
   applyMaterialCountAdjustments?: (payload: unknown) => Promise<unknown> | unknown;
   saveProjectDraft?: () => Promise<{ saved: boolean; path?: string | null; reason?: string }>;
   confirmProjectSaved?: () => unknown;
