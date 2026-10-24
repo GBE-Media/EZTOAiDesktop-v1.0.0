@@ -1,11 +1,12 @@
 import { csiFromText, disciplineFromSheetPrefix, SHEET_NUMBER_RE } from './csi';
 import type { IndexedLine, IndexPageKind } from './types';
 
-export const CLASSIFIER_VERSION = '2';
+export const CLASSIFIER_VERSION = '3';
 
-const TITLE_SKIP = /^(SHEET( NO\.?| NUMBER| TITLE)?|DATE|SCALE|PROJECT|DRAWN|CHECKED|REV|JOB|DRAWING)\b/i;
-const SECTION_START = /^SECTION\s+\d{2}\s?\d{2}\s?\d{2}/i;
-const FOOTER_CSI = /^\s*(\d{2}\s?\d{2}\s?\d{2}(?:\.\d{2})?)\s*[-–]\s*\d+/;
+const TITLE_SKIP = /^(SHEET( NO\.?| NUMBER| TITLE)?|DATE|SCALE|PROJECT|DRAWN|CHECKED|REV|JOB|DRAWING|DWG(\s+NO\.?)?)\b/i;
+const SECTION_START = /^SECTION\s+(\d{2}\s?\d{2}\s?\d{2}(?:\.\d{2})?)\b|\bSECTION\s+(\d{2}\s?\d{2}\s?\d{2}(?:\.\d{2})?)\s*$/i;
+const FOOTER_CSI = /(\d{2}\s?\d{2}\s?\d{2}(?:\.\d{2})?)\s*[-–]\s*\d+\s*$/;
+const MID_SECTION = /^SECTION\s+(\d{6}|\d{2}\s\d{2}\s\d{2})\b/i;
 
 function fontHeight(line: IndexedLine): number {
   return line.fontHeight || line.bbox.height || 0;
@@ -65,12 +66,15 @@ export function classifyPage(lines: IndexedLine[], pageWidth: number, pageHeight
       .sort((a, b) => fontHeight(b) - fontHeight(a) || b.bbox.y - a.bbox.y);
     if (above[0]) {
       const first = above[0];
-      const second = above.find(line =>
-        line !== first
-        && Math.abs(line.bbox.y - first.bbox.y) < Math.max(18, fontHeight(first) * 1.4)
-        && !TITLE_SKIP.test(line.text.trim()),
-      );
-      sheetTitle = [first.text.trim(), second?.text.trim()].filter(Boolean).join(' ').trim();
+      const fh = fontHeight(first);
+      const same = above
+        .filter(line => Math.abs(fontHeight(line) - fh) < 1)
+        .sort((a, b) => a.bbox.y - b.bbox.y);
+      const idx = Math.max(0, same.indexOf(first));
+      let lo = idx; let hi = idx;
+      while (lo > 0 && same[lo].bbox.y - same[lo - 1].bbox.y < fh * 1.8) lo--;
+      while (hi < same.length - 1 && same[hi + 1].bbox.y - same[hi].bbox.y < fh * 1.8) hi++;
+      sheetTitle = same.slice(lo, hi + 1).slice(0, 3).map(l => l.text.trim()).join(' ').trim();
     }
     if (!sheetTitle) {
       const nearby = titleBlock
@@ -100,8 +104,9 @@ export function classifyPage(lines: IndexedLine[], pageWidth: number, pageHeight
   let sectionTitle: string | undefined;
   for (const line of headerFooter) {
     const text = line.text.trim();
-    if (SECTION_START.test(text)) {
-      specSection = csiFromText(text) || undefined;
+    const sm = text.match(SECTION_START);
+    if (sm) {
+      specSection = csiFromText(sm[1] || sm[2] || text) || undefined;
       sectionTitle = text;
       break;
     }
@@ -115,7 +120,7 @@ export function classifyPage(lines: IndexedLine[], pageWidth: number, pageHeight
   const distinctCsi = new Set(
     lines.map(l => csiFromText(l.text)).filter((v): v is string => !!v),
   );
-  if (distinctCsi.size >= 3) {
+  if (distinctCsi.size >= 3 && !specSection) {
     return { kind: 'other' };
   }
 
@@ -135,6 +140,19 @@ export function classifyPage(lines: IndexedLine[], pageWidth: number, pageHeight
   }
 
   return { kind: 'other', articles };
+}
+
+export function splitMidPageSection(lines: IndexedLine[]): { tail: IndexedLine[]; section: string } | null {
+  const endIdx = lines.findIndex(line => /END OF SECTION/i.test(line.text));
+  if (endIdx < 0) return null;
+  for (let i = endIdx + 1; i < lines.length; i++) {
+    const match = lines[i].text.trim().match(MID_SECTION);
+    if (!match) continue;
+    const section = csiFromText(match[1] || match[0]);
+    if (!section) continue;
+    return { tail: lines.slice(i), section };
+  }
+  return null;
 }
 
 /** A CSI section runs from its first page until the next section start or END OF SECTION. */

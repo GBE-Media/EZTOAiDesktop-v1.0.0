@@ -30,4 +30,7 @@ export default defineConfig(({ mode }) => ({
       target: "esnext",
     },
   },
+  test: {
+    fileParallelism: false,
+  },
 }));

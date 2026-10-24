@@ -3,7 +3,7 @@ import { classifyPage, fillSpecSectionRanges } from './classify';
 import { indexPdfDocument } from './indexPages';
 import { readSpecSection } from './readSpec';
 import { searchIndexedPages } from './searchIndex';
-import { clearIndexMemory, saveIndexedPages, loadCachedPages } from './store';
+import { clearIndexMemory, documentFingerprint, saveIndexedPages, loadCachedPages } from './store';
 import type { IndexedLine, IndexedPageRecord } from './types';
 import { formatToolResultForPrompt } from '../agent/safety';
 import { executeAssistantTool } from '../tools/registry';
@@ -182,7 +182,7 @@ describe('project index classification + search', () => {
     });
     expect(extractPage).not.toHaveBeenCalled();
     expect(second).toHaveLength(first.length);
-    const cached = await loadCachedPages('abc:3:v2');
+    const cached = await loadCachedPages(documentFingerprint(pdfDoc));
     expect(cached.length).toBe(3);
   });
 

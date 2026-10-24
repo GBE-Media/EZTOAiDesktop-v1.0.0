@@ -16,6 +16,7 @@ import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { cn } from '@/lib/utils';
 import type { PipelineStage } from '@/services/ai/providers/types';
 import { allIndexedPages, indexStatus } from '@/services/ai/projectIndex/store';
+import { useIndexProgressStore } from '@/services/ai/projectIndex/indexProgress';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useEditorStore } from '@/store/editorStore';
 
@@ -56,11 +57,14 @@ export function AssistantHeader(props: {
   const pipelineStatus = useAIChatStore(state => state.pipelineStatus);
   useCanvasStore(state => state.pdfDocuments);
   useEditorStore(state => state.documents);
+  const progressByDoc = useIndexProgressStore(state => state.byDoc);
   const indexed = allIndexedPages();
   const status = indexStatus();
+  const progressCount = Object.values(progressByDoc).reduce((sum, row) => sum + row.indexed, 0);
+  const indexedCount = Math.max(indexed.length, progressCount);
   const totalPages = Object.values(useCanvasStore.getState().pdfDocuments)
     .reduce((sum, doc) => sum + (doc?.totalPages || 0), 0);
-  const indexedLabel = `Indexed ${indexed.length.toLocaleString()} / ${Math.max(totalPages, indexed.length).toLocaleString()} pages · ${status.needsOcr} scanned`;
+  const indexedLabel = `Indexed ${indexedCount.toLocaleString()} / ${Math.max(totalPages, indexedCount).toLocaleString()} pages · ${status.needsOcr} scanned`;
   const activeStage =
     pipelineStatus.isRunning && pipelineStatus.currentStage &&
     pipelineStatus.currentStage !== 'complete' &&

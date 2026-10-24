@@ -87,7 +87,7 @@ export function createProjectIndexTools(): AssistantToolDefinition[] {
       }),
       execute: async (_context, input) => {
         const hits = searchIndexedPages(allIndexedPages(), input);
-        const citations = hits.map(hitCitation);
+        const citations = hits.map(hitCitation).slice(0, 8);
         return {
           status: 'completed',
           summary: `Found ${hits.length} passage(s) for “${input.query}”.`,
@@ -220,7 +220,7 @@ export function createProjectIndexTools(): AssistantToolDefinition[] {
       execute: async (context, input) => {
         const unknown = unknownDocumentResult(input.documentId);
         if (unknown) return unknown;
-        const maxChars = Math.min(input.maxChars ?? 8000, 12000);
+        const maxChars = Math.min(input.maxChars ?? 6000, 6000);
         const pages = [];
         for (const page of input.pages) {
           const extracted = await context.extractPageText({ page, documentId: input.documentId }) as {

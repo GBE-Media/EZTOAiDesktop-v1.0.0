@@ -18,10 +18,15 @@ class ProjectIndexDb extends Dexie {
 export const projectIndexDb = new ProjectIndexDb();
 const memoryByDocId = new Map<string, IndexedPageRecord[]>();
 const memoryByFp = new Map<string, IndexedPageRecord[]>();
+const droppedDocIds = new Set<string>();
 let dexieWarnLogged = false;
 
 export function documentFingerprint(pdf: { fingerprints?: string[]; numPages?: number } | null | undefined): string {
   return `${fingerprintOf(pdf)}:v${CLASSIFIER_VERSION}`;
+}
+
+export function markDocumentIndexing(docId: string): void {
+  droppedDocIds.delete(docId);
 }
 
 function slimPage(page: IndexedPageRecord): IndexedPageRecord {
@@ -65,17 +70,24 @@ export function rebindCachedPages(
   pages: IndexedPageRecord[],
 ): IndexedPageRecord[] {
   const rebound = pages.map(page => ({ ...page, docId, documentName, docFp }));
-  memoryByFp.set(docFp, rebound);
-  memoryByDocId.set(docId, rebound.map(slimPage));
+  const slim = rebound.map(slimPage);
+  memoryByFp.set(docFp, slim);
+  memoryByDocId.set(docId, slim);
   return rebound;
 }
 
-export async function saveIndexedPages(docFp: string, pages: IndexedPageRecord[], docId?: string): Promise<void> {
-  memoryByFp.set(docFp, pages);
-  if (docId) memoryByDocId.set(docId, pages.map(slimPage));
-  else if (pages[0]?.docId) memoryByDocId.set(pages[0].docId, pages.map(slimPage));
+export async function saveIndexedPages(
+  docFp: string,
+  pages: IndexedPageRecord[],
+  docId?: string,
+  rowsToWrite: IndexedPageRecord[] = pages,
+): Promise<void> {
+  const slim = pages.map(slimPage);
+  memoryByFp.set(docFp, slim);
+  const id = docId || pages[0]?.docId;
+  if (id && !droppedDocIds.has(id)) memoryByDocId.set(id, slim);
   try {
-    await projectIndexDb.pages.bulkPut(pages);
+    if (rowsToWrite.length && !dexieWarnLogged) await projectIndexDb.pages.bulkPut(rowsToWrite);
   } catch (error) {
     if (!dexieWarnLogged) {
       dexieWarnLogged = true;
@@ -85,6 +97,7 @@ export async function saveIndexedPages(docFp: string, pages: IndexedPageRecord[]
 }
 
 export function dropIndexedDocument(docId: string): void {
+  droppedDocIds.add(docId);
   memoryByDocId.delete(docId);
 }
 
@@ -104,4 +117,6 @@ export function indexStatus(): { indexed: number; totalHint: number; needsOcr: n
 export function clearIndexMemory(): void {
   memoryByDocId.clear();
   memoryByFp.clear();
+  droppedDocIds.clear();
+  dexieWarnLogged = false;
 }

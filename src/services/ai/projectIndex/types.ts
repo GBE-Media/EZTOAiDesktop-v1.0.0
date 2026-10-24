@@ -10,6 +10,7 @@ export type SearchPassage = {
   text: string;
   lower: string;
   bounds?: { x: number; y: number; width: number; height: number };
+  tokens?: string[];
 };
 
 export type IndexedPageRecord = {

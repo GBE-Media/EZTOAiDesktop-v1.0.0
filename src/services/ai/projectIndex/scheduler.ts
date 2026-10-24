@@ -44,8 +44,9 @@ async function tick(): Promise<void> {
     return;
   }
   const editor = useEditorStore.getState();
-  const queued = [...openIds].filter(id => !inflight.has(id) && !done.has(id)).slice(0, 2);
-  await Promise.all(queued.map(id => indexOne(id, editor.documents.find(d => d.id === id)?.name || id)));
+  const slots = Math.max(0, 2 - inflight.size);
+  const queued = [...openIds].filter(id => !inflight.has(id) && !done.has(id)).slice(0, slots);
+  for (const id of queued) void indexOne(id, editor.documents.find(d => d.id === id)?.name || id);
   setTimeout(() => void tick(), 250);
 }
 

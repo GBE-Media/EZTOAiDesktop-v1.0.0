@@ -1,6 +1,6 @@
 import { groupTextIntoLines } from '@/lib/pdfLoader';
-import { CLASSIFIER_VERSION, classifyPage, fillSpecSectionRanges } from './classify';
-import { documentFingerprint, loadCachedPages, rebindCachedPages, saveIndexedPages } from './store';
+import { CLASSIFIER_VERSION, classifyPage, fillSpecSectionRanges, splitMidPageSection } from './classify';
+import { documentFingerprint, dropIndexedDocument, loadCachedPages, markDocumentIndexing, rebindCachedPages, saveIndexedPages } from './store';
 import { useIndexProgressStore } from './indexProgress';
 import type { IndexedLine, IndexedPageRecord } from './types';
 import { buildSearchPassages } from './searchIndex';
@@ -22,6 +22,7 @@ export async function indexPdfDocument(options: {
   extractPage?: (page: number) => Promise<{ lines: IndexedLine[]; width: number; height: number; needsOcr: boolean }>;
 }): Promise<IndexedPageRecord[]> {
   const docFp = documentFingerprint(options.pdfDoc);
+  markDocumentIndexing(options.docId);
   const cached = await loadCachedPages(docFp);
   if (cached.length >= options.pdfDoc.numPages) {
     return rebindCachedPages(docFp, options.docId, options.documentName, cached);
@@ -36,15 +37,16 @@ export async function indexPdfDocument(options: {
 
   const pages: IndexedPageRecord[] = [...cached];
   const have = new Set(cached.map(p => p.page));
-  for (let page = 1; page <= options.pdfDoc.numPages; page++) {
-    if (options.signal?.aborted) break;
+  let flushed = pages.length;
+  pageLoop: for (let page = 1; page <= options.pdfDoc.numPages; page++) {
+    if (options.signal?.aborted) break pageLoop;
     while (options.isBusy?.()) {
       await new Promise(resolve => setTimeout(resolve, 250));
-      if (options.signal?.aborted) break;
+      if (options.signal?.aborted) break pageLoop;
     }
     if (have.has(page)) continue;
     if (options.yieldEveryPage) {
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await Promise.resolve();
     }
     let lines: IndexedLine[] = [];
     let width = 612;
@@ -97,7 +99,13 @@ export async function indexPdfDocument(options: {
       }));
       needsOcr = lines.every(l => !l.text.trim());
     }
+    const split = splitMidPageSection(lines);
+    if (split) lines = split.tail;
     const classified = classifyPage(lines, width, height);
+    if (split) {
+      classified.kind = 'spec';
+      classified.specSection = split.section;
+    }
     pages.push({
       docId: options.docId,
       docFp,
@@ -118,10 +126,20 @@ export async function indexPdfDocument(options: {
     });
     have.add(page);
     if (page % 25 === 0 || page === options.pdfDoc.numPages) {
+      if (options.signal?.aborted) break pageLoop;
       const ranged = fillSpecSectionRanges([...pages]);
-      await saveIndexedPages(docFp, ranged, options.docId);
+      await saveIndexedPages(docFp, ranged, options.docId, pages.slice(flushed));
+      if (options.signal?.aborted) {
+        dropIndexedDocument(options.docId);
+        break pageLoop;
+      }
+      flushed = pages.length;
       useIndexProgressStore.getState().setProgress(options.docId, page, options.pdfDoc.numPages);
     }
+  }
+  if (options.signal?.aborted) {
+    dropIndexedDocument(options.docId);
+    return [];
   }
   const ranged = fillSpecSectionRanges(pages);
   await saveIndexedPages(docFp, ranged, options.docId);

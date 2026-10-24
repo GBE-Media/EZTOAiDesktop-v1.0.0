@@ -1,29 +1,72 @@
 import { normalizeCsiSection } from './csi';
 import type { IndexedLine, IndexedPageRecord, SearchHit, SearchPassage } from './types';
 
+const TOKEN_SPLIT = /[^a-z0-9.]+/;
+const pageTokenCache = new WeakMap<object, Set<string>>();
+
+function tokenizeLower(lower: string): string[] {
+  const tokens = lower.split(TOKEN_SPLIT).filter(tok => tok.length > 1);
+  for (const code of lower.match(/[a-z]{1,4}[-.]?\d[\w.-]*/g) || []) tokens.push(code);
+  for (const dotted of lower.match(/\b\d+(?:\.\d+)+\b/g) || []) tokens.push(dotted);
+  return tokens;
+}
+
 export function buildSearchPassages(lines: IndexedLine[]): SearchPassage[] {
   const passages: SearchPassage[] = [];
   for (let i = 0; i < lines.length; i += 4) {
     const group = lines.slice(i, i + 5);
     const text = group.map(l => l.text).join(' ').trim();
     if (!text) continue;
+    const lower = text.toLowerCase();
     passages.push({
       text: text.slice(0, 300),
-      lower: text.toLowerCase(),
+      lower,
       bounds: group[0]?.bbox,
+      tokens: tokenizeLower(lower),
     });
   }
   return passages;
 }
 
+function pageTokenSet(page: IndexedPageRecord): Set<string> {
+  const cached = pageTokenCache.get(page);
+  if (cached) return cached;
+  const tokens = new Set<string>();
+  if (page.passages?.length) {
+    for (const passage of page.passages) {
+      if (passage.tokens?.length) {
+        for (const token of passage.tokens) tokens.add(token);
+      } else {
+        for (const token of tokenizeLower(passage.lower)) tokens.add(token);
+      }
+    }
+  } else {
+    for (const token of tokenizeLower((page.text || (page.lines || []).map(l => l.text).join(' ')).toLowerCase())) {
+      tokens.add(token);
+    }
+  }
+  pageTokenCache.set(page, tokens);
+  return tokens;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function codeBoundaryTest(hay: string, code: string): boolean {
+  return new RegExp(`(?<![a-z0-9])${escapeRegExp(code)}(?![a-z0-9])`, 'i').test(hay);
+}
+
 function queryParts(query: string): { tokens: string[]; codes: string[]; phrase?: string; csi?: string } {
   const phrase = query.match(/"([^"]+)"/)?.[1]?.toLowerCase();
-  const codes = (query.match(/[A-Za-z]{1,4}[-.]?\d[\w.-]*/g) || []).map(c => c.toLowerCase());
+  const letterCodes = (query.match(/[A-Za-z]{1,4}[-.]?\d[\w.-]*/g) || []).map(c => c.toLowerCase());
+  const dotted = (query.match(/\b\d+(?:\.\d+)+\b/g) || []).map(c => c.toLowerCase());
+  const codes = [...letterCodes, ...dotted];
   const csi = normalizeCsiSection(query);
   const tokens = query
     .toLowerCase()
     .replace(/[“”"']/g, ' ')
-    .split(/[^a-z0-9]+/)
+    .split(/[^a-z0-9.]+/)
     .filter(tok => tok.length > 1);
   if (csi && /\d/.test(csi)) {
     tokens.push(...csi.toLowerCase().split(/\s+/).filter(t => t.length > 1));
@@ -86,24 +129,19 @@ export function searchIndexedPages(
     }
 
     if (page.passages?.length) {
+      const has = (needle: string) => page.passages!.some(p => p.tokens
+        ? p.tokens.includes(needle)
+        : p.lower.includes(needle));
       let score = 0;
-      let snippet = page.passages[0].text.slice(0, 300);
-      let bounds = page.passages[0].bounds;
-      let best = 0;
-      for (const passage of page.passages) {
-        let local = 0;
-        for (const token of parts.tokens) if (passage.lower.includes(token)) local += 1;
-        for (const code of parts.codes) if (passage.lower.includes(code)) local += 10;
-        if (parts.phrase && passage.lower.includes(parts.phrase)) local += 12;
-        if (local > best) {
-          best = local;
-          snippet = passage.text.slice(0, 300);
-          bounds = passage.bounds;
-        }
-        score += local;
-      }
+      for (const token of parts.tokens) if (has(token)) score += 1;
+      for (const code of parts.codes) if (has(code)) score += 10;
+      if (parts.phrase && (page.text || '').toLowerCase().includes(parts.phrase)) score += 12;
       if (page.sheetNumber && options.query.toUpperCase().includes(page.sheetNumber)) score += 8;
       if (score <= 0) continue;
+      const snippetPass = page.passages.find(passage =>
+        parts.codes.some(code => passage.tokens?.includes(code) || passage.lower.includes(code))
+        || parts.tokens.some(token => passage.tokens?.includes(token) || passage.lower.includes(token)),
+      ) || page.passages[0];
       scored.push({
         documentId: page.docId,
         documentName: page.documentName,
@@ -111,8 +149,8 @@ export function searchIndexedPages(
         pageLabel: page.label,
         sheetNumber: page.sheetNumber,
         specSection: page.specSection,
-        snippet,
-        bounds,
+        snippet: snippetPass.text.slice(0, 300),
+        bounds: snippetPass.bounds,
         score,
       });
       continue;
@@ -124,7 +162,7 @@ export function searchIndexedPages(
       let snippetLine: IndexedLine | undefined;
       for (const line of page.lines || []) {
         const lower = line.text.toLowerCase();
-        if (needles.some(code => lower.includes(code))) {
+        if (needles.some(code => codeBoundaryTest(lower, code))) {
           snippetLine = line;
           break;
         }
@@ -146,7 +184,7 @@ export function searchIndexedPages(
       if (compiled.tokens.has(token) || compiled.hay.includes(token)) score += 1;
     }
     for (const code of parts.codes) {
-      if (compiled.hay.includes(code) || compiled.tokens.has(code)) score += 10;
+      if (codeBoundaryTest(compiled.hay, code) || compiled.tokens.has(code)) score += 10;
     }
     if (parts.phrase && compiled.hay.includes(parts.phrase)) score += 12;
     if (page.sheetNumber && options.query.toUpperCase().includes(page.sheetNumber)) score += 8;
