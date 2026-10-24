@@ -64,6 +64,31 @@ export function uniqueDroppedLines(
   return lines;
 }
 
+export function approvalStatPills(approval: ApprovalRequest): string[] {
+  const pills: string[] = [];
+  const preview = approval.preview;
+  if (preview && typeof preview === 'object' && !Array.isArray(preview)) {
+    const record = preview as Record<string, unknown>;
+    if (typeof record.count === 'number') {
+      pills.push(`${record.count} marker${record.count === 1 ? '' : 's'}`);
+    }
+  }
+  if (Array.isArray(approval.payload)) {
+    const codes = new Map<string, number>();
+    for (const row of approval.payload) {
+      if (!row || typeof row !== 'object') continue;
+      const code = (row as Record<string, unknown>).code;
+      if (typeof code === 'string' && code.trim()) {
+        codes.set(code, (codes.get(code) || 0) + 1);
+      }
+    }
+    for (const [code, count] of codes) {
+      pills.push(`${code} ${count}`);
+    }
+  }
+  return pills;
+}
+
 export function formatExecutionSummary(result: NonNullable<ApprovalRequest['executionResult']>): string {
   const parts = [
     `placed ${result.placed ?? 0}`,
@@ -93,24 +118,34 @@ export function ApprovalCardView({
   const busy = !!approval.executing || approval.status !== 'pending';
   const droppedLines = uniqueDroppedLines(approval.executionResult?.dropped);
   const collapseDrops = droppedLines.length > 6;
+  const pills = approvalStatPills(approval);
 
   return (
-    <div className="my-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+    <div className="my-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-3 shadow-sm">
       <div className="flex items-start gap-2">
         <ShieldCheck className="mt-0.5 h-4 w-4 text-emerald-500" />
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium">{approval.title}</div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">{approval.description}</div>
+          <div className="text-sm font-medium">{approval.title}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">{approval.description}</div>
+          {pills.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {pills.map(pill => (
+                <span key={pill} className="rounded-full border border-border bg-background/70 px-2 py-0.5 text-[11px] text-muted-foreground">
+                  {pill}
+                </span>
+              ))}
+            </div>
+          )}
           {previewText && (
-            <div
+            <details
               data-testid="approval-preview"
               className="mt-2 rounded-md border border-emerald-500/20 bg-background/60 px-2 py-1.5 text-[11px] text-foreground/90"
             >
-              <div className="mb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+              <summary className="cursor-pointer text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                 Preview
-              </div>
-              <div className="whitespace-pre-wrap break-words">{previewText}</div>
-            </div>
+              </summary>
+              <div className="mt-1 whitespace-pre-wrap break-words">{previewText}</div>
+            </details>
           )}
           {approval.undoable && <Badge variant="outline" className="mt-2 text-[10px]">Undoable</Badge>}
         </div>

@@ -21,7 +21,11 @@ export interface AssistantToolContext {
   /** Structured catalog search returning real product IDs (Products panel store). */
   searchCatalog: (input: unknown) => unknown;
   inspectMarkups: () => unknown;
-  navigateToPage: (page: number, bounds?: { x: number; y: number; width: number; height: number }) => void;
+  navigateToPage: (
+    page: number,
+    bounds?: { x: number; y: number; width: number; height: number },
+    documentId?: string,
+  ) => void;
   /** Activate a canvas ToolType. Returns activation result when using the real adapter. */
   activateEditorTool: (tool: string) => unknown;
   placeMarkups: (payload: unknown) => Promise<unknown> | unknown;
@@ -52,6 +56,7 @@ export interface AssistantToolResult {
   /** Present when status is stub — never invent data from this. */
   stubReason?: string;
   suggestedUserMessage?: string;
+  citations?: import('@/types/assistant').EvidenceCitation[];
 }
 
 export interface AssistantToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

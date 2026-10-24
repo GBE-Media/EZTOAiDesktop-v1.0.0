@@ -338,4 +338,73 @@ describe('createAgentToolContext vision defaults (Phase 3)', () => {
     });
     expect(extractPageTextEvidenceMock).not.toHaveBeenCalled();
   });
+
+  it('count_page_items with documentId uses that PDF without switching the active tab', async () => {
+    const drawings = { id: 'drawings-pdf' };
+    const specs = { id: 'specs-pdf' };
+    useCanvasStore.getState().setPdfDocument('drawings', drawings, 10, 1728, 2592);
+    useCanvasStore.getState().setPdfDocument('specs', specs, 120, 612, 792);
+    useCanvasStore.getState().setActiveDocId('drawings');
+
+    analyzePageMaximumAccuracyMock.mockResolvedValue({
+      overviewImage: 'data:image/jpeg;base64,x',
+      textEvidence: { source: 'native', confidence: 1, context: 'RECEPTACLE', items: [] },
+      analysis: {
+        page: 3,
+        items: [{
+          id: 'r1',
+          type: 'receptacle',
+          trade: 'electrical',
+          name: 'Duplex',
+          quantity: 1,
+          location: { x: 10, y: 20 },
+          confidence: 0.9,
+        }],
+        dimensions: [],
+        text: [],
+        symbols: [],
+        typeCounts: { receptacle: 1 },
+        evidence: [],
+      },
+    });
+
+    const context = editorStyleContext('run-cross-count', 'msg-cross-count');
+    const counted = await context.countPageItems?.({
+      page: 3,
+      query: 'receptacle',
+      documentId: 'specs',
+    }) as { total?: number; status?: string };
+    expect(counted?.status === 'completed' || (counted?.total ?? 0) >= 1).toBe(true);
+    expect(useCanvasStore.getState().activeDocId).toBe('drawings');
+    expect(analyzePageMaximumAccuracyMock).toHaveBeenCalled();
+    const passed = analyzePageMaximumAccuracyMock.mock.calls[0]?.[0] as { pdfDoc?: { id?: string }; page?: number };
+    expect(passed.pdfDoc).toBe(specs);
+    expect(passed.page).toBe(3);
+
+    analyzePageMaximumAccuracyMock.mockClear();
+    analyzePageMaximumAccuracyMock.mockResolvedValue({
+      overviewImage: 'x',
+      textEvidence: { source: 'native', confidence: 1, context: '', items: [] },
+      analysis: {
+        page: 3,
+        items: [{
+          id: 'd1',
+          type: 'light',
+          trade: 'electrical',
+          name: 'Type A',
+          quantity: 1,
+          location: { x: 1, y: 1 },
+          confidence: 0.9,
+        }],
+        dimensions: [],
+        text: [],
+        symbols: [],
+        typeCounts: { light: 1 },
+        evidence: [],
+      },
+    });
+    await context.analyzePage({ page: 3, scope: 'full', documentId: 'drawings' });
+    const second = analyzePageMaximumAccuracyMock.mock.calls[0]?.[0] as { pdfDoc?: { id?: string } };
+    expect(second.pdfDoc).toBe(drawings);
+  });
 });

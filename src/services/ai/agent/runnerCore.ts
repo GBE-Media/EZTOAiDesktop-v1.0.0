@@ -613,12 +613,21 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
     }
 
     if (decision.type === 'final') {
+      const cites = collectTurnCitations(session);
       const result = finishWith(session, {
         status: 'completed',
         finalStatus: 'completed',
         assistantMessage: sanitizeAssistantVisibleText(decision.message),
         clarifyingQuestions: decision.clarifyingQuestions,
+        citations: cites,
       });
+      if (cites.length) {
+        store().addMessageBlock(session.messageId, {
+          id: `cit_${session.runId}`,
+          type: 'citations',
+          citations: cites,
+        });
+      }
       store().finishRun(session.runId, 'completed');
       clearAgentSession(session.runId);
       return result;
@@ -711,9 +720,20 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         startedAt,
         completedAt: entry.completedAt,
         toolActivity: toolHistoryToActivity(entry),
+        citations: (result.citations ?? []).slice(0, 8),
       });
 
       if (result.status === 'approval-required' && result.approval) {
+        const payload = result.approval.payload;
+        const payloadDocId = payload && typeof payload === 'object'
+          ? (payload as { documentId?: string }).documentId
+          : undefined;
+        const payloadPage = payload && typeof payload === 'object'
+          ? Number((payload as { page?: number }).page) || 1
+          : 1;
+        if (payloadDocId) {
+          toolContext.navigateToPage(payloadPage, undefined, payloadDocId);
+        }
         // Thread the model-issued call id onto the approval record so resume
         // can emit a provider-valid tool result (not approval.id).
         result.approval.toolCallId = call.id;
@@ -878,12 +898,29 @@ function pushToolResult(
   return entry;
 }
 
+function collectTurnCitations(session: AgentSessionState): AgentTurnResult['citations'] {
+  const seen = new Set<string>();
+  const cites: NonNullable<AgentTurnResult['citations']> = [];
+  const run = useAIChatStore.getState().runs[session.runId];
+  const fromSteps = (run?.steps ?? []).flatMap(step => step.citations ?? []);
+  const fromHistory = session.toolHistory.flatMap(entry => entry.result.citations ?? []);
+  for (const citation of [...fromSteps, ...fromHistory]) {
+    const key = `${citation.documentId}:${citation.page}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cites.push(citation);
+    if (cites.length >= 8) break;
+  }
+  return cites;
+}
+
 function finishWith(
   session: AgentSessionState,
   partial: Pick<AgentTurnResult, 'status' | 'finalStatus' | 'assistantMessage'> & {
     clarifyingQuestions?: string[];
     approvalRequest?: ApprovalRequest;
     clarificationRequest?: ClarificationRequest;
+    citations?: AgentTurnResult['citations'];
   }
 ): AgentTurnResult {
   const result: AgentTurnResult = {
@@ -898,6 +935,7 @@ function finishWith(
     runId: session.runId,
     messageId: session.messageId,
     plan: session.plan,
+    citations: partial.citations,
   };
   emitAgentTrace(session.runId, 'final', {
     status: result.status,

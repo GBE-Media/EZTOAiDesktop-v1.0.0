@@ -23,7 +23,6 @@ import {
 } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 import { useCanvasStore } from '@/store/canvasStore';
@@ -81,6 +80,9 @@ import { sanitizeAssistantVisibleText } from '@/services/ai/agent/assistantVisib
 import type { ClarificationAnswerDetail } from './QuestionCard';
 import { AssistantHeader } from './AssistantHeader';
 import { AssistantComposer } from './AssistantComposer';
+import { startProjectIndexer } from '@/services/ai/projectIndex/scheduler';
+import { allIndexedPages } from '@/services/ai/projectIndex/store';
+import { compactProjectDocuments, formatProjectDocumentsSummary } from '@/services/ai/projectIndex/summaries';
 
 /** @deprecated Prefer AgentAssistantDrawer — same implementation. */
 export function AiChatDrawer() {
@@ -90,6 +92,8 @@ export function AiChatDrawer() {
 /** Primary docked agent panel used by the editor. */
 export function AgentAssistantDrawer() {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pageSelection, setPageSelection] = useState('current');
   const [productMapOpen, setProductMapOpen] = useState(false);
@@ -188,6 +192,10 @@ export function AgentAssistantDrawer() {
       initSettings();
     }
   }, [isInitialized, initSettings]);
+
+  useEffect(() => {
+    startProjectIndexer();
+  }, []);
   
   // Initialize AI service with proxy mode (company API keys via Edge Function)
   useEffect(() => {
@@ -197,12 +205,21 @@ export function AgentAssistantDrawer() {
     }
   }, [isInitialized]);
   
-  // Scroll to bottom on new messages
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
+  }, []);
+
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (!stickToBottomRef.current) {
+      setShowJumpToLatest(true);
+      return;
     }
-  }, [messages]);
+    scrollToBottom();
+  }, [messages, isLoading, pipelineStatus.message, scrollToBottom]);
   
   const totalPages = activeDocId ? pdfDocuments[activeDocId]?.totalPages || 0 : 0;
   const selectedPages = useMemo(
@@ -277,11 +294,18 @@ export function AgentAssistantDrawer() {
         getPendingPlacements: () => useAIChatStore.getState().pendingPlacements,
       });
     },
-    navigateToPage: (page, bounds) => {
+    navigateToPage: (page, bounds, documentId) => {
       const canvas = useCanvasStore.getState();
+      const editor = useEditorStore.getState();
+      const target = documentId || canvas.activeDocId;
+      if (target && target !== canvas.activeDocId) {
+        editor.setActiveDocument(target);
+        canvas.setActiveDocId(target);
+      }
       canvas.setCurrentPage(page);
-      if (bounds && canvas.activeDocId) {
-        canvas.setAiSelectionRect(canvas.activeDocId, page, bounds);
+      if (bounds && target) {
+        canvas.setAiSelectionRect(target, page, bounds);
+        canvas.setAiSelectionActive(true);
       }
     },
   }), [
@@ -633,6 +657,14 @@ export function AgentAssistantDrawer() {
         }
       }
 
+      const indexedPages = allIndexedPages();
+      const editorDocs = useEditorStore.getState().documents;
+      const canvasDocs = useCanvasStore.getState().pdfDocuments;
+      const compactDocs = compactProjectDocuments(
+        editorDocs.map(doc => ({ id: doc.id, name: doc.name, pages: canvasDocs[doc.id]?.totalPages || 0 })),
+        indexedPages,
+      );
+      const totalOpenPages = compactDocs.reduce((sum, doc) => sum + doc.pages, 0);
       const { text: contextText } = buildAgentContext({
         userIntent: content,
         trade: selectedTrade,
@@ -649,6 +681,11 @@ export function AgentAssistantDrawer() {
         pageAnalysisSummary: summarizeCachedPageAnalyses(
           activeDocId,
           activeDocId ? useCanvasStore.getState().pdfDocuments[activeDocId]?.contentRevision : undefined,
+        ),
+        projectDocumentsSummary: formatProjectDocumentsSummary(
+          compactDocs,
+          indexedPages.length,
+          totalOpenPages,
         ),
       });
 
@@ -1122,72 +1159,87 @@ export function AgentAssistantDrawer() {
             onSelectConversation={value => void selectConversation(value)}
             onNewConversation={() => createConversation()}
             onClose={closeDrawer}
-          />
-          
-          {/* Primary assistant controls — always visible */}
-          <AiToolbar
             onOpenSettings={() => setSettingsOpen(true)}
             onClearChat={clearMessages}
-            onRunTakeoff={openTakeoffDialog}
           />
           
-          {/* Page Selection */}
-          {activeDocId && totalPages > 0 && (
-            <div className="px-4 py-2 border-b border-border bg-secondary/20">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground">Pages</span>
-                <Input
-                  value={pageSelection}
-                  onChange={(event) => setPageSelection(event.target.value)}
-                  placeholder="current, all, or 1,3-5"
-                  className="h-7 text-xs"
-                />
-                <span className="text-[10px] text-muted-foreground">
-                  {selectedPages.length ? `${selectedPages.length}/${totalPages}` : `0/${totalPages}`}
-                </span>
-              </div>
-            </div>
-          )}
+          {/* Primary assistant controls — always visible, visually secondary */}
+          <AiToolbar
+            onRunTakeoff={openTakeoffDialog}
+            pageSelection={activeDocId && totalPages > 0 ? pageSelection : undefined}
+            onPageSelectionChange={setPageSelection}
+            pageSummary={activeDocId && totalPages > 0
+              ? (selectedPages.length ? `${selectedPages.length}/${totalPages}` : `0/${totalPages}`)
+              : undefined}
+          />
           
           {/* Messages */}
-          <ScrollArea ref={scrollRef} className="flex-1">
+          <div className="relative min-h-0 flex-1">
+            <div
+              ref={scrollRef}
+              className="h-full overflow-y-auto"
+              onScroll={(event) => {
+                const el = event.currentTarget;
+                const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+                stickToBottomRef.current = nearBottom;
+                setShowJumpToLatest(!nearBottom && el.scrollHeight > el.clientHeight);
+              }}
+            >
             {!hasMessages ? (
-              <div className="flex flex-col items-center justify-center h-full p-8 text-center">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500/20 to-purple-600/20 flex items-center justify-center mb-4">
-                  <Sparkles className="w-8 h-8 text-violet-500" />
+              <div className="flex h-full flex-col items-center justify-center p-8 text-center">
+                <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500/20 to-purple-600/20">
+                  <Sparkles className="h-7 w-7 text-violet-500" />
                 </div>
-                <h3 className="text-lg font-medium mb-2">BidveraAi Agent</h3>
-                <p className="text-sm text-muted-foreground mb-6 max-w-[300px]">
-                  Inspect takeoff context, call tools, ask clarifying questions, and propose reviewable changes (callouts require approval).
+                <h3 className="mb-1 text-base font-medium">BidveraAi</h3>
+                <p className="mb-6 max-w-[280px] text-sm text-muted-foreground">
+                  Ask about this plan, counts, or markups.
                 </p>
-                
-                <div className="space-y-2 w-full max-w-[300px]">
-                  <p className="text-xs text-muted-foreground mb-2">Try asking:</p>
+                <div className="w-full max-w-[300px] space-y-2">
                   <QuickPrompt
-                    text="Where is the fixture schedule on this page?"
-                    onClick={() => handleSendMessage('Where is the fixture schedule on this page?')}
+                    text="Count all lighting fixtures"
+                    onClick={() => handleSendMessage('Count all lighting fixtures')}
                     disabled={!isAIAvailable || isLoading}
                   />
                   <QuickPrompt
-                    text="Summarize material counts for this takeoff"
-                    onClick={() => handleSendMessage('Summarize material counts for this takeoff')}
+                    text="Place count markers"
+                    onClick={() => handleSendMessage('Place count markers')}
                     disabled={!isAIAvailable || isLoading}
                   />
                   <QuickPrompt
-                    text="Suggest conduit runs for the devices shown"
-                    onClick={() => handleSendMessage('Suggest conduit runs for the devices shown')}
+                    text="Summarize this sheet"
+                    onClick={() => handleSendMessage('Summarize this sheet')}
+                    disabled={!isAIAvailable || isLoading}
+                  />
+                  <QuickPrompt
+                    text="What does the spec require for receptacles, and how many are on E-100?"
+                    onClick={() => handleSendMessage('What does the spec require for receptacles, and how many are on E-100?')}
+                    disabled={!isAIAvailable || isLoading}
+                  />
+                  <QuickPrompt
+                    text="Find every sheet that references panel LP-2."
+                    onClick={() => handleSendMessage('Find every sheet that references panel LP-2.')}
                     disabled={!isAIAvailable || isLoading}
                   />
                 </div>
               </div>
             ) : (
-              <div className="divide-y divide-border">
+              <div className="py-2">
                 {messages.map(message => (
                   <ChatMessage key={message.id} message={message} />
                 ))}
               </div>
             )}
-          </ScrollArea>
+            </div>
+            {showJumpToLatest && (
+              <button
+                type="button"
+                onClick={scrollToBottom}
+                className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground shadow-md motion-safe:transition-opacity"
+              >
+                Jump to latest
+              </button>
+            )}
+          </div>
           
           {/* Input */}
           <AssistantComposer

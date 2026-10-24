@@ -17,6 +17,7 @@ export interface AgentContextInput {
   markupsSummary?: string;
   /** Cached analyze_page typeCounts / detection summaries for open document. */
   pageAnalysisSummary?: string;
+  projectDocumentsSummary?: string;
   permissions?: string[];
 }
 
@@ -55,6 +56,7 @@ export function buildAgentContext(input: AgentContextInput): {
     catalogSummary: truncate(input.catalogSummary, 2_000),
     markupsSummary: truncate(input.markupsSummary, 2_000),
     pageAnalysisSummary: truncate(input.pageAnalysisSummary, 2_000),
+    projectDocumentsSummary: truncate(input.projectDocumentsSummary, 2_400),
     recentTurns: recent,
   };
 
@@ -66,6 +68,9 @@ export function buildAgentContext(input: AgentContextInput): {
     input.documentName
       ? `- Document: ${input.documentName} (page ${input.currentPage || '?'}${input.totalPages ? ` / ${input.totalPages}` : ''})`
       : '- Document: none open',
+    input.projectDocumentsSummary
+      ? `\n## Project documents\n${truncate(input.projectDocumentsSummary, 2_400)}`
+      : null,
     input.projectPath ? `- Project path: ${input.projectPath}` : null,
     input.role ? `- Role: ${input.role}` : null,
     input.markupsSummary ? `\n### Markups\n${truncate(input.markupsSummary, 2_000)}` : null,

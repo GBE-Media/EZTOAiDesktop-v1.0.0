@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  approvalPayloadFromPlaceMarkups,
   deleteMarkupsSchema,
   linkCatalogSchema,
   placeMarkupsSchema,
@@ -200,5 +201,31 @@ describe('mutationSchemas', () => {
       markupIds: { type: 'array' },
     });
     expect(deleteJson.required).toEqual(expect.arrayContaining(['description', 'markupIds']));
+  });
+
+  it('keeps documentId on place_markups approval payloads including the array branch', () => {
+    const analysisRef = {
+      docId: 'doc-b',
+      page: 2,
+      revision: 0,
+      analyzedAt: 't0',
+      analysisId: 'an1',
+    };
+    const withItems = approvalPayloadFromPlaceMarkups(placeMarkupsSchema.parse({
+      description: 'Place counts',
+      itemIds: ['i1'],
+      page: 2,
+      analysisRef,
+      documentId: 'doc-b',
+    }));
+    expect(withItems).toMatchObject({ documentId: 'doc-b', itemIds: ['i1'], page: 2 });
+
+    const bare = approvalPayloadFromPlaceMarkups(placeMarkupsSchema.parse({
+      description: 'Place pointers',
+      pointers: [samplePointer],
+      documentId: 'doc-b',
+    }));
+    expect(bare).toMatchObject({ documentId: 'doc-b' });
+    expect(Array.isArray(bare)).toBe(false);
   });
 });

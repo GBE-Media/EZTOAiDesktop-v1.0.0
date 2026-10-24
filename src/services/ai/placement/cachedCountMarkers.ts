@@ -54,7 +54,10 @@ export function lookupCachedPageItems(options: {
   analysisRef?: unknown;
 }): CachedPageItemsLookup {
   const canvas = useCanvasStore.getState();
-  const docId = canvas.activeDocId;
+  const refDocId = isPageAnalysisRef(options.analysisRef)
+    ? options.analysisRef.docId
+    : undefined;
+  const docId = refDocId || canvas.activeDocId;
   if (!docId) {
     return { items: [], pageGeometry: null, error: 'No active document' };
   }
@@ -81,7 +84,7 @@ export function lookupCachedPageItems(options: {
     return {
       items: [],
       pageGeometry: null,
-      error: 'Active document does not match analysisRef; ask the AI to count again',
+      error: 'Document does not match analysisRef; ask the AI to count again',
     };
   }
   const revision = pdf.contentRevision ?? 0;

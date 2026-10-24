@@ -100,103 +100,98 @@ export function ChatInput({
   const canSend = (message.trim() || attachedImages.length > 0) && !isLoading && !disabled;
 
   return (
-    <div className="border-t border-border bg-background p-4">
-      {contextChips.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {contextChips.map(chip => (
-            <span key={chip} className="rounded-full border border-border bg-secondary/40 px-2 py-0.5 text-[10px] text-muted-foreground">
-              {chip}
-            </span>
-          ))}
-        </div>
-      )}
-      {/* Attached images preview */}
-      {attachedImages.length > 0 && (
-        <div className="flex gap-2 mb-3 flex-wrap">
-          {attachedImages.map((img, i) => (
-            <div key={i} className="relative group">
-              <img
-                src={img}
-                alt={`Attachment ${i + 1}`}
-                className="w-16 h-16 object-cover rounded border border-border"
-              />
-              <button
-                onClick={() => removeImage(i)}
-                className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-destructive text-destructive-foreground rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-              >
-                <X className="w-3 h-3" />
-              </button>
+    <div className="border-t border-border bg-background p-3">
+      <div className="flex items-end gap-2">
+        <div className="min-w-0 flex-1 rounded-2xl border border-border bg-secondary/20 px-3 py-2 shadow-sm focus-within:ring-2 focus-within:ring-ring">
+          {contextChips.length > 0 && (
+            <div className="mb-1.5 flex flex-wrap gap-1">
+              {contextChips.map(chip => (
+                <span
+                  key={chip}
+                  className="rounded-full bg-background/80 px-2 py-0.5 text-[10px] text-muted-foreground"
+                >
+                  {chip}
+                </span>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
-      
-      {/* Input area */}
-      <div className="flex gap-2 items-end">
-        <div className="flex-1 relative">
-          <Textarea
-            ref={textareaRef}
-            value={message}
-            onChange={handleTextareaChange}
-            onKeyDown={handleKeyDown}
-            placeholder={placeholder}
-            disabled={disabled || isLoading}
-            className={cn(
-              'min-h-[44px] max-h-[200px] resize-none pr-10',
-              'focus-visible:ring-1 focus-visible:ring-primary'
-            )}
-            rows={1}
-          />
-          
-          {/* Attachment button */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            className="absolute right-1 bottom-1 h-8 w-8 text-muted-foreground hover:text-foreground"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={disabled || isLoading}
-          >
-            <Image className="w-4 h-4" />
-          </Button>
-          
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={handleFileSelect}
-            className="hidden"
-          />
-        </div>
-        
-        {/* Send button */}
-        {isLoading && onStop ? <Button
-          onClick={onStop}
-          size="icon"
-          variant="destructive"
-          className="h-11 w-11 shrink-0"
-          title="Stop assistant"
-        >
-          <Square className="h-3.5 w-3.5 fill-current" />
-        </Button> : <Button
-          onClick={handleSend}
-          disabled={!canSend}
-          size="icon"
-          className={cn(
-            'h-11 w-11 shrink-0',
-            canSend && 'bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700'
           )}
-        >
-          <Send className="w-4 h-4" />
-        </Button>}
-      </div>
-      
-      {/* Helper text */}
-      <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
-        <span>Press Enter to send, Shift+Enter for new line</span>
-        {attachedImages.length > 0 && (
-          <span>{attachedImages.length} image(s) attached</span>
+          {attachedImages.length > 0 && (
+            <div className="mb-2 flex flex-wrap gap-2">
+              {attachedImages.map((img, i) => (
+                <div key={i} className="group relative">
+                  <img
+                    src={img}
+                    alt={`Attachment ${i + 1}`}
+                    className="h-14 w-14 rounded-xl border border-border object-cover"
+                  />
+                  <button
+                    onClick={() => removeImage(i)}
+                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-destructive text-destructive-foreground opacity-0 transition-opacity group-hover:opacity-100"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex items-end gap-1">
+            <Textarea
+              ref={textareaRef}
+              value={message}
+              onChange={handleTextareaChange}
+              onKeyDown={handleKeyDown}
+              placeholder={placeholder}
+              disabled={disabled}
+              className={cn(
+                'min-h-[40px] max-h-[200px] flex-1 resize-none border-0 bg-transparent p-0 shadow-none',
+                'focus-visible:ring-0',
+              )}
+              rows={1}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 text-muted-foreground hover:text-foreground"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={disabled}
+              title="Attach image"
+            >
+              <Image className="h-4 w-4" />
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              onChange={handleFileSelect}
+              className="hidden"
+            />
+          </div>
+        </div>
+        {isLoading && onStop ? (
+          <Button
+            onClick={onStop}
+            size="icon"
+            variant="destructive"
+            className="h-10 w-10 shrink-0 rounded-xl"
+            title="Stop assistant"
+          >
+            <Square className="h-3.5 w-3.5 fill-current" />
+          </Button>
+        ) : (
+          <Button
+            onClick={handleSend}
+            disabled={!canSend}
+            size="icon"
+            className={cn(
+              'h-10 w-10 shrink-0 rounded-xl',
+              canSend && 'bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700',
+            )}
+            title="Send"
+          >
+            <Send className="h-4 w-4" />
+          </Button>
         )}
       </div>
     </div>
