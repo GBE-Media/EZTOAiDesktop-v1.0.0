@@ -142,7 +142,7 @@ export function classifyPage(lines: IndexedLine[], pageWidth: number, pageHeight
   return { kind: 'other', articles };
 }
 
-export function splitMidPageSection(lines: IndexedLine[]): { tail: IndexedLine[]; section: string } | null {
+export function splitMidPageSection(lines: IndexedLine[]): { head: IndexedLine[]; tail: IndexedLine[]; section: string } | null {
   const endIdx = lines.findIndex(line => /END OF SECTION/i.test(line.text));
   if (endIdx < 0) return null;
   for (let i = endIdx + 1; i < lines.length; i++) {
@@ -150,7 +150,7 @@ export function splitMidPageSection(lines: IndexedLine[]): { tail: IndexedLine[]
     if (!match) continue;
     const section = csiFromText(match[1] || match[0]);
     if (!section) continue;
-    return { tail: lines.slice(i), section };
+    return { head: lines.slice(0, i), tail: lines.slice(i), section };
   }
   return null;
 }

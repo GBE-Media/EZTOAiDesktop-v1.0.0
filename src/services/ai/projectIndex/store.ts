@@ -43,9 +43,9 @@ function slimPage(page: IndexedPageRecord): IndexedPageRecord {
   };
 }
 
-export async function loadCachedPages(docFp: string): Promise<IndexedPageRecord[]> {
+export async function loadCachedPages(docFp: string, numPages = 0): Promise<IndexedPageRecord[]> {
   const mem = memoryByFp.get(docFp);
-  if (mem?.length && mem[0]?.classifierVersion === CLASSIFIER_VERSION) return mem;
+  if (mem?.length && mem[0]?.classifierVersion === CLASSIFIER_VERSION && mem.length >= numPages) return mem;
   try {
     const rows = await projectIndexDb.pages.where('docFp').equals(docFp).toArray();
     const fresh = rows.filter(row => row.classifierVersion === CLASSIFIER_VERSION || !row.classifierVersion);

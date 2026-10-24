@@ -23,7 +23,7 @@ export async function indexPdfDocument(options: {
 }): Promise<IndexedPageRecord[]> {
   const docFp = documentFingerprint(options.pdfDoc);
   markDocumentIndexing(options.docId);
-  const cached = await loadCachedPages(docFp);
+  const cached = await loadCachedPages(docFp, options.pdfDoc.numPages);
   if (cached.length >= options.pdfDoc.numPages) {
     return rebindCachedPages(docFp, options.docId, options.documentName, cached);
   }
@@ -38,6 +38,9 @@ export async function indexPdfDocument(options: {
   const pages: IndexedPageRecord[] = [...cached];
   const have = new Set(cached.map(p => p.page));
   let flushed = pages.length;
+  let lastYield = performance.now();
+  const persistedKey = new Map<number, string>();
+  const rowKey = (p: IndexedPageRecord) => `${p.kind}|${p.specSection ?? ''}|${p.sheetNumber ?? ''}`;
   pageLoop: for (let page = 1; page <= options.pdfDoc.numPages; page++) {
     if (options.signal?.aborted) break pageLoop;
     while (options.isBusy?.()) {
@@ -45,8 +48,9 @@ export async function indexPdfDocument(options: {
       if (options.signal?.aborted) break pageLoop;
     }
     if (have.has(page)) continue;
-    if (options.yieldEveryPage) {
-      await Promise.resolve();
+    if (options.yieldEveryPage && performance.now() - lastYield > 12) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      lastYield = performance.now();
     }
     let lines: IndexedLine[] = [];
     let width = 612;
@@ -100,6 +104,7 @@ export async function indexPdfDocument(options: {
       needsOcr = lines.every(l => !l.text.trim());
     }
     const split = splitMidPageSection(lines);
+    const allLines = lines;
     if (split) lines = split.tail;
     const classified = classifyPage(lines, width, height);
     if (split) {
@@ -114,6 +119,7 @@ export async function indexPdfDocument(options: {
       label: labels?.[page - 1],
       lines,
       text: lines.map(line => line.text).join('\n'),
+      headText: split ? split.head.map(line => line.text).join('\n') : undefined,
       kind: classified.kind,
       sheetNumber: classified.sheetNumber,
       sheetTitle: classified.sheetTitle,
@@ -122,7 +128,7 @@ export async function indexPdfDocument(options: {
       articles: classified.articles,
       needsOcr,
       classifierVersion: CLASSIFIER_VERSION,
-      passages: buildSearchPassages(lines),
+      passages: buildSearchPassages(allLines),
     });
     have.add(page);
     if (page % 25 === 0 || page === options.pdfDoc.numPages) {
@@ -133,6 +139,7 @@ export async function indexPdfDocument(options: {
         dropIndexedDocument(options.docId);
         break pageLoop;
       }
+      for (const row of pages.slice(flushed)) persistedKey.set(row.page, rowKey(row));
       flushed = pages.length;
       useIndexProgressStore.getState().setProgress(options.docId, page, options.pdfDoc.numPages);
     }
@@ -142,7 +149,8 @@ export async function indexPdfDocument(options: {
     return [];
   }
   const ranged = fillSpecSectionRanges(pages);
-  await saveIndexedPages(docFp, ranged, options.docId);
+  // Final write: only rows never flushed or whose range/kind changed after their flush.
+  await saveIndexedPages(docFp, ranged, options.docId, ranged.filter(row => persistedKey.get(row.page) !== rowKey(row)));
   useIndexProgressStore.getState().setProgress(options.docId, ranged.length, options.pdfDoc.numPages);
   return rebindCachedPages(docFp, options.docId, options.documentName, ranged);
 }

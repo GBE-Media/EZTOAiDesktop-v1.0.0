@@ -22,6 +22,8 @@ export type IndexedPageRecord = {
   lines: IndexedLine[];
   /** Full page text for spec reads; kept in memory when line bboxes are slimmed. */
   text?: string;
+  /** Text above a mid-page SECTION start; belongs to the previous section. */
+  headText?: string;
   kind: IndexPageKind;
   sheetNumber?: string;
   sheetTitle?: string;

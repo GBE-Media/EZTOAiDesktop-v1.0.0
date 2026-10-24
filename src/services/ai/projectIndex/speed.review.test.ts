@@ -1,3 +1,4 @@
+import { perfBudget } from '@/test/perfBudget';
 import '../agent/testGlobals';
 import { expect, it } from 'vitest';
 import { indexPdfDocument } from './indexPages';
@@ -18,6 +19,6 @@ it('scaling', async () => {
     run = false;
     const ms = performance.now() - t0;
     console.log(`[SPD] ${n} pages ${ms.toFixed(0)}ms = ${(ms / n).toFixed(1)} ms/page, maxBlock ${maxB.toFixed(0)}ms`);
-    if (n === 600) expect(ms).toBeLessThan(6000);
+    if (n === 600) expect(ms).toBeLessThan(perfBudget(6000));
   }
 }, 600_000);

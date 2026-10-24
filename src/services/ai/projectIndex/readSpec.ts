@@ -12,11 +12,15 @@ export function readSpecSection(
     .filter(p => p.kind === 'spec' && p.specSection === section)
     .sort((a, b) => a.page - b.page);
   let text = matching.map(p => p.text || p.lines.map(l => l.text).join('\n')).join('\n\n');
+  const last = matching[matching.length - 1];
+  const tail = last && pages.find(p => p.docId === last.docId && p.page === last.page + 1 && p.headText);
+  if (tail?.headText) text += `\n\n${tail.headText}`;
   if (options.part != null) {
     const part = String(options.part).replace(/^part\s+/i, '');
-    const re = new RegExp(`PART\\s+${part}\\b[\\s\\S]*?(?=PART\\s+[123]\\b|$)`, 'i');
+    const re = new RegExp(`^PART\\s+${part}\\b[\\s\\S]*?(?=^PART\\s+[123]\\b|(?![\\s\\S]))`, 'im');
     const slice = text.match(re);
-    if (slice) text = slice[0];
+    const art = options.article?.trim();
+    if (slice && !(art && !new RegExp(`^${art.replace(/\./g, '\\.')}\\b`, 'm').test(slice[0]))) text = slice[0];
   }
   if (options.article) {
     const id = options.article.trim();

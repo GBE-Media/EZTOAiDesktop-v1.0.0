@@ -4,9 +4,12 @@ import type { IndexedLine, IndexedPageRecord, SearchHit, SearchPassage } from '.
 const TOKEN_SPLIT = /[^a-z0-9.]+/;
 const pageTokenCache = new WeakMap<object, Set<string>>();
 
+/** Plural-insensitive word tokens ("receptacles" == "receptacle"); codes/numbers untouched. */
+const stem = (tok: string) => (tok.length > 3 && /^[a-z]+s$/.test(tok) && !tok.endsWith('ss') ? tok.slice(0, -1) : tok);
+
 function tokenizeLower(lower: string): string[] {
-  const tokens = lower.split(TOKEN_SPLIT).filter(tok => tok.length > 1);
-  for (const code of lower.match(/[a-z]{1,4}[-.]?\d[\w.-]*/g) || []) tokens.push(code);
+  const tokens = lower.split(TOKEN_SPLIT).map(tok => stem(tok.replace(/^\.+|\.+$/g, ''))).filter(tok => tok.length > 1);
+  for (const code of lower.match(/[a-z]{1,4}[-.]?\d[\w.-]*/g) || []) tokens.push(code.replace(/[.-]+$/, ''));
   for (const dotted of lower.match(/\b\d+(?:\.\d+)+\b/g) || []) tokens.push(dotted);
   return tokens;
 }
@@ -61,12 +64,13 @@ function queryParts(query: string): { tokens: string[]; codes: string[]; phrase?
   const phrase = query.match(/"([^"]+)"/)?.[1]?.toLowerCase();
   const letterCodes = (query.match(/[A-Za-z]{1,4}[-.]?\d[\w.-]*/g) || []).map(c => c.toLowerCase());
   const dotted = (query.match(/\b\d+(?:\.\d+)+\b/g) || []).map(c => c.toLowerCase());
-  const codes = [...letterCodes, ...dotted];
+  const codes = [...letterCodes.map(c => c.replace(/[.-]+$/, '')), ...dotted];
   const csi = normalizeCsiSection(query);
   const tokens = query
     .toLowerCase()
     .replace(/[“”"']/g, ' ')
     .split(/[^a-z0-9.]+/)
+    .map(tok => stem(tok.replace(/^\.+|\.+$/g, '')))
     .filter(tok => tok.length > 1);
   if (csi && /\d/.test(csi)) {
     tokens.push(...csi.toLowerCase().split(/\s+/).filter(t => t.length > 1));

@@ -1,6 +1,7 @@
 /**
  * Real-PDF end-to-end test for the project index (review of feat/project-index-cross-doc-ai).
  */
+import { perfBudget } from '@/test/perfBudget';
 import '../agent/testGlobals';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { PDFDocument, StandardFonts, degrees } from 'pdf-lib';
@@ -298,8 +299,8 @@ describe('project index on REAL PDFs (pdf-lib -> pdfjs-dist)', () => {
     const denseMs = performance.now() - t1;
     const denseBytes = JSON.stringify(dense.map(p => p.lines)).length;
     log(`search 3000 spec-like pages ${specMs.toFixed(0)}ms; 3000 dense drawing pages (400 lines) ${denseMs.toFixed(0)}ms; dense line JSON ${(denseBytes / 1e6).toFixed(0)} MB`);
-    expect(specMs).toBeLessThan(150);
-    expect(denseMs).toBeLessThan(150);
+    expect(specMs).toBeLessThan(perfBudget(150));
+    expect(denseMs).toBeLessThan(perfBudget(150));
   }, 60_000);
 
   it('system-prompt project summary with 40 docs', () => {

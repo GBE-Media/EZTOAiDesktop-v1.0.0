@@ -1,3 +1,4 @@
+import { perfBudget } from '@/test/perfBudget';
 import { describe, expect, it, vi } from 'vitest';
 import { classifyPage, fillSpecSectionRanges } from './classify';
 import { indexPdfDocument } from './indexPages';
@@ -203,7 +204,7 @@ describe('project index classification + search', () => {
     const hits = searchIndexedPages(pages, { query: 'LP-2', limit: 10 });
     const elapsed = performance.now() - started;
     expect(hits[0]?.page).toBe(417);
-    expect(elapsed).toBeLessThan(150);
+    expect(elapsed).toBeLessThan(perfBudget(150));
   });
 
   it('project tools are registered read-only', async () => {

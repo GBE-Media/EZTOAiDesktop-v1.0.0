@@ -11,6 +11,7 @@
  * Place at: src/services/ai/projectIndex/realPdf2.e2e.test.ts ; REPORT=1 prints the report.
  * Thresholds are report-first: they only hard-fail on "clearly broken" (<85%).
  */
+import { perfBudget } from '@/test/perfBudget';
 import '../agent/testGlobals';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { PDFDocument, StandardFonts, degrees, type PDFFont, type PDFPage } from 'pdf-lib';
@@ -361,8 +362,8 @@ describe('ROUND 2: unseen real-PDF conventions', () => {
     metrics.denseRealPassagesMs = { lp2: Math.round(ms1), words: Math.round(ms2), hits: r1.length };
     log('3000 dense pages WITH real passages:', metrics.denseRealPassagesMs);
     expect(r1.length).toBeGreaterThan(0);
-    expect(ms1).toBeLessThan(150);
-    expect(ms2).toBeLessThan(150);
+    expect(ms1).toBeLessThan(perfBudget(150));
+    expect(ms2).toBeLessThan(perfBudget(150));
   });
 
   it('B3 rebind: same file reopened as a new docId; closed id never served', async () => {
