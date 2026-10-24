@@ -562,7 +562,12 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     cacheClearDoc(docId);
     const source = get().pdfDocuments[docId]?.pdfSource;
     if (source?.source === 'file' && /[/\\]pdf-cache[/\\]/i.test(source.path)) {
-      void window.electronAPI?.releaseSnapshot?.(source.path);
+      // Snapshots are content-addressed; keep it if another open doc still reads the same file.
+      const sharedByOther = Object.entries(get().pdfDocuments).some(
+        ([otherId, other]) =>
+          otherId !== docId && other?.pdfSource?.source === 'file' && other.pdfSource.path === source.path,
+      );
+      if (!sharedByOther) void window.electronAPI?.releaseSnapshot?.(source.path);
     }
     const doomed = get().pdfDocuments[docId]?.pdfDocument;
     try {

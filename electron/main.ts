@@ -428,6 +428,8 @@ ipcMain.handle('fs:snapshotOriginal', async (_, filePath: string) => {
   if (!fs.existsSync(dest)) {
     fs.copyFileSync(filePath, dest);
   }
+  // Mark as freshly used so startup pruning (mtime-based) never treats an in-use snapshot as stale.
+  try { const now = new Date(); fs.utimesSync(dest, now, now); } catch { /* ignore */ }
   allowLocalPath(dest);
   return { success: true, path: dest, sha256 };
 });
@@ -704,7 +706,15 @@ app.whenReady().then(() => {
     const served = await serveAllowedFile(request.url, request.headers.get('Range'));
     return new Response(served.body, { status: served.status, headers: served.headers });
   });
-  prunePdfCache(pdfCacheDir(app.getPath('userData')));
+  // Only the primary instance prunes: a second process (e.g. double-clicking another PDF)
+  // must never delete snapshots the running window is still reading.
+  if (app.requestSingleInstanceLock()) {
+    try {
+      prunePdfCache(pdfCacheDir(app.getPath('userData')));
+    } catch (e) {
+      console.warn('[pdf-cache] prune failed', e);
+    }
+  }
 
   // #region agent log
   log('electron/main.ts:app.whenReady', 'App ready', { isDev, isPackaged: app.isPackaged, __dirname, fileToOpen });
