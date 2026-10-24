@@ -14,6 +14,7 @@ import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { sanitizeAssistantVisibleText } from '@/services/ai/agent/assistantVisibleText';
 import { humanizeToolError, textLooksLikeRawInternals } from '@/lib/assistantTurnPresentation';
+import { readMarkdownTable } from '@/lib/markdownTable';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -282,8 +283,73 @@ function formatContent(
   // Lists: - item
   
   const lines = safeContent.split('\n');
-  
-  return lines.map((line, i) => {
+  const nodes: React.ReactNode[] = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const table = readMarkdownTable(lines, i);
+    if (table) {
+      nodes.push(renderMarkdownTable(table, i, options));
+      i = table.endIndex;
+      continue;
+    }
+    nodes.push(formatContentLine(lines, i, options));
+  }
+  return nodes;
+}
+
+type FormatOptions = {
+  messageId?: string;
+  highlightedRef?: number | null;
+  onCalloutClick?: (ref: number) => void;
+};
+
+function renderMarkdownTable(
+  table: { header: string[]; rows: string[][] },
+  key: number,
+  options?: FormatOptions,
+): React.ReactNode {
+  return (
+    <div key={`table-${key}`} className="my-2 overflow-x-auto rounded-lg border border-border" data-testid="chat-table">
+      <table className="w-full border-collapse text-xs">
+        <thead className="bg-muted/40">
+          <tr>
+            {table.header.map((cell, c) => (
+              <th key={c} className="px-2.5 py-1.5 text-left font-medium text-foreground">
+                {formatInlineText(cell, options)}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {table.rows.map((row, r) => (
+            <tr key={r} className="border-t border-border/70">
+              {table.header.map((_, c) => (
+                <td key={c} className="px-2.5 py-1.5 tabular-nums text-foreground/90">
+                  {formatInlineText(row[c] ?? '', options)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function formatInlineText(text: string, options?: FormatOptions): React.ReactNode {
+  if (text.includes('**')) {
+    return text.split(/(\*\*[^*]+\*\*)/g).map((part, j) =>
+      part.startsWith('**') && part.endsWith('**')
+        ? <strong key={j}>{renderInlineSegments(part.slice(2, -2), options)}</strong>
+        : <span key={j}>{renderInlineSegments(part, options)}</span>,
+    );
+  }
+  return renderInlineSegments(text, options);
+}
+
+function formatContentLine(lines: string[], i: number, options?: FormatOptions): React.ReactNode {
+  {
+    const line = lines[i];
     const listPrefix = line.startsWith('- ') || line.startsWith('• ') ? 2 : 0;
     const numberedMatch = line.match(/^(\d+)\.\s/);
     const contentLine = listPrefix
@@ -352,5 +418,5 @@ function formatContent(
         {i < lines.length - 1 && line === '' && <br />}
       </div>
     );
-  });
+  }
 }

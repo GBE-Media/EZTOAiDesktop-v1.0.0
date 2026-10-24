@@ -141,7 +141,14 @@ export type AssistantMessageBlock =
   | { id: string; type: 'question'; clarificationId: string }
   | { id: string; type: 'progress'; label: string; status: 'running' | 'completed' | 'failed' }
   | { id: string; type: 'result'; result: AssistantResultSummary }
-  | { id: string; type: 'tool-result'; activity: ToolActivity };
+  | { id: string; type: 'tool-result'; activity: ToolActivity }
+  | {
+      id: string;
+      type: 'follow-up';
+      messageId: string;
+      question: string;
+      options: Array<{ label: string; reply: string | null; primary?: boolean }>;
+    };
 
 export interface AssistantConversation {
   id: string;
