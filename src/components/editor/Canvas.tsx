@@ -25,6 +25,7 @@ export function Canvas() {
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const pdfTransformRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(false);
+  const [renderError, setRenderError] = useState(false);
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
   const [isDragOver, setIsDragOver] = useState(false);
   const [isSelecting, setIsSelecting] = useState(false);
@@ -90,6 +91,8 @@ export function Canvas() {
   const hasViewState = currentDocData?.hasViewState ?? false;
   const originalPageWidth = currentDocData?.originalPageWidth || 0;
   const originalPageHeight = currentDocData?.originalPageHeight || 0;
+  const originalPageSizeRef = useRef({ w: 0, h: 0 });
+  originalPageSizeRef.current = { w: originalPageWidth, h: originalPageHeight };
   const hasActivePdf = Boolean(
     (activeDocId && pdfDocuments[activeDocId]?.pdfDocument) ||
     (activeDocument && pdfDocuments[activeDocument]?.pdfDocument)
@@ -207,6 +210,7 @@ export function Canvas() {
       if (!pdfDocument || !pdfCanvasRef.current) return;
       
       setLoading(true);
+      setRenderError(false);
       try {
         // Render at fixed base scale - zoom is handled via CSS transform
         const pageInfo = await renderPage(pdfDocument, currentPage, pdfCanvasRef.current, BASE_RENDER_SCALE);
@@ -234,6 +238,13 @@ export function Canvas() {
       } catch (err) {
         if (cancelled || isRenderingCancelled(err)) return;
         console.error('Page render error:', err);
+        if (cancelled) return;
+        setRenderError(true);
+        // Fallback so fit can still run and the page box never stays hidden.
+        const { w: ow, h: oh } = originalPageSizeRef.current;
+        const w = (ow > 0 ? ow : 612) * BASE_RENDER_SCALE;
+        const h = (oh > 0 ? oh : 792) * BASE_RENDER_SCALE;
+        setCanvasDimensions(prev => (prev.width > 0 ? prev : { width: w, height: h }));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -877,6 +888,18 @@ export function Canvas() {
         onWheel={handleWheel}
       >
         <CanvasStatusChip />
+
+        {/* Loading / error indicators live outside the (possibly hidden) page box. */}
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          </div>
+        )}
+        {renderError && !loading && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 rounded-md bg-destructive/90 px-3 py-1.5 text-xs text-destructive-foreground shadow">
+            This page couldn't be rendered. Try reopening the document.
+          </div>
+        )}
         
         {/* Page at container origin; pan/zoom/rotate via CSS transform (origin: page center). */}
         <div
@@ -894,12 +917,6 @@ export function Canvas() {
             visibility: hasViewState && canvasDimensions.width > 0 ? 'visible' : 'hidden',
           }}
         >
-            {/* Loading indicator */}
-            {loading && (
-              <div className="absolute inset-0 bg-background/80 flex items-center justify-center z-10">
-                <Loader2 className="w-8 h-8 animate-spin text-primary" />
-              </div>
-            )}
             
             {/* PDF canvas */}
             {pdfDocument ? (
