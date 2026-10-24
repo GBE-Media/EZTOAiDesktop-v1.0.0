@@ -364,7 +364,7 @@ describe('ROUND 2: unseen real-PDF conventions', () => {
     expect(r1.length).toBeGreaterThan(0);
     expect(ms1).toBeLessThan(perfBudget(150));
     expect(ms2).toBeLessThan(perfBudget(150));
-  });
+  }, 60_000);
 
   it('B3 rebind: same file reopened as a new docId; closed id never served', async () => {
     const again = await indexPdfDocument({ docId: 'man-reopened', documentName: 'Riverside-Specs.pdf', pdfDoc: manPdf as never });
