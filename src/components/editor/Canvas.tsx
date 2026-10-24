@@ -3,13 +3,14 @@ import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { useFileOpen } from '@/hooks/useFileOpen';
-import { renderPage } from '@/lib/pdfLoader';
+import { cancelCanvasRender, isRenderingCancelled, prefetchPageOperators, renderPage } from '@/lib/pdfLoader';
 import { MarkupCanvas } from './MarkupCanvas';
 import { PlacementDebugOverlay } from './PlacementDebugOverlay';
 import { CanvasStatusChip } from './CanvasStatusChip';
 import { CalibrationDialog } from './CalibrationDialog';
 import { FileText, Upload, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { activatePlacementDebugForPage } from '@/services/ai/placement';
+import { panDeltaKeepingCenter } from '@/lib/computeFitTransform';
 
 // Base scale for PDF rendering - this is the scale at which we render the PDF
 // The pdfLoader already handles high-DPI internally, so we use 1.5 for good quality
@@ -24,7 +25,8 @@ export function Canvas() {
   const pdfCanvasRef = useRef<HTMLCanvasElement>(null);
   const pdfTransformRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(false);
-  const [canvasDimensions, setCanvasDimensions] = useState({ width: 612, height: 792 });
+  const [renderError, setRenderError] = useState(false);
+  const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
   const [isDragOver, setIsDragOver] = useState(false);
   const [isSelecting, setIsSelecting] = useState(false);
   const [selectionStart, setSelectionStart] = useState<{ x: number; y: number } | null>(null);
@@ -57,8 +59,6 @@ export function Canvas() {
     setCurrentPage,
     setPageDimensions,
     setContainerDimensions,
-    containerWidth,
-    containerHeight,
     fitToCanvas,
     aiSelectionActive,
     aiSelectionRect: storedAiSelectionRect,
@@ -91,6 +91,8 @@ export function Canvas() {
   const hasViewState = currentDocData?.hasViewState ?? false;
   const originalPageWidth = currentDocData?.originalPageWidth || 0;
   const originalPageHeight = currentDocData?.originalPageHeight || 0;
+  const originalPageSizeRef = useRef({ w: 0, h: 0 });
+  originalPageSizeRef.current = { w: originalPageWidth, h: originalPageHeight };
   const hasActivePdf = Boolean(
     (activeDocId && pdfDocuments[activeDocId]?.pdfDocument) ||
     (activeDocument && pdfDocuments[activeDocument]?.pdfDocument)
@@ -146,21 +148,49 @@ export function Canvas() {
     }, NAV_SETTLE_MS);
   }, []);
 
-  // Track container dimensions for fit-to-canvas (re-bind when document shell mounts)
+  // Track container size and fit/center once page + container sizes are known.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
 
-    const updateContainerDimensions = () => {
-      const { clientWidth, clientHeight } = el;
-      setContainerDimensions(clientWidth, clientHeight);
+    const applyViewport = (width: number, height: number) => {
+      const store = useCanvasStore.getState();
+      const prevW = store.containerWidth;
+      const prevH = store.containerHeight;
+      setContainerDimensions(width, height);
+
+      if (!pdfDocument) return;
+      const pageW = canvasDimensions.width;
+      const pageH = canvasDimensions.height;
+      if (!(pageW > 0) || !(pageH > 0) || !(width > 0) || !(height > 0)) return;
+
+      const doc = store.activeDocId ? store.pdfDocuments[store.activeDocId] : null;
+      const userAdjusted = doc?.viewUserAdjusted ?? false;
+      if (!userAdjusted) {
+        fitToCanvas(width, height, { pageW, pageH, rotation });
+        return;
+      }
+      if (prevW > 0 && prevH > 0 && (prevW !== width || prevH !== height)) {
+        const delta = panDeltaKeepingCenter(prevW, prevH, width, height);
+        const pan = doc?.panOffset ?? ZERO_PAN;
+        useCanvasStore.getState().setPanOffset(pan.x + delta.x, pan.y + delta.y, { userAdjusted: true });
+      }
     };
 
-    updateContainerDimensions();
-    const resizeObserver = new ResizeObserver(updateContainerDimensions);
+    const onResize = () => applyViewport(el.clientWidth, el.clientHeight);
+    onResize();
+    const resizeObserver = new ResizeObserver(onResize);
     resizeObserver.observe(el);
     return () => resizeObserver.disconnect();
-  }, [setContainerDimensions, hasActivePdf]);
+  }, [
+    setContainerDimensions,
+    hasActivePdf,
+    pdfDocument,
+    canvasDimensions.width,
+    canvasDimensions.height,
+    rotation,
+    fitToCanvas,
+  ]);
 
   // Sync canvas store's activeDocId with editorStore's activeDocument
   useEffect(() => {
@@ -169,15 +199,9 @@ export function Canvas() {
     setActiveDocId(activeDocument);
   }, [activeDocument, activeDocId, hasActivePdf, setActiveDocId]);
 
-  // Auto-fit when PDF first loads (do not depend on whole currentDocData object)
   useEffect(() => {
-    if (pdfDocument && containerRef.current && !hasViewState) {
-      if (containerWidth > 0 && containerHeight > 0) {
-        containerRef.current.scrollTo({ left: 0, top: 0 });
-        fitToCanvas(containerWidth, containerHeight);
-      }
-    }
-  }, [pdfDocument, activeDocId, hasViewState, fitToCanvas, containerWidth, containerHeight]);
+    setCanvasDimensions({ width: 0, height: 0 });
+  }, [pdfDocument, currentPage, activeDocId]);
 
   // Render PDF page when document or page changes (NOT on zoom/pan/markup updates)
   useEffect(() => {
@@ -186,6 +210,7 @@ export function Canvas() {
       if (!pdfDocument || !pdfCanvasRef.current) return;
       
       setLoading(true);
+      setRenderError(false);
       try {
         // Render at fixed base scale - zoom is handled via CSS transform
         const pageInfo = await renderPage(pdfDocument, currentPage, pdfCanvasRef.current, BASE_RENDER_SCALE);
@@ -205,8 +230,21 @@ export function Canvas() {
             pageNumber: currentPage,
           });
         }
+        const idle = window.requestIdleCallback || ((cb: () => void) => window.setTimeout(cb, 0));
+        idle(() => {
+          if (cancelled) return;
+          void prefetchPageOperators(pdfDocument, currentPage + 1);
+        });
       } catch (err) {
+        if (cancelled || isRenderingCancelled(err)) return;
         console.error('Page render error:', err);
+        if (cancelled) return;
+        setRenderError(true);
+        // Fallback so fit can still run and the page box never stays hidden.
+        const { w: ow, h: oh } = originalPageSizeRef.current;
+        const w = (ow > 0 ? ow : 612) * BASE_RENDER_SCALE;
+        const h = (oh > 0 ? oh : 792) * BASE_RENDER_SCALE;
+        setCanvasDimensions(prev => (prev.width > 0 ? prev : { width: w, height: h }));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -215,6 +253,7 @@ export function Canvas() {
     render();
     return () => {
       cancelled = true;
+      if (pdfCanvasRef.current) cancelCanvasRender(pdfCanvasRef.current);
     };
   }, [pdfDocument, currentPage, setPageDimensions]);
 
@@ -830,7 +869,7 @@ export function Canvas() {
       {/* Main canvas area */}
       <div 
         ref={containerRef}
-        className={`flex-1 overflow-auto relative ${
+        className={`flex-1 overflow-hidden relative ${
           isPanning
             ? 'cursor-grabbing'
             : activeTool === 'pan' || spacePanHeld
@@ -849,35 +888,35 @@ export function Canvas() {
         onWheel={handleWheel}
       >
         <CanvasStatusChip />
+
+        {/* Loading / error indicators live outside the (possibly hidden) page box. */}
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center z-20 pointer-events-none">
+            <Loader2 className="w-8 h-8 animate-spin text-primary" />
+          </div>
+        )}
+        {renderError && !loading && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 rounded-md bg-destructive/90 px-3 py-1.5 text-xs text-destructive-foreground shadow">
+            This page couldn't be rendered. Try reopening the document.
+          </div>
+        )}
         
-        {/* PDF Page - CSS transform for zoom, pan, and rotation */}
-        <div 
-          className="flex items-center justify-center"
-          style={{ 
-            minWidth: '100%',
-            minHeight: '100%',
-            width: 'max-content',
-            height: 'max-content',
-            padding: '64px',
+        {/* Page at container origin; pan/zoom/rotate via CSS transform (origin: page center). */}
+        <div
+          className="relative shadow-2xl"
+          ref={pdfTransformRef}
+          style={{
+            position: 'absolute',
+            left: 0,
+            top: 0,
+            width: canvasDimensions.width || undefined,
+            height: canvasDimensions.height || undefined,
+            transform: `translate(${displayPan.x}px, ${displayPan.y}px) scale(${displayZoom / 100}) rotate(${rotation}deg)`,
+            transformOrigin: 'center center',
+            willChange: isNavigating ? 'transform' : 'auto',
+            visibility: hasViewState && canvasDimensions.width > 0 ? 'visible' : 'hidden',
           }}
         >
-          {/* Zoom/Pan/Rotate container - CSS transform for instant zoom */}
-          <div 
-            className="relative shadow-2xl"
-            ref={pdfTransformRef}
-            style={{
-              // Live view during pan/zoom avoids Zustand writes every frame.
-              transform: `translate(${displayPan.x}px, ${displayPan.y}px) scale(${displayZoom / 100}) rotate(${rotation}deg)`,
-              transformOrigin: 'center center',
-              willChange: isNavigating ? 'transform' : 'auto',
-            }}
-          >
-            {/* Loading indicator */}
-            {loading && (
-              <div className="absolute inset-0 bg-background/80 flex items-center justify-center z-10">
-                <Loader2 className="w-8 h-8 animate-spin text-primary" />
-              </div>
-            )}
             
             {/* PDF canvas */}
             {pdfDocument ? (
@@ -977,7 +1016,6 @@ export function Canvas() {
               </div>
             )}
           </div>
-        </div>
 
         {/* Drag overlay */}
         {isDragOver && (

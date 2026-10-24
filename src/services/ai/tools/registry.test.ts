@@ -76,6 +76,17 @@ describe('assistant tool registry', () => {
     expect(context.navigateToPage).toHaveBeenCalledWith(2, bounds);
   });
 
+  it('unknown documentId fails without navigating', async () => {
+    const context = makeContext();
+    const result = await executeAssistantTool('navigate_page', {
+      page: 2,
+      documentId: 'missing-doc',
+    }, context);
+    expect(result.status).toBe('failed');
+    expect(result.summary).toMatch(/Unknown documentId missing-doc/);
+    expect(context.navigateToPage).not.toHaveBeenCalled();
+  });
+
   it('activate_editor_tool runs immediately without approval', async () => {
     const context = makeContext();
     context.activateEditorTool = vi.fn(() => ({
@@ -104,7 +115,10 @@ describe('assistant tool registry', () => {
       pointers,
     }, context);
     await executeApprovedAssistantAction(result.approval!, context);
-    expect(context.placeMarkups).toHaveBeenCalledWith(pointers);
+    expect(context.placeMarkups).toHaveBeenCalledWith(expect.objectContaining({
+      pointers,
+      documentId: undefined,
+    }));
   });
 
   it('rejects mismatched mutation payloads per tool schema', async () => {

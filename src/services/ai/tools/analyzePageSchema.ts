@@ -52,4 +52,6 @@ export const analyzePageInputSchema = z.object({
   page: z.number().int().positive(),
   scope: analyzePageScopeSchema,
   prompt: z.string().optional(),
+  documentId: z.string().min(1).optional()
+    .describe('Open document id. Defaults to the active tab; does not switch tabs for analysis.'),
 });

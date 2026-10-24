@@ -46,6 +46,10 @@ export function runIntake(input: IntakeInput): IntakeResult {
   } else if (/\b(layout|run|homerun|conduit|route)\b/.test(lower)) {
     preliminaryTaskType = 'layout';
     preliminaryRisk = 'medium';
+  } else if (/\b(spec|csi|masterformat|section\s+\d{2}|manufacturer|submittal|per spec)\b/.test(lower)
+    || /\b(across (the )?(drawings|docs|documents)|every sheet|project manual)\b/.test(lower)) {
+    preliminaryTaskType = 'read_context';
+    preliminaryRisk = 'low';
   } else if (isLocateIntent(normalizedMessage)) {
     // Location / “show me where” needs tools + canvas focus — not answer_directly.
     preliminaryTaskType = 'read_context';

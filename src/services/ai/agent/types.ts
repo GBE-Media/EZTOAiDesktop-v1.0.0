@@ -162,6 +162,7 @@ export interface AgentTurnResult {
   routingDecision?: RoutingDecision;
   modelsUsed?: ModelUsedEntry[];
   verificationSummary?: VerificationSummary;
+  citations?: import('@/types/assistant').EvidenceCitation[];
 }
 
 export interface AgentModelMessage {

@@ -10,6 +10,9 @@ export interface EvidenceCitation {
   documentId?: string;
   documentName?: string;
   page: number;
+  pageLabel?: string;
+  sheetNumber?: string;
+  specSection?: string;
   label: string;
   snippet?: string;
   confidence?: number;

@@ -1,8 +1,57 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { capRenderScale, cssPageSize } from './renderScaleCap';
 
 // Configure PDF.js worker for desktop app (no CDN dependency)
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+const renderTasks = new WeakMap<HTMLCanvasElement, pdfjsLib.RenderTask>();
+const renderSeq = new WeakMap<HTMLCanvasElement, number>();
+const rangeTransports = new WeakMap<object, { url: string }>();
+
+export function cancelCanvasRender(canvas: HTMLCanvasElement): void {
+  renderTasks.get(canvas)?.cancel();
+  renderSeq.set(canvas, (renderSeq.get(canvas) ?? 0) + 1);
+}
+
+export function retargetPdfDocument(document: object, url: string): boolean {
+  const transport = rangeTransports.get(document);
+  if (!transport) return false;
+  transport.url = url;
+  return true;
+}
+
+export function createPdfRangeTransport(
+  url: string,
+  size: number,
+  onFatal: (error: Error) => void = () => {},
+): pdfjsLib.PDFDataRangeTransport {
+  class FileRangeTransport extends pdfjsLib.PDFDataRangeTransport {
+    url = url;
+    requestDataRange(begin: number, end: number) {
+      const attempt = async (tries: number): Promise<void> => {
+        try {
+          const response = await fetch(this.url, { headers: { Range: `bytes=${begin}-${end - 1}` } });
+          if (response.status !== 206) throw new Error(`Range ${begin}-${end - 1} failed (${response.status})`);
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          if (bytes.byteLength !== end - begin) {
+            throw new Error(`Short range read ${bytes.byteLength}/${end - begin}`);
+          }
+          this.onDataRange(begin, bytes);
+        } catch (error) {
+          if (tries > 0) return attempt(tries - 1);
+          onFatal(error as Error);
+        }
+      };
+      void attempt(1);
+    }
+  }
+  return new FileRangeTransport(size, new Uint8Array(0));
+}
+
+export function isRenderingCancelled(error: unknown): boolean {
+  return !!error && typeof error === 'object' && (error as { name?: string }).name === 'RenderingCancelledException';
+}
 
 export interface PDFPageInfo {
   pageNumber: number;
@@ -17,24 +66,64 @@ export interface LoadedPDF {
   numPages: number;
 }
 
-export async function loadPDF(source: string | ArrayBuffer): Promise<LoadedPDF> {
-  // When source is an ArrayBuffer, create a copy to prevent PDF.js from detaching the original
-  // PDF.js often transfers ArrayBuffers to a worker, which detaches them (byteLength becomes 0)
-  let documentSource: string | ArrayBuffer = source;
-  
+export async function loadPDF(
+  source: string | ArrayBuffer,
+  options?: { copy?: boolean },
+): Promise<LoadedPDF> {
+  let documentSource: string | ArrayBuffer | Uint8Array = source;
+
   if (source instanceof ArrayBuffer) {
-    // Create a true copy with a new backing buffer
-    const copiedBytes = new Uint8Array(source).slice();
-    documentSource = copiedBytes.buffer;
+    documentSource = options?.copy === false ? new Uint8Array(source) : new Uint8Array(source.slice(0));
   }
-  
+
   const loadingTask = pdfjsLib.getDocument(documentSource);
   const document = await loadingTask.promise;
-  
+
   return {
     document,
     numPages: document.numPages,
   };
+}
+
+export async function loadPDFFromUrl(
+  url: string,
+  options?: { rangeChunkSize?: number; onReadError?: (error: Error) => void },
+): Promise<LoadedPDF> {
+  const head = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+  if (head.status !== 206) throw new Error(`PDF open failed (${head.status})`);
+  const contentRange = head.headers.get('Content-Range');
+  const size = Number(contentRange?.split('/')[1]);
+  if (!Number.isFinite(size) || size <= 0) throw new Error('PDF open failed (missing size)');
+  let fatal: ((error: Error) => void) | null = null;
+  const transport = createPdfRangeTransport(url, size, (error) => fatal?.(error));
+  const loadingTask = pdfjsLib.getDocument({
+    range: transport,
+    rangeChunkSize: options?.rangeChunkSize ?? (1 << 20),
+    disableAutoFetch: true,
+    disableStream: true,
+  });
+  const failed = new Promise<never>((_, reject) => {
+    fatal = (error) => {
+      reject(error);
+      void loadingTask.destroy();
+    };
+  });
+  const document = await Promise.race([loadingTask.promise, failed]);
+  fatal = (error) => options?.onReadError?.(error);
+  rangeTransports.set(document, transport as unknown as { url: string });
+  return {
+    document,
+    numPages: document.numPages,
+  };
+}
+
+export async function getPageLabels(document: pdfjsLib.PDFDocumentProxy): Promise<string[] | null> {
+  try {
+    const labels = await document.getPageLabels();
+    return Array.isArray(labels) ? labels : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function renderPage(
@@ -43,41 +132,66 @@ export async function renderPage(
   canvas: HTMLCanvasElement,
   scale: number = 1.5
 ): Promise<PDFPageInfo> {
+  const previous = renderTasks.get(canvas);
+  previous?.cancel();
+  const seq = (renderSeq.get(canvas) ?? 0) + 1;
+  renderSeq.set(canvas, seq);
+
   const page = await document.getPage(pageNumber);
-  
-  // Use device pixel ratio for crisp rendering on high-DPI displays
+  if (renderSeq.get(canvas) !== seq) {
+    throw Object.assign(new Error('superseded'), { name: 'RenderingCancelledException' });
+  }
+  renderTasks.get(canvas)?.cancel();
   const devicePixelRatio = window.devicePixelRatio || 1;
-  const outputScale = devicePixelRatio * 2; // 2x for extra sharpness
-  
-  const viewport = page.getViewport({ scale: scale * outputScale });
-  
+  const outputScale = devicePixelRatio * 2;
+  const originalViewport = page.getViewport({ scale: 1 });
+  const css = cssPageSize(scale, originalViewport.width, originalViewport.height);
+  const backingScale = capRenderScale(scale * outputScale, originalViewport.width, originalViewport.height);
+  const viewport = page.getViewport({ scale: backingScale });
+
   const context = canvas.getContext('2d');
   if (!context) throw new Error('Could not get canvas context');
-  
-  // Set canvas size to match high-DPI rendering
+
   canvas.width = viewport.width;
   canvas.height = viewport.height;
-  
-  // Scale CSS size to match logical size
-  canvas.style.width = `${viewport.width / outputScale}px`;
-  canvas.style.height = `${viewport.height / outputScale}px`;
-  
-  const renderContext = {
+  canvas.style.width = `${css.width}px`;
+  canvas.style.height = `${css.height}px`;
+
+  const task = page.render({
     canvasContext: context,
-    viewport: viewport,
-  };
-  
-  await page.render(renderContext).promise;
-  
-  const originalViewport = page.getViewport({ scale: 1 });
-  
+    viewport,
+  });
+  renderTasks.set(canvas, task);
+  try {
+    await task.promise;
+  } finally {
+    if (renderTasks.get(canvas) === task) renderTasks.delete(canvas);
+    page.cleanup();
+  }
+
   return {
     pageNumber,
-    width: viewport.width / outputScale,
-    height: viewport.height / outputScale,
+    width: css.width,
+    height: css.height,
     originalWidth: originalViewport.width,
     originalHeight: originalViewport.height,
   };
+}
+
+export async function prefetchPageOperators(
+  document: pdfjsLib.PDFDocumentProxy,
+  pageNumber: number,
+): Promise<void> {
+  if (pageNumber < 1 || pageNumber > document.numPages) return;
+  const page = await document.getPage(pageNumber);
+  try {
+    await Promise.all([
+      page.getOperatorList(),
+      page.getTextContent(),
+    ]);
+  } finally {
+    page.cleanup();
+  }
 }
 
 export async function getPageDimensions(

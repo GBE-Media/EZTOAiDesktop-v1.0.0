@@ -35,7 +35,7 @@ export function ExtractPagesDialog({ open, onOpenChange }: ExtractPagesDialogPro
   
   const { 
     activeDocId, 
-    getOriginalPdfBytes,
+    getOriginalPdfBytesAsync,
     getCurrentPage,
     getTotalPages,
     setCurrentPage,
@@ -47,7 +47,7 @@ export function ExtractPagesDialog({ open, onOpenChange }: ExtractPagesDialogPro
   const handleExtract = useCallback(async () => {
     if (!activeDocId) return;
     
-    const originalBytes = getOriginalPdfBytes();
+    const originalBytes = await getOriginalPdfBytesAsync();
     if (!originalBytes) {
       toast.error('No document loaded');
       return;
@@ -159,7 +159,7 @@ export function ExtractPagesDialog({ open, onOpenChange }: ExtractPagesDialogPro
       setIsLoading(false);
     }
   }, [
-    activeDocId, getOriginalPdfBytes, pageSelection, pageRange,
+    activeDocId, getOriginalPdfBytesAsync, pageSelection, pageRange,
     totalPages, currentPage, deleteAfterExtract, onOpenChange, setCurrentPage
   ]);
   

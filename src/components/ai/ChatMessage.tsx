@@ -4,33 +4,20 @@
  */
 
 import { memo, useEffect, useRef, useState } from 'react';
-import { Bot, User, AlertCircle, Zap, Eye, Calculator, MapPin, Copy, Check, RotateCcw } from 'lucide-react';
+import { Bot, AlertCircle, Copy, Check, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ChatMessage as ChatMessageType } from '@/store/aiChatStore';
-import type { PipelineStage } from '@/services/ai/providers/types';
 import { AssistantMessageBlocks } from './AssistantMessageBlocks';
 import { PulsingStatus } from './PulsingStatus';
 import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { sanitizeAssistantVisibleText } from '@/services/ai/agent/assistantVisibleText';
+import { humanizeToolError, textLooksLikeRawInternals } from '@/lib/assistantTurnPresentation';
 
 interface ChatMessageProps {
   message: ChatMessageType;
 }
-
-const StageIcon = ({ stage }: { stage?: PipelineStage }) => {
-  switch (stage) {
-    case 'vision':
-      return <Eye className="w-3 h-3" />;
-    case 'estimation':
-      return <Calculator className="w-3 h-3" />;
-    case 'placement':
-      return <MapPin className="w-3 h-3" />;
-    default:
-      return <Zap className="w-3 h-3" />;
-  }
-};
 
 export const ChatMessage = memo(function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === 'user';
@@ -38,7 +25,6 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
   const [copied, setCopied] = useState(false);
   const [highlightedRef, setHighlightedRef] = useState<number | null>(null);
   const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const messages = useAIChatStore(state => state.messages);
   const setCurrentPage = useCanvasStore(state => state.setCurrentPage);
   const selectMarkup = useCanvasStore(state => state.selectMarkup);
   const getMarkupsByPage = useCanvasStore(state => state.getMarkupsByPage);
@@ -97,6 +83,7 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
   };
 
   const retry = () => {
+    const messages = useAIChatStore.getState().messages;
     const index = messages.findIndex(candidate => candidate.id === message.id);
     const source = [...messages.slice(0, index)].reverse().find(candidate => candidate.role === 'user');
     if (source) {
@@ -121,71 +108,91 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
     );
   }
   
-  return (
-    <div
-      className={cn(
-        'flex gap-3 p-4',
-        isUser ? 'bg-transparent' : 'bg-secondary/30'
-      )}
-    >
-      {/* Avatar */}
-      <div
-        className={cn(
-          'w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0',
-          isUser ? 'bg-primary text-primary-foreground' : 'bg-gradient-to-br from-violet-500 to-purple-600 text-white'
-        )}
-      >
-        {isUser ? (
-          <User className="w-4 h-4" />
-        ) : (
-          <Bot className="w-4 h-4" />
-        )}
-      </div>
-      
-      {/* Content */}
-      <div className="flex-1 min-w-0">
-        {/* Header */}
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-sm font-medium">
-            {isUser ? 'You' : 'BidveraAi'}
-          </span>
-          {message.metadata?.stage && (
-            <span className="flex items-center gap-1 text-xs text-muted-foreground bg-secondary px-1.5 py-0.5 rounded">
-              <StageIcon stage={message.metadata.stage} />
-              {message.metadata.stage}
-            </span>
+  const recovered = Boolean(message.content && message.error);
+  // Plain-English errors (e.g. "No AI provider configured…") are shown as-is;
+  // only raw internals (JSON, tool ids, counters) get humanized, with the raw text kept in Details.
+  const errorIsRaw = message.error ? textLooksLikeRawInternals(message.error) : false;
+  const errorText = message.error
+    ? (errorIsRaw ? humanizeToolError(message.error) : message.error)
+    : null;
+
+  if (isUser) {
+    return (
+      <div className="flex justify-end px-4 py-3">
+        <div className="max-w-[min(100%,36rem)] rounded-2xl bg-secondary/80 px-3.5 py-2.5 text-sm text-foreground shadow-sm">
+          <div className="whitespace-pre-wrap break-words">
+            {formatContent(message.content, {
+              messageId: message.id,
+              highlightedRef,
+            })}
+          </div>
+          {message.images && message.images.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {message.images.map((img, i) => (
+                <img
+                  key={i}
+                  src={img.startsWith('data:') ? img : `data:image/png;base64,${img}`}
+                  alt={`Attached image ${i + 1}`}
+                  className="max-h-[150px] max-w-[200px] rounded-xl border border-border object-cover"
+                />
+              ))}
+            </div>
           )}
-          <span className="text-xs text-muted-foreground">
-            {formatTime(message.timestamp)}
-          </span>
-          {!isUser && !message.isLoading && (
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex gap-3 px-4 py-4">
+      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 text-white">
+        <Bot className="h-3.5 w-3.5" />
+      </div>
+
+      <div className="min-w-0 max-w-[min(100%,40rem)] flex-1">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="text-sm font-medium">BidveraAi</span>
+          <span className="text-xs text-muted-foreground">{formatTime(message.timestamp)}</span>
+          {!message.isLoading && (
             <div className="ml-auto flex items-center">
-              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={copy} title="Copy answer">
-                {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={copy} title="Copy answer">
+                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
               </Button>
-              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={retry} title="Retry">
-                <RotateCcw className="h-3 w-3" />
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={retry} title="Retry">
+                <RotateCcw className="h-3.5 w-3.5" />
               </Button>
             </div>
           )}
         </div>
-        
-        {/* Message content */}
+
         {message.isLoading ? (
           <PulsingStatus />
-        ) : message.error ? (
-          <div className="flex items-center gap-2 text-destructive">
-            <AlertCircle className="w-4 h-4" />
-            <span className="text-sm">{message.error}</span>
-          </div>
         ) : (
-          <div className="text-sm whitespace-pre-wrap break-words">
-            {formatContent(message.content, {
-              messageId: message.id,
-              highlightedRef,
-              onCalloutClick: isUser ? undefined : focusCallout,
-            })}
-          </div>
+          <>
+            {errorText && !recovered && (
+              <div className="mb-2 flex items-start gap-2 text-sm text-destructive">
+                <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                <div className="min-w-0">
+                  <span>{errorText}</span>
+                  {errorIsRaw && (
+                    <details className="mt-1 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">Details</summary>
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-2 text-[10px]">{message.error}</pre>
+                    </details>
+                  )}
+                </div>
+              </div>
+            )}
+            {message.content ? (
+              <div className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+                {formatContent(message.content, {
+                  messageId: message.id,
+                  highlightedRef,
+                  onCalloutClick: focusCallout,
+                })}
+              </div>
+            ) : null}
+          </>
         )}
         <AssistantMessageBlocks blocks={message.blocks} />
         
@@ -203,12 +210,6 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
           </div>
         )}
         
-        {/* Token usage if available */}
-        {message.metadata?.tokenUsage && (
-          <div className="mt-2 text-xs text-muted-foreground">
-            Tokens: {message.metadata.tokenUsage.total.toLocaleString()}
-          </div>
-        )}
       </div>
     </div>
   );

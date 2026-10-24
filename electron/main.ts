@@ -1,7 +1,33 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain, shell, safeStorage } from 'electron';
+import { app, BrowserWindow, Menu, dialog, ipcMain, protocol, shell, safeStorage } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import * as path from 'path';
 import * as fs from 'fs';
+import {
+  allowLocalPath,
+  assetDestPath,
+  fileUrlForPath,
+  hashBufferSha256,
+  hashFileSha256,
+  isAllowedLocalPath,
+  pdfCacheDir,
+  projectAssetsDir,
+  prunePdfCache,
+  serveAllowedFile,
+} from './fileProtocol';
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'bidvera-file',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+      bypassCSP: false,
+    },
+  },
+]);
 
 const isDev = !app.isPackaged;
 
@@ -317,14 +343,27 @@ ipcMain.handle('dialog:openFile', async (_, fileType?: 'pdf' | 'project') => {
     return null;
   }
 
-  const filePath = result.filePaths[0];
-  const buffer = fs.readFileSync(filePath);
+  const filePath = allowLocalPath(result.filePaths[0]);
   const name = path.basename(filePath);
+  const stat = fs.statSync(filePath);
+  const isProject = name.toLowerCase().endsWith('.bidveraai');
+
+  if (isProject) {
+    const buffer = fs.readFileSync(filePath);
+    allowLocalPath(projectAssetsDir(filePath));
+    return {
+      buffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+      name,
+      path: filePath,
+      byteLength: stat.size,
+    };
+  }
 
   return {
-    buffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
     name,
     path: filePath,
+    byteLength: stat.size,
+    url: fileUrlForPath(filePath),
   };
 });
 
@@ -347,6 +386,10 @@ ipcMain.handle('dialog:saveFile', async (_, data: ArrayBuffer, defaultName: stri
 
   try {
     fs.writeFileSync(result.filePath, Buffer.from(data));
+    allowLocalPath(result.filePath);
+    if (result.filePath.toLowerCase().endsWith('.bidveraai')) {
+      allowLocalPath(projectAssetsDir(result.filePath));
+    }
     return { 
       success: true, 
       path: result.filePath, 
@@ -361,12 +404,148 @@ ipcMain.handle('dialog:saveFile', async (_, data: ArrayBuffer, defaultName: stri
 // Save Direct - overwrites existing file without dialog
 ipcMain.handle('dialog:saveFileDirect', async (_, data: ArrayBuffer, filePath: string) => {
   try {
+    if (!isAllowedLocalPath(filePath)) return { success: false, error: 'not-allowed' };
     fs.writeFileSync(filePath, Buffer.from(data));
+    allowLocalPath(filePath);
+    if (filePath.toLowerCase().endsWith('.bidveraai')) {
+      allowLocalPath(projectAssetsDir(filePath));
+    }
     return { success: true, path: filePath };
   } catch (error) {
     console.error('Failed to save file:', error);
     return { success: false, error: (error as Error).message };
   }
+});
+
+ipcMain.handle('fs:snapshotOriginal', async (_, filePath: string) => {
+  if (!isAllowedLocalPath(filePath) || !fs.existsSync(filePath)) {
+    return { success: false, error: 'not-allowed' };
+  }
+  const sha256 = await hashFileSha256(filePath);
+  const cacheDir = path.join(app.getPath('userData'), 'pdf-cache');
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const dest = path.join(cacheDir, `${sha256}.pdf`);
+  if (!fs.existsSync(dest)) {
+    fs.copyFileSync(filePath, dest);
+  }
+  // Mark as freshly used so startup pruning (mtime-based) never treats an in-use snapshot as stale.
+  try { const now = new Date(); fs.utimesSync(dest, now, now); } catch { /* ignore */ }
+  allowLocalPath(dest);
+  return { success: true, path: dest, sha256 };
+});
+
+ipcMain.handle('fs:releaseSnapshot', async (_, filePath: string) => {
+  if (!filePath || !isAllowedLocalPath(filePath)) return { success: false, error: 'not-allowed' };
+  const cacheDir = pdfCacheDir(app.getPath('userData'));
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(path.resolve(cacheDir))) return { success: false, error: 'not-cache' };
+  try {
+    if (fs.existsSync(resolved)) fs.unlinkSync(resolved);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('fs:hashFile', async (_, filePath: string) => {
+  if (!isAllowedLocalPath(filePath)) return { success: false, error: 'not-allowed' };
+  const sha256 = await hashFileSha256(filePath);
+  const byteLength = fs.statSync(filePath).size;
+  return { success: true, sha256, byteLength };
+});
+
+ipcMain.handle('fs:readAllowedFile', async (_, filePath: string) => {
+  if (!isAllowedLocalPath(filePath)) return null;
+  const buffer = fs.readFileSync(filePath);
+  return {
+    buffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+    path: filePath,
+    name: path.basename(filePath),
+  };
+});
+
+ipcMain.handle('project:writeAsset', async (_, payload: {
+  projectPath: string;
+  sha256: string;
+  sourcePath?: string;
+  data?: ArrayBuffer;
+}) => {
+  const projectPath = payload?.projectPath;
+  const sha256 = payload?.sha256;
+  if (!projectPath || !sha256 || !/^[a-f0-9]{64}$/i.test(sha256)) {
+    return { success: false, error: 'invalid-args' };
+  }
+  if (!isAllowedLocalPath(projectPath)) {
+    return { success: false, error: 'not-allowed' };
+  }
+  const dest = assetDestPath(projectPath, sha256.toLowerCase());
+  const dir = projectAssetsDir(projectPath);
+  fs.mkdirSync(dir, { recursive: true });
+  allowLocalPath(dir);
+  allowLocalPath(dest);
+
+  if (fs.existsSync(dest)) {
+    if (payload.sourcePath && path.resolve(payload.sourcePath) === path.resolve(dest)) {
+      return {
+        success: true,
+        skipped: true,
+        relPath: `${path.parse(projectPath).name}.bidveraai.files/${sha256.toLowerCase()}.pdf`,
+        sha256: sha256.toLowerCase(),
+        byteLength: fs.statSync(dest).size,
+      };
+    }
+    const existing = await hashFileSha256(dest);
+    if (existing.toLowerCase() === sha256.toLowerCase()) {
+      return {
+        success: true,
+        skipped: true,
+        relPath: `${path.parse(projectPath).name}.bidveraai.files/${sha256.toLowerCase()}.pdf`,
+        sha256: sha256.toLowerCase(),
+        byteLength: fs.statSync(dest).size,
+      };
+    }
+  }
+
+  const tmp = `${dest}.tmp`;
+  if (payload.sourcePath) {
+    if (!isAllowedLocalPath(payload.sourcePath)) {
+      return { success: false, error: 'not-allowed' };
+    }
+    if (path.resolve(payload.sourcePath) === path.resolve(dest)) {
+      return {
+        success: true,
+        skipped: true,
+        relPath: `${path.parse(projectPath).name}.bidveraai.files/${sha256.toLowerCase()}.pdf`,
+        sha256: sha256.toLowerCase(),
+        byteLength: fs.statSync(dest).size,
+      };
+    }
+    fs.copyFileSync(payload.sourcePath, tmp);
+  } else if (payload.data) {
+    const buf = Buffer.from(payload.data);
+    const actual = hashBufferSha256(buf);
+    if (actual.toLowerCase() !== sha256.toLowerCase()) {
+      return { success: false, error: 'hash-mismatch' };
+    }
+    fs.writeFileSync(tmp, buf);
+  } else {
+    return { success: false, error: 'no-source' };
+  }
+  const actual = await hashFileSha256(tmp);
+  if (actual.toLowerCase() !== sha256.toLowerCase()) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    return { success: false, error: 'hash-mismatch' };
+  }
+  fs.renameSync(tmp, dest);
+
+  const writtenHash = actual.toLowerCase();
+  return {
+    success: true,
+    skipped: false,
+    relPath: `${path.parse(projectPath).name}.bidveraai.files/${writtenHash}.pdf`,
+    sha256: writtenHash,
+    byteLength: fs.statSync(dest).size,
+  };
 });
 
 // IPC Handlers for secure session storage
@@ -504,6 +683,8 @@ app.on('open-file', (event, filePath) => {
   
   if (mainWindow) {
     // Window already exists, send file path to renderer
+    allowLocalPath(filePath);
+    allowLocalPath(projectAssetsDir(filePath));
     mainWindow.webContents.send('open-project-file', filePath);
   } else {
     // Store for later when window is created
@@ -521,6 +702,20 @@ if (process.platform === 'win32' && process.argv.length >= 2) {
 }
 
 app.whenReady().then(() => {
+  protocol.handle('bidvera-file', async (request) => {
+    const served = await serveAllowedFile(request.url, request.headers.get('Range'));
+    return new Response(served.body, { status: served.status, headers: served.headers });
+  });
+  // Only the primary instance prunes: a second process (e.g. double-clicking another PDF)
+  // must never delete snapshots the running window is still reading.
+  if (app.requestSingleInstanceLock()) {
+    try {
+      prunePdfCache(pdfCacheDir(app.getPath('userData')));
+    } catch (e) {
+      console.warn('[pdf-cache] prune failed', e);
+    }
+  }
+
   // #region agent log
   log('electron/main.ts:app.whenReady', 'App ready', { isDev, isPackaged: app.isPackaged, __dirname, fileToOpen });
   // #endregion
@@ -585,9 +780,12 @@ app.whenReady().then(() => {
 
   // If a file was specified, open it after window is ready
   if (fileToOpen && mainWindow) {
+    const pendingPath = fileToOpen;
     mainWindow.webContents.once('did-finish-load', () => {
-      console.log('[DEBUG] Sending file to renderer:', fileToOpen);
-      mainWindow?.webContents.send('open-project-file', fileToOpen);
+      console.log('[DEBUG] Sending file to renderer:', pendingPath);
+      allowLocalPath(pendingPath);
+      allowLocalPath(projectAssetsDir(pendingPath));
+      mainWindow?.webContents.send('open-project-file', pendingPath);
       fileToOpen = null;
     });
   }

@@ -35,7 +35,7 @@ export function RotatePagesDialog({ open, onOpenChange }: RotatePagesDialogProps
   
   const { 
     activeDocId, 
-    getOriginalPdfBytes,
+    getOriginalPdfBytesAsync,
     getCurrentPage,
     getTotalPages,
   } = useCanvasStore();
@@ -46,7 +46,7 @@ export function RotatePagesDialog({ open, onOpenChange }: RotatePagesDialogProps
   const handleRotate = useCallback(async () => {
     if (!activeDocId) return;
     
-    const originalBytes = getOriginalPdfBytes();
+    const originalBytes = await getOriginalPdfBytesAsync();
     if (!originalBytes) {
       toast.error('No document loaded');
       return;
@@ -131,7 +131,7 @@ export function RotatePagesDialog({ open, onOpenChange }: RotatePagesDialogProps
       setIsLoading(false);
     }
   }, [
-    activeDocId, getOriginalPdfBytes, pageSelection, pageRange,
+    activeDocId, getOriginalPdfBytesAsync, pageSelection, pageRange,
     totalPages, currentPage, rotation, onOpenChange
   ]);
   

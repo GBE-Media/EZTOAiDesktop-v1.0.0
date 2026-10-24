@@ -1,6 +1,12 @@
 import type { Document } from './editor';
 import type { LinkedMeasurement, ProductNode } from './product';
 
+export interface ProjectFileRef {
+  relPath: string;
+  sha256: string;
+  byteLength: number;
+}
+
 export interface ProjectFile {
   version: string;
   name: string;
@@ -25,7 +31,9 @@ export interface ProjectDocument {
   id: string;
   name: string;
   originalPath?: string; // Path to original PDF
-  pdfData: string; // Base64 encoded ORIGINAL PDF (no markups baked in)
+  /** Legacy v1: base64 original PDF. Absent on v2 when fileRef is set. */
+  pdfData?: string;
+  fileRef?: ProjectFileRef;
   pages: number;
   currentPage: number;
   zoom: number;

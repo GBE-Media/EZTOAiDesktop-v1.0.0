@@ -1,6 +1,7 @@
 import type { MarkupStyle } from '@/types/markup';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
+import { useEditorStore } from '@/store/editorStore';
 import type { AssistantToolContext } from '../tools/types';
 import { executeApprovedAssistantAction } from '../tools/registry';
 import { executePlaceMarkupsApproval } from './executePlaceMarkupsApproval';
@@ -104,11 +105,25 @@ export async function handleApprovalDecision(
     let executionResult: unknown;
     if (approval.toolId === 'place_markups' || approval.toolId === 'propose_callouts') {
       const canvas = useCanvasStore.getState();
-      const docId = canvas.activeDocId;
+      const payload = approval.payload && typeof approval.payload === 'object'
+        ? approval.payload as { documentId?: string; page?: number; analysisRef?: { docId?: string; page?: number } }
+        : {};
+      const docId = payload.documentId || payload.analysisRef?.docId || canvas.activeDocId;
+      if (payload.documentId && !canvas.pdfDocuments[payload.documentId]) {
+        const failedResult = { status: 'failed' as const, error: 'Unknown documentId', placed: 0 };
+        useAIChatStore.getState().resolveApproval(approval.id, 'failed', 'Unknown documentId', failedResult);
+        await continueAgent('approved', failedResult);
+        return 'handled';
+      }
+      if (docId && canvas.pdfDocuments[docId] && docId !== canvas.activeDocId) {
+        canvas.setActiveDocId(docId);
+        useEditorStore.getState().setActiveDocument(docId);
+      }
       const pdf = docId ? canvas.pdfDocuments[docId] : null;
+      const page = payload.page || payload.analysisRef?.page || canvas.getCurrentPage() || 1;
       executionResult = await executePlaceMarkupsApproval({
         approval,
-        page: canvas.getCurrentPage() || 1,
+        page,
         pageWidth: pdf?.originalPageWidth || deps.pageWidth,
         pageHeight: pdf?.originalPageHeight || deps.pageHeight,
         defaultStyle: deps.defaultStyle,

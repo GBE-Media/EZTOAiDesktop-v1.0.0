@@ -52,7 +52,7 @@ export function InsertPagesDialog({ open, onOpenChange }: InsertPagesDialogProps
   const { 
     activeDocId, 
     pdfDocuments, 
-    getOriginalPdfBytes,
+    getOriginalPdfBytesAsync,
     getCurrentPage,
     getTotalPages,
   } = useCanvasStore();
@@ -105,7 +105,7 @@ export function InsertPagesDialog({ open, onOpenChange }: InsertPagesDialogProps
     }
     if (!sourceFile) return;
     
-    const originalBytes = getOriginalPdfBytes();
+    const originalBytes = await getOriginalPdfBytesAsync();
     if (!originalBytes) {
       toast.error('No document loaded');
       return;
@@ -179,7 +179,7 @@ export function InsertPagesDialog({ open, onOpenChange }: InsertPagesDialogProps
       setIsLoading(false);
     }
   }, [
-    sourceFile, activeDocId, getOriginalPdfBytes, pageSelection, pageRange,
+    sourceFile, activeDocId, getOriginalPdfBytesAsync, pageSelection, pageRange,
     sourcePageCount, getInsertIndex, onOpenChange
   ]);
   
@@ -189,7 +189,7 @@ export function InsertPagesDialog({ open, onOpenChange }: InsertPagesDialogProps
       return;
     }
     
-    const originalBytes = getOriginalPdfBytes();
+    const originalBytes = await getOriginalPdfBytesAsync();
     if (!originalBytes) {
       toast.error('No document loaded');
       return;
@@ -257,7 +257,7 @@ export function InsertPagesDialog({ open, onOpenChange }: InsertPagesDialogProps
       setIsLoading(false);
     }
   }, [
-    activeDocId, getOriginalPdfBytes, getInsertIndex, blankPageSize, 
+    activeDocId, getOriginalPdfBytesAsync, getInsertIndex, blankPageSize, 
     blankPageCount, pdfDocuments, onOpenChange
   ]);
   

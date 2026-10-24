@@ -1,6 +1,7 @@
 import { registerAssistantTools } from '../../tools/registry';
 import { createTakeoffDomainTools } from './takeoffTools';
 import { createEstimatingStubTools } from './estimatingTools';
+import { createProjectIndexTools } from '../../projectIndex/projectTools';
 
 let registered = false;
 
@@ -17,6 +18,7 @@ export function registerAllAgentTools(): void {
   registerAssistantTools([
     ...createTakeoffDomainTools(),
     ...createEstimatingStubTools(),
+    ...createProjectIndexTools(),
   ]);
   registered = true;
 }

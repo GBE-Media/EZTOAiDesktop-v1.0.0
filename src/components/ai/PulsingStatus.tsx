@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAIChatStore } from '@/store/aiChatStore';
+import { friendlyStatusLine } from '@/lib/assistantTurnPresentation';
 
 const FALLBACK_STATUS_WORDS = [
   'Reading page…',
@@ -37,18 +38,20 @@ export function PulsingStatus({ className }: { className?: string }) {
     return () => clearInterval(timer);
   }, [liveLabel]);
 
-  const label = liveLabel || FALLBACK_STATUS_WORDS[fallbackIndex];
-  const stage = pipelineStatus.currentStage;
+  const label = friendlyStatusLine(liveLabel || FALLBACK_STATUS_WORDS[fallbackIndex]);
 
   return (
-    <div className={cn('flex items-center gap-2 text-muted-foreground', className)}>
-      <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-violet-500" />
-      <span className="animate-pulse text-sm">{label}</span>
-      {stage && stage !== 'complete' && stage !== 'error' && (
-        <span className="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-          {stage}
-        </span>
+    <div
+      className={cn(
+        'relative flex items-center gap-2 overflow-hidden text-muted-foreground',
+        className,
       )}
+    >
+      <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-violet-500" />
+      <span className="relative text-sm">
+        <span className="motion-safe:animate-pulse">{label}</span>
+        <span className="pointer-events-none absolute inset-0 motion-safe:animate-pulse bg-gradient-to-r from-transparent via-foreground/10 to-transparent" />
+      </span>
     </div>
   );
 }

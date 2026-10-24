@@ -1,7 +1,9 @@
 export interface ElectronFileData {
-  buffer: ArrayBuffer;
+  buffer?: ArrayBuffer;
   name: string;
   path: string;
+  url?: string;
+  byteLength?: number;
 }
 
 export interface SaveFileResult {
@@ -24,6 +26,23 @@ export interface ElectronAPI {
   onOpenProjectFile: (callback: (filePath: string) => void) => void;
   saveFile: (data: ArrayBuffer, defaultName: string) => Promise<SaveFileResult>;
   saveFileDirect: (data: ArrayBuffer, filePath: string) => Promise<SaveFileDirectResult>;
+  hashFile: (filePath: string) => Promise<{ success: boolean; sha256?: string; byteLength?: number; error?: string }>;
+  snapshotOriginal: (filePath: string) => Promise<{ success: boolean; path?: string; sha256?: string; error?: string }>;
+  releaseSnapshot: (filePath: string) => Promise<{ success: boolean; error?: string }>;
+  readAllowedFile: (filePath: string) => Promise<{ buffer: ArrayBuffer; path: string; name: string } | null>;
+  writeProjectAsset: (payload: {
+    projectPath: string;
+    sha256: string;
+    sourcePath?: string;
+    data?: ArrayBuffer;
+  }) => Promise<{
+    success: boolean;
+    skipped?: boolean;
+    relPath?: string;
+    sha256?: string;
+    byteLength?: number;
+    error?: string;
+  }>;
   
   // Flag to check if running in Electron
   isElectron: boolean;

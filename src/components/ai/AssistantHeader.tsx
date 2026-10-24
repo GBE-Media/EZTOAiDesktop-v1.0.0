@@ -1,16 +1,10 @@
-import { Bot, Eye, Calculator, MapPin, Plus, Settings2, X } from 'lucide-react';
+import { Bot, Check, Eye, Calculator, MapPin, Plus, Settings2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -21,6 +15,10 @@ import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { cn } from '@/lib/utils';
 import type { PipelineStage } from '@/services/ai/providers/types';
+import { allIndexedPages, indexStatus } from '@/services/ai/projectIndex/store';
+import { useIndexProgressStore } from '@/services/ai/projectIndex/indexProgress';
+import { useCanvasStore } from '@/store/canvasStore';
+import { useEditorStore } from '@/store/editorStore';
 
 function shortModelName(model: string): string {
   const parts = model.split('/');
@@ -46,17 +44,27 @@ export function AssistantHeader(props: {
   onSelectConversation: (id: string) => void;
   onNewConversation: () => void;
   onClose: () => void;
+  onOpenSettings?: () => void;
+  onClearChat?: () => void;
 }) {
   const pipelineModels = useAISettingsStore(state => state.pipelineModels);
-  const showModelStageChips = useAISettingsStore(state => state.showModelStageChips);
   const showActivityTimeline = useAISettingsStore(state => state.showActivityTimeline);
   const showEvidenceCitations = useAISettingsStore(state => state.showEvidenceCitations);
-  const setShowModelStageChips = useAISettingsStore(state => state.setShowModelStageChips);
   const setShowActivityTimeline = useAISettingsStore(state => state.setShowActivityTimeline);
   const setShowEvidenceCitations = useAISettingsStore(state => state.setShowEvidenceCitations);
   const reviewAnalysisMode = useCanvasLayersStore(state => state.reviewAnalysisMode);
   const setReviewAnalysisMode = useCanvasLayersStore(state => state.setReviewAnalysisMode);
   const pipelineStatus = useAIChatStore(state => state.pipelineStatus);
+  useCanvasStore(state => state.pdfDocuments);
+  useEditorStore(state => state.documents);
+  const progressByDoc = useIndexProgressStore(state => state.byDoc);
+  const indexed = allIndexedPages();
+  const status = indexStatus();
+  const progressCount = Object.values(progressByDoc).reduce((sum, row) => sum + row.indexed, 0);
+  const indexedCount = Math.max(indexed.length, progressCount);
+  const totalPages = Object.values(useCanvasStore.getState().pdfDocuments)
+    .reduce((sum, doc) => sum + (doc?.totalPages || 0), 0);
+  const indexedLabel = `Indexed ${indexedCount.toLocaleString()} / ${Math.max(totalPages, indexedCount).toLocaleString()} pages · ${status.needsOcr} scanned`;
   const activeStage =
     pipelineStatus.isRunning && pipelineStatus.currentStage &&
     pipelineStatus.currentStage !== 'complete' &&
@@ -64,30 +72,65 @@ export function AssistantHeader(props: {
       ? pipelineStatus.currentStage
       : null;
 
+  const subtitle = [props.documentName || 'No document', `Page ${props.page}`]
+    .filter(Boolean)
+    .join(' · ');
+
   return (
-    <div className="flex-shrink-0 border-b border-border px-4 py-3">
-      <div className="flex items-center justify-between">
+    <div className="flex-shrink-0 border-b border-border px-3 py-2">
+      <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-2">
-          <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-purple-600">
-            <Bot className="h-4 w-4 text-white" />
+          <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-purple-600">
+            <Bot className="h-3.5 w-3.5 text-white" />
           </div>
           <div className="min-w-0">
-            <h2 className="text-base font-semibold text-foreground">BidveraAi Agent</h2>
-            <p className="truncate text-xs text-muted-foreground">
-              {props.documentName || 'No document'} · Page {props.page} · {props.trade}
-            </p>
+            <h2 className="text-sm font-semibold leading-tight text-foreground">BidveraAi</h2>
+            <p className="truncate text-[11px] text-muted-foreground">{subtitle}</p>
           </div>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-8 w-8"
+            onClick={props.onNewConversation}
+            title="New chat"
+          >
+            <Plus className="h-4 w-4" />
+          </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-8 w-8" title="Display controls">
+              <Button variant="ghost" size="icon" className="h-8 w-8" title="Settings">
                 <Settings2 className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuLabel>Chat display</DropdownMenuLabel>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel>Models</DropdownMenuLabel>
+              <div className="space-y-1 px-2 pb-2">
+                {STAGE_META.map(({ stage, label, icon: Icon }) => {
+                  const selection = pipelineModels[stage];
+                  const isActive = activeStage === stage;
+                  return (
+                    <div
+                      key={stage}
+                      className={cn(
+                        'flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground',
+                        isActive && 'bg-violet-500/10 text-foreground',
+                      )}
+                      title={`${label}: ${selection.provider} / ${selection.model}`}
+                    >
+                      <Icon className="h-3 w-3 flex-shrink-0" />
+                      <span className="font-medium">{label}</span>
+                      <span className="truncate">{shortModelName(selection.model)}</span>
+                    </div>
+                  );
+                })}
+              </div>
               <DropdownMenuSeparator />
+              <DropdownMenuLabel>Project index</DropdownMenuLabel>
+              <div className="px-2 pb-2 text-[11px] text-muted-foreground">{indexedLabel}</div>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Display</DropdownMenuLabel>
               <DropdownMenuCheckboxItem
                 checked={showActivityTimeline}
                 onCheckedChange={(checked) => setShowActivityTimeline(checked === true)}
@@ -101,64 +144,56 @@ export function AssistantHeader(props: {
                 Evidence / citations
               </DropdownMenuCheckboxItem>
               <DropdownMenuCheckboxItem
-                checked={showModelStageChips}
-                onCheckedChange={(checked) => setShowModelStageChips(checked === true)}
-              >
-                Model stage chips
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
                 checked={reviewAnalysisMode}
                 onCheckedChange={(checked) => setReviewAnalysisMode(checked === true)}
               >
                 Review AI analysis
               </DropdownMenuCheckboxItem>
+              {props.conversations.length > 0 && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Chats</DropdownMenuLabel>
+                  <div className="max-h-56 overflow-y-auto">
+                    {props.conversations.map(item => {
+                      const active = item.id === props.conversation?.id;
+                      return (
+                        <DropdownMenuItem
+                          key={item.id}
+                          aria-current={active ? 'true' : undefined}
+                          className={active ? 'font-medium' : undefined}
+                          onSelect={() => props.onSelectConversation(item.id)}
+                        >
+                          <span className="truncate">{item.title}</span>
+                          {active && <Check className="ml-auto h-3.5 w-3.5 flex-shrink-0" />}
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+              {props.onOpenSettings && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onSelect={() => props.onOpenSettings?.()}>
+                    AI settings…
+                  </DropdownMenuItem>
+                </>
+              )}
+              {props.onClearChat && (
+                <DropdownMenuItem
+                  disabled={pipelineStatus.isRunning}
+                  onSelect={() => props.onClearChat?.()}
+                >
+                  <Trash2 className="mr-2 h-3.5 w-3.5" />
+                  Clear chat
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={props.onClose} title="Collapse chat panel">
             <X className="h-4 w-4" />
           </Button>
         </div>
-      </div>
-
-      {showModelStageChips && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {STAGE_META.map(({ stage, label, icon: Icon }) => {
-            const selection = pipelineModels[stage];
-            const isActive = activeStage === stage;
-            return (
-              <span
-                key={stage}
-                className={cn(
-                  'inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[10px]',
-                  isActive
-                    ? 'border-violet-500/60 bg-violet-500/15 text-foreground animate-pulse'
-                    : 'border-border bg-secondary/40 text-muted-foreground'
-                )}
-                title={`${label}: ${selection.provider} / ${selection.model}`}
-              >
-                <Icon className="h-3 w-3 flex-shrink-0" />
-                <span className="font-medium">{label}</span>
-                <span className="truncate opacity-80">{shortModelName(selection.model)}</span>
-              </span>
-            );
-          })}
-        </div>
-      )}
-
-      <div className="mt-2 flex items-center gap-2">
-        <Select value={props.conversation?.id} onValueChange={props.onSelectConversation}>
-          <SelectTrigger className="h-7 flex-1 text-xs">
-            <SelectValue placeholder="Select conversation" />
-          </SelectTrigger>
-          <SelectContent>
-            {props.conversations.map(item => (
-              <SelectItem key={item.id} value={item.id}>{item.title}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button variant="outline" size="icon" className="h-7 w-7" onClick={props.onNewConversation} title="New conversation">
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
       </div>
     </div>
   );

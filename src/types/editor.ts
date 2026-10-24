@@ -57,6 +57,7 @@ export interface Document {
   modified: boolean;
   markups: Markup[];
   measurements: Measurement[];
+  fileRef?: { relPath: string; sha256: string; byteLength: number };
 }
 
 export interface EditorState {

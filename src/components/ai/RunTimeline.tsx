@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
@@ -6,95 +6,114 @@ import {
   Loader2,
   XCircle,
 } from 'lucide-react';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Progress } from '@/components/ui/progress';
 import { useAIChatStore } from '@/store/aiChatStore';
 import { cn } from '@/lib/utils';
-import { useCanvasStore } from '@/store/canvasStore';
+import { citationChipText, openEvidenceCitation } from '@/lib/openCitation';
+import type { EvidenceCitation } from '@/types/assistant';
+import {
+  friendlyStatusLine,
+  friendlyToolLabel,
+  looksLikeToolId,
+} from '@/lib/assistantTurnPresentation';
 
-export function RunTimeline({ runId }: { runId: string }) {
+function stepTitle(label: string, toolId?: string): string {
+  if (toolId) return friendlyToolLabel(toolId);
+  if (looksLikeToolId(label)) return friendlyToolLabel(label);
+  return friendlyStatusLine(label);
+}
+
+export function RunStepList({ runId }: { runId: string }) {
   const run = useAIChatStore(state => state.runs[runId]);
-  const setCurrentPage = useCanvasStore(state => state.setCurrentPage);
-  const isActive = run?.status === 'running';
-  // Open while actively running; collapse once the answer is ready
-  // (including waiting-approval) so thought process stays out of the way.
-  const [open, setOpen] = useState(!!isActive);
-
-  useEffect(() => {
-    if (!run) return;
-    setOpen(run.status === 'running');
-  }, [run?.status]);
-
   if (!run) return null;
 
   return (
-    <Collapsible
-      open={open}
-      onOpenChange={setOpen}
-      className="my-2 rounded-lg border border-border bg-secondary/20"
-    >
-      <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 text-left">
-        {run.status === 'running' ? (
-          <Loader2 className="h-3.5 w-3.5 animate-spin text-violet-500" />
-        ) : run.status === 'error' ? (
-          <XCircle className="h-3.5 w-3.5 text-destructive" />
-        ) : (
-          <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-        )}
-        <span className="flex-1 text-xs font-medium">
-          {run.status === 'running' ? (run.summary || 'Working…') : 'Activity'}
-        </span>
-        <span className="text-[10px] text-muted-foreground">
-          {run.steps.filter(step => step.status === 'completed').length}/{run.steps.length}
-        </span>
-        <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="border-t border-border px-3 py-2">
-        <div className="space-y-2">
-          {run.steps.map(step => {
-            const showRunningUi = run.status === 'running' && step.status === 'running';
-            return (
-            <div key={step.id} className="flex gap-2">
-              <div className="pt-0.5">
-                {showRunningUi ? (
-                  <Loader2 className="h-3 w-3 animate-spin text-violet-500" />
-                ) : step.status === 'completed' || (run.status !== 'running' && (step.status === 'running' || step.status === 'pending')) ? (
-                  <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                ) : step.status === 'error' ? (
-                  <XCircle className="h-3 w-3 text-destructive" />
-                ) : (
-                  <Circle className="h-3 w-3 text-muted-foreground" />
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className={cn('text-xs', showRunningUi && 'animate-pulse')}>
-                  {step.label}
-                </div>
-                {step.summary && <div className="text-[11px] text-muted-foreground">{step.summary}</div>}
-                {showRunningUi && step.progress !== undefined && (
-                  <Progress value={step.progress} className="mt-1 h-1" />
-                )}
-                {step.error && <div className="text-[11px] text-destructive">{step.error}</div>}
-                {step.citations && step.citations.length > 0 && (
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {step.citations.map(citation => (
-                      <button
-                        key={citation.id}
-                        type="button"
-                        onClick={() => setCurrentPage(citation.page)}
-                        className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-emerald-500/50"
-                      >
-                        Page {citation.page}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-            );
-          })}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+    <ol className="space-y-1.5">
+      {run.steps.map(step => (
+        <RunStepRow
+          key={step.id}
+          label={stepTitle(step.label, step.toolActivity?.toolId)}
+          status={step.status}
+          summary={step.summary ? friendlyStatusLine(step.summary) : undefined}
+          error={step.error}
+          toolId={step.toolActivity?.toolId}
+          input={step.toolActivity?.input}
+          output={step.toolActivity?.output}
+          citations={step.citations}
+        />
+      ))}
+    </ol>
   );
+}
+
+function RunStepRow(props: {
+  label: string;
+  status: string;
+  summary?: string;
+  error?: string;
+  toolId?: string;
+  input?: unknown;
+  output?: unknown;
+  citations?: EvidenceCitation[];
+}) {
+  const [open, setOpen] = useState(false);
+  const hasDetail = !!(props.toolId || props.input != null || props.output != null || props.error);
+  return (
+    <li className="flex gap-2 text-xs">
+      <div className="pt-0.5">
+        {props.status === 'running' ? (
+          <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+        ) : props.status === 'error' ? (
+          <XCircle className="h-3 w-3 text-destructive" />
+        ) : props.status === 'completed' ? (
+          <CheckCircle2 className="h-3 w-3 text-muted-foreground" />
+        ) : (
+          <Circle className="h-3 w-3 text-muted-foreground/60" />
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-muted-foreground">{props.label}</div>
+        {props.summary && (
+          <div className="text-[11px] text-muted-foreground/80">{props.summary}</div>
+        )}
+        {props.citations && props.citations.length > 0 && (
+          <div className="mt-1 flex flex-wrap gap-1">
+            {props.citations.map(citation => (
+              <button
+                key={citation.id}
+                type="button"
+                onClick={() => openEvidenceCitation(citation)}
+                className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:border-emerald-500/50"
+              >
+                {citationChipText(citation)}
+              </button>
+            ))}
+          </div>
+        )}
+        {hasDetail && (
+          <button
+            type="button"
+            className="mt-0.5 inline-flex items-center gap-1 rounded-sm text-[10px] text-muted-foreground underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            aria-expanded={open}
+            onClick={() => setOpen(value => !value)}
+          >
+            Details
+            <ChevronDown className={cn('h-3 w-3 motion-safe:transition-transform', open && 'rotate-180')} />
+          </button>
+        )}
+        {open && hasDetail && (
+          <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-background/80 p-2 text-[10px] text-muted-foreground">
+            {props.toolId ? `${props.toolId}\n` : ''}
+            {props.error ? `${props.error}\n` : ''}
+            {props.input != null ? `input: ${JSON.stringify(props.input, null, 2)}\n` : ''}
+            {props.output != null ? `output: ${JSON.stringify(props.output, null, 2)}` : ''}
+          </pre>
+        )}
+      </div>
+    </li>
+  );
+}
+
+/** @deprecated Disclosure now lives in TurnProcessDisclosure; kept for existing imports. */
+export function RunTimeline({ runId }: { runId: string }) {
+  return <RunStepList runId={runId} />;
 }

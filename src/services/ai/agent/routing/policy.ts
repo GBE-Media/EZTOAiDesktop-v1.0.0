@@ -39,6 +39,22 @@ export function decideRoutingPolicy(intake: IntakeResult): RoutingDecision & { n
     });
   }
 
+  // Spec / cross-document questions: search the project index, not single-page vision.
+  if (/\b(spec|csi|masterformat|section\s+\d{2}|manufacturer|submittal|per spec|project manual)\b/i.test(normalizedMessage)
+    || /\b(across (the )?(drawings|docs|documents)|every sheet)\b/i.test(normalizedMessage)) {
+    return base({
+      path: 'invoke_primary',
+      taskType: 'read_context',
+      complexity: 'medium',
+      risk: 'low',
+      preferTools: true,
+      requireVerifier: false,
+      reason: 'Spec or cross-document request; use project index tools',
+      suggestedTools: ['search_project', 'read_spec_section', 'get_sheet_index', 'count_page_items', 'list_project_documents'],
+      needsLlmRouter: false,
+    });
+  }
+
   // Counting / tally questions: prefer count_page_items over blind re-analysis.
   if (/\b(count\w*|how many|tally|quantit(?:y|ies) of)\b/i.test(normalizedMessage)) {
     return base({
@@ -49,7 +65,7 @@ export function decideRoutingPolicy(intake: IntakeResult): RoutingDecision & { n
       preferTools: true,
       requireVerifier: false,
       reason: 'Counting request; use count_page_items (and analyze_page only if needed once)',
-      suggestedTools: ['count_page_items', 'analyze_page', 'getTakeoffSummary'],
+      suggestedTools: ['count_page_items', 'search_project', 'get_sheet_index', 'analyze_page', 'getTakeoffSummary'],
       needsLlmRouter: false,
     });
   }

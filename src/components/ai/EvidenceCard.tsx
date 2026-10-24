@@ -1,20 +1,14 @@
 import { ExternalLink } from 'lucide-react';
-import { useCanvasStore } from '@/store/canvasStore';
 import type { EvidenceCitation } from '@/types/assistant';
+import { citationChipText, openEvidenceCitation } from '@/lib/openCitation';
 
 export function EvidenceCard(props: {
   title?: string;
   summary?: string;
   citations: EvidenceCitation[];
 }) {
-  const canvas = useCanvasStore();
   const open = (citation: EvidenceCitation) => {
-    canvas.setCurrentPage(citation.page);
-    const documentId = citation.documentId || canvas.activeDocId;
-    if (documentId && citation.bounds) {
-      canvas.setAiSelectionRect(documentId, citation.page, citation.bounds);
-      canvas.setAiSelectionActive(true);
-    }
+    openEvidenceCitation(citation);
   };
   return (
     <div className="rounded-lg border border-border bg-secondary/20 p-2.5">
@@ -30,7 +24,7 @@ export function EvidenceCard(props: {
             title={citation.snippet}
           >
             <ExternalLink className="h-3 w-3" />
-            {citation.documentName ? `${citation.documentName} · ` : ''}p. {citation.page}
+            {citationChipText(citation)}
             {citation.confidence !== undefined && (
               <span className="text-muted-foreground">{Math.round(citation.confidence * 100)}%</span>
             )}
