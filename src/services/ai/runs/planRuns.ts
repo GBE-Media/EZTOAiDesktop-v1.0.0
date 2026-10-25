@@ -58,6 +58,8 @@ export type PlannedRun = {
   kind: 'homerun' | 'branch';
   circuitIds: string[];
   path: Pt[];
+  /** Branch legs: [start, mid, end] of the Revit-style arc drawn between the two fixtures. */
+  arc?: [Pt, Pt, Pt];
   lengthFt: number;
   bendsDeg: number;
   wallCrossings: number;
@@ -77,6 +79,8 @@ export type RunPlan = {
   scaleSource: string;
   warnings: string[];
   codeRefs: string[];
+  /** Per circuit: home-run fixture → load centre, feet (voltage-drop basis). */
+  loadCenterFt?: Record<string, number>;
 };
 
 export type PlanRunsInput = {
@@ -158,7 +162,8 @@ export function planRuns(input: PlanRunsInput): RunPlan {
   const ed = settings.necEdition;
 
   // 1. Branch circuitry per circuit: chain devices nearest-neighbour from the far end.
-  const circuitLegs = new Map<string, { homeDevice: Pt; branchFt: number; farthestFt: number }>();
+  const circuitLegs = new Map<string, { homeDevice: Pt; branchFt: number; farthestFt: number; loadCenterFt: number }>();
+  const bulgeMax = Math.max(W, H) * 0.02;
   for (const circuit of input.circuits) {
     if (!circuit.devices.length) continue;
     const order = chainDevices(circuit.devices, input.panel);
@@ -168,11 +173,19 @@ export function planRuns(input: PlanRunsInput): RunPlan {
       const leg = router.route(order[i], order[i + 1]);
       const len = pathLength(leg.path);
       branchPts += len;
+      // Drawn like Revit wiring: an arc from fixture to fixture (bulging to one side); footage is
+      // the routed length between them.
+      const a = order[i];
+      const b = order[i + 1];
+      const chord = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+      const bulge = Math.min(chord * 0.18, bulgeMax);
+      const mid = { x: (a.x + b.x) / 2 - ((b.y - a.y) / chord) * bulge, y: (a.y + b.y) / 2 + ((b.x - a.x) / chord) * bulge };
       runs.push({
         id: `${circuit.id}-b${i + 1}`,
         kind: 'branch',
         circuitIds: [circuit.id],
         path: leg.path,
+        arc: [a, mid, b],
         lengthFt: round1(len * input.ftPerPt),
         bendsDeg: totalBendDegrees(leg.path),
         wallCrossings: leg.wallCrossings,
@@ -184,13 +197,27 @@ export function planRuns(input: PlanRunsInput): RunPlan {
       });
     }
     farthest = branchPts;
-    circuitLegs.set(circuit.id, { homeDevice: order[order.length - 1], branchFt: branchPts * input.ftPerPt, farthestFt: farthest * input.ftPerPt });
+    // Fixtures are spread along the branch: voltage drop is computed to the load centre (average
+    // distance from the home-run fixture), not as if every fixture sat at the far end.
+    let along = 0;
+    let sumAlong = 0;
+    for (let i = order.length - 1; i > 0; i -= 1) {
+      along += manhattan(order[i], order[i - 1]);
+      sumAlong += along;
+    }
+    const loadCenterPts = order.length > 1 ? Math.min(branchPts, (sumAlong / order.length) * (branchPts / Math.max(1e-6, along))) : 0;
+    circuitLegs.set(circuit.id, {
+      homeDevice: order[order.length - 1],
+      branchFt: branchPts * input.ftPerPt,
+      farthestFt: farthest * input.ftPerPt,
+      loadCenterFt: loadCenterPts * input.ftPerPt,
+    });
   }
 
   // 2. Group circuits into home-run conduits by direction from the panel.
   const groups = groupCircuits(input.circuits.filter(c => circuitLegs.has(c.id)), input.panel, settings);
   groups.forEach((group, index) => {
-    const legs = group.map(c => circuitLegs.get(c.id) as { homeDevice: Pt; branchFt: number; farthestFt: number });
+    const legs = group.map(c => circuitLegs.get(c.id) as { homeDevice: Pt; branchFt: number; farthestFt: number; loadCenterFt: number });
     // Home run starts at the group's device closest to the panel.
     const startLeg = legs.reduce((best, leg) => dist(leg.homeDevice, input.panel) < dist(best.homeDevice, input.panel) ? leg : best, legs[0]);
     const route = router.route(startLeg.homeDevice, input.panel);
@@ -203,14 +230,14 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     const isCable = settings.wiringMethod === 'MC';
     const ccc = group.reduce((sum, c) => sum + (c.phase === 3 ? 3 : 2), 0);
     const sizing = group.map((circuit, i) => {
-      const vdLength = homeFt + legs[i].farthestFt + settings.verticalFt;
+      const vdLength = homeFt + legs[i].loadCenterFt + settings.verticalFt;
       return sizeCircuit(circuit, vdLength, isCable ? (circuit.phase === 3 ? 3 : 2) : ccc, {
         material: settings.material,
         vdTargetPct: settings.vdTargetPct,
         necEdition: ed,
       });
     });
-    const vdLengthFt = Math.max(...group.map((_, i) => homeFt + legs[i].farthestFt + settings.verticalFt));
+    const vdLengthFt = Math.max(...group.map((_, i) => homeFt + legs[i].loadCenterFt + settings.verticalFt));
     codeRefs.add(codeRef(ed, 'ampacity'));
     codeRefs.add(codeRef(ed, 'vdBranch'));
     codeRefs.add(codeRef(ed, 'egc'));
@@ -236,7 +263,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     const note = [
       `Home run ${index + 1} → ${input.panelLabel}: ${circuitsLabel}`,
       label,
-      `≈${Math.round(homeFt)} ft home run (${Math.round(vdLengthFt)} ft incl. branch + ${settings.verticalFt} ft vertical) · VD ${worstVd.toFixed(1)}%`,
+      `≈${Math.round(homeFt)} ft home run (${Math.round(vdLengthFt)} ft to the load centre incl. ${settings.verticalFt} ft vertical) · VD ${worstVd.toFixed(1)}%`,
       ...sizing.flatMap(s => s.notes),
       ...runWarnings,
     ].join('\n');
@@ -271,7 +298,8 @@ export function planRuns(input: PlanRunsInput): RunPlan {
   }
   if (!obstacles.length) warnings.push('No elevators, shafts or stairs were labeled on this view.');
   if (input.panelOffSheet) warnings.push(`Panel ${input.panelLabel} is on another sheet: home runs stop at the plan edge; add the remaining length from that sheet.`);
-  return { runs, obstacles, ftPerPt: input.ftPerPt, scaleSource: input.scaleSource, warnings, codeRefs: [...codeRefs] };
+  const loadCenterFt = Object.fromEntries([...circuitLegs.entries()].map(([id, leg]) => [id, round1(leg.loadCenterFt)]));
+  return { runs, obstacles, ftPerPt: input.ftPerPt, scaleSource: input.scaleSource, warnings, codeRefs: [...codeRefs], loadCenterFt };
 }
 
 function conductorsForGroup(group: PlannedCircuit[], sizing: CircuitSizing[]): ConduitSizing['conductors'] {

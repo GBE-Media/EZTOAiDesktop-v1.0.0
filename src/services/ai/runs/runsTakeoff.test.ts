@@ -88,3 +88,43 @@ describe('run materials and products', () => {
     expect(buildMeasurementFromMarkup(run, 'doc')).toMatchObject({ type: 'length', value: 42.3, unit: 'ft' });
   });
 });
+
+describe('sizing, colors and product highlight', () => {
+  it('stops voltage-drop upsizing at #6 on a 20 A branch and says why', async () => {
+    const { sizeCircuit } = await import('./sizing');
+    const out = sizeCircuit({ id: 'B-4', voltage: 120, phase: 1, loadVA: 1800, continuous: true }, 2500, 2, { material: 'cu', vdTargetPct: 3, necEdition: 2023 });
+    expect(out.conductor).toBe('6');
+    expect(out.notes.join(' ')).toMatch(/split this circuit or check the drawing scale/);
+  });
+
+  it('gives fixture types distinct remembered colors', async () => {
+    const { takeoffColor, resetTakeoffColors } = await import('@/lib/takeoffColors');
+    resetTakeoffColors();
+    const a = takeoffColor('fixture:A');
+    const xa = takeoffColor('fixture:XA');
+    expect(a).not.toBe(xa);
+    expect(takeoffColor('fixture:A')).toBe(a);
+  });
+
+  it('groups a product\'s linked counts by page (folders include their products)', async () => {
+    const { productHighlight } = await import('@/lib/productHighlight');
+    const nodes = {
+      f: { id: 'f', type: 'folder', name: 'Lighting', parentId: null, children: ['p'], measurements: [] },
+      p: { id: 'p', type: 'product', name: 'Type A', parentId: 'f', children: [], measurements: [
+        { id: '1', markupId: 'm1', documentId: 'd', page: 93, type: 'count', value: 1, unit: 'ea' },
+        { id: '2', markupId: 'm2', documentId: 'd', page: 94, type: 'count', value: 1, unit: 'ea' },
+        { id: '3', markupId: 'm3', documentId: 'other', page: 1, type: 'count', value: 1, unit: 'ea' },
+      ] },
+    } as never;
+    const hp = productHighlight(nodes, 'p', 'd')!;
+    expect(hp.byPage).toEqual({ 93: ['m1'], 94: ['m2'] });
+    expect(hp.otherDocuments).toBe(1);
+    expect(productHighlight(nodes, 'f', 'd')!.total).toBe(2);
+  });
+
+  it('colors AI count markers by fixture type', () => {
+    const marker = { id: 'c1', type: 'count-marker', page: 1, label: 'XB', style: { strokeColor: '#ef4444', fillColor: '#ef4444' } } as unknown as CanvasMarkup;
+    bindTakeoffProducts([{ page: 1, markup: marker }]);
+    expect(marker.style.strokeColor).not.toBe('#ef4444');
+  });
+});

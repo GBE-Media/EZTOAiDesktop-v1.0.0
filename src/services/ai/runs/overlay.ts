@@ -17,6 +17,31 @@ export function polylineLength(points: Array<{ x: number; y: number }>): number 
   return total;
 }
 
+/** Quadratic curve through `mid` (Revit-style wire arc): control point and sampled length. */
+export function arcControl(a: { x: number; y: number }, mid: { x: number; y: number }, b: { x: number; y: number }) {
+  return { x: 2 * mid.x - (a.x + b.x) / 2, y: 2 * mid.y - (a.y + b.y) / 2 };
+}
+
+export function arcLength(a: { x: number; y: number }, mid: { x: number; y: number }, b: { x: number; y: number }): number {
+  const c = arcControl(a, mid, b);
+  let total = 0;
+  let prev = a;
+  for (let i = 1; i <= 16; i += 1) {
+    const t = i / 16;
+    const u = 1 - t;
+    const p = { x: u * u * a.x + 2 * u * t * c.x + t * t * b.x, y: u * u * a.y + 2 * u * t * c.y + t * t * b.y };
+    total += Math.hypot(p.x - prev.x, p.y - prev.y);
+    prev = p;
+  }
+  return total;
+}
+
+/** Footage (ft) of a run markup's drawn geometry. */
+export function runLengthFt(points: Array<{ x: number; y: number }>, meta: Pick<AiRunMeta, 'ftPerPt' | 'curve' | 'footageFactor'>): number {
+  const pts = meta.curve && points.length === 3 ? arcLength(points[0], points[1], points[2]) : polylineLength(points);
+  return Math.round(pts * meta.ftPerPt * (meta.footageFactor || 1) * 10) / 10;
+}
+
 export type RunRecompute = {
   label: string;
   aiNote: string;
@@ -27,9 +52,9 @@ export type RunRecompute = {
 export function recomputeRunMarkup(markup: CanvasMarkup): RunRecompute | null {
   if (!isRunMarkup(markup)) return null;
   const meta = markup.aiRun;
-  const lengthFt = Math.round(polylineLength(markup.points) * meta.ftPerPt * 10) / 10;
+  const lengthFt = runLengthFt(markup.points, meta);
   if (meta.kind !== 'homerun' || !meta.circuits?.length || !meta.settings) {
-    const label = meta.kind === 'keepout' ? markup.label || 'Keep clear' : `Branch ≈${Math.round(lengthFt)} ft`;
+    const label = meta.kind === 'keepout' || meta.kind === 'panel' ? markup.label || 'Keep clear' : markup.label || `Branch ≈${Math.round(lengthFt)} ft`;
     return {
       label,
       aiNote: markup.aiNote || label,
@@ -41,7 +66,7 @@ export function recomputeRunMarkup(markup: CanvasMarkup): RunRecompute | null {
   const ccc = meta.circuits.reduce((sum, c) => sum + (c.phase === 3 ? 3 : 2), 0);
   const sizing: CircuitSizing[] = meta.circuits.map(circuit => sizeCircuit(
     circuit,
-    lengthFt + circuit.branchFt + settings.verticalFt,
+    lengthFt + (circuit.vdBranchFt ?? circuit.branchFt) + settings.verticalFt,
     isCable ? (circuit.phase === 3 ? 3 : 2) : ccc,
     { material: settings.material, vdTargetPct: settings.vdTargetPct, necEdition: settings.necEdition },
   ));

@@ -4,6 +4,7 @@
  * addAIMarkupBatch then links the measurements, so quantities and footages roll up per product.
  */
 import type { CanvasMarkup } from '@/types/markup';
+import { takeoffColor } from '@/lib/takeoffColors';
 import { assemblyProductSpec } from '../runs/runMaterials';
 import { ensureTakeoffProduct, fixtureProductSpec, type TakeoffProductSpec } from './takeoffProducts';
 
@@ -46,6 +47,14 @@ export function bindTakeoffProducts(rows: Array<{ page: number; markup: CanvasMa
   };
   for (const { markup } of rows) {
     const m = markup as CanvasMarkup & { productId?: string };
+    // Each fixture type / product gets its own color on the print.
+    if (m.type === 'count-marker' && !m.reviewMarker) {
+      const key = m.productId ? `product:${m.productId}` : countSpec(m.label || '')?.key;
+      if (key) {
+        const color = takeoffColor(key);
+        m.style = { ...m.style, strokeColor: color, fillColor: color };
+      }
+    }
     if (m.productId || m.reviewMarker || m.aiPending) continue;
     let spec: TakeoffProductSpec | null = null;
     let ft: number | undefined;

@@ -67,6 +67,11 @@ export interface AiRunCircuit {
   ocpdAmps?: number;
   /** Branch length beyond the home run to this circuit's farthest device, feet. */
   branchFt: number;
+  /**
+   * Distance from the home-run device to the circuit's load centre (fixtures spread along the
+   * branch), feet — what voltage drop is computed on.
+   */
+  vdBranchFt?: number;
 }
 
 export interface AiRunMeta {
@@ -76,6 +81,12 @@ export interface AiRunMeta {
   panel?: string;
   /** Home run continues to a panel on another sheet. */
   offSheet?: boolean;
+  /**
+   * Branch drawn as a Revit-style arc through its middle point (points = [start, mid, end]).
+   * Footage = drawn arc length × footageFactor (the routed path between the two fixtures).
+   */
+  curve?: boolean;
+  footageFactor?: number;
   /** What each foot of the run is made of (linked to a product on placement). */
   assembly?: { key: string; name: string; materials: Array<{ name: string; unit: 'ft'; perFt: number }> };
   /** Feet per document point used for lengths. */
