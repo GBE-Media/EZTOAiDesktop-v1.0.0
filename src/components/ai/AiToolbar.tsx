@@ -2,7 +2,6 @@
  * Quiet AI toolbar — placement confirm/auto and pending-review actions only.
  */
 
-import { Zap, ZapOff, CheckCircle2, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Tooltip,
@@ -17,8 +16,6 @@ import { PendingPlacementsReviewList } from './PendingPlacementsReviewList';
 
 export function AiToolbar() {
   const {
-    placementMode,
-    setPlacementMode,
     pendingPlacements,
     confirmAllPlacements,
     rejectAllPlacements,
@@ -28,35 +25,15 @@ export function AiToolbar() {
 
   const hasPending = pendingPlacements.length > 0;
   const isProcessing = pipelineStatus.isRunning;
+  // Placement mode lives in the header settings; this bar only appears when there's work to show.
+  if (!hasPending && !isProcessing) return null;
 
   return (
     <div className="relative border-b border-border bg-secondary/10">
-      <div className="flex flex-wrap items-center gap-1 px-3 py-1">
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setPlacementMode(placementMode === 'auto' ? 'confirm' : 'auto')}
-                disabled={isProcessing}
-                aria-label={placementMode === 'auto' ? 'Auto place' : 'Confirm before placing'}
-              >
-                {placementMode === 'auto' ? <Zap className="w-3.5 h-3.5" /> : <ZapOff className="w-3.5 h-3.5" />}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {placementMode === 'auto' ? 'Auto-place markups' : 'Review markups before placing'}
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </div>
-
       {hasPending && (
         <div className="space-y-1">
-          <div className="flex items-center gap-2 px-3 pb-1">
-            <span className="text-xs text-muted-foreground">
+          <div className="flex items-center gap-1 px-3 py-1.5">
+            <span className="mr-auto text-xs text-muted-foreground">
               {pendingPlacements.length} pending
             </span>
             <TooltipProvider>
@@ -64,8 +41,8 @@ export function AiToolbar() {
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-green-500 hover:text-green-600 hover:bg-green-500/10"
+                    size="sm"
+                    className="h-7 px-2 text-xs font-medium"
                     onClick={() => {
                       const queued = [...pendingPlacements];
                       const canvas = useCanvasStore.getState();
@@ -91,7 +68,7 @@ export function AiToolbar() {
                       }
                     }}
                   >
-                    <CheckCircle2 className="w-4 h-4" />
+                    Confirm all
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Confirm all</TooltipContent>
@@ -102,14 +79,14 @@ export function AiToolbar() {
                 <TooltipTrigger asChild>
                   <Button
                     variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                    size="sm"
+                    className="h-7 px-2 text-xs text-muted-foreground"
                     onClick={() => {
                       rejectAllAIMarkups();
                       rejectAllPlacements();
                     }}
                   >
-                    <XCircle className="w-4 h-4" />
+                    Reject all
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Reject all</TooltipContent>
@@ -121,9 +98,9 @@ export function AiToolbar() {
       )}
 
       {isProcessing && (
-        <div className="absolute left-0 right-0 bottom-0 h-1 bg-secondary overflow-hidden">
+        <div className="absolute left-0 right-0 bottom-0 h-px bg-border overflow-hidden">
           <div
-            className="h-full bg-gradient-to-r from-violet-500 to-purple-600 transition-all duration-300"
+            className="h-full bg-foreground/60 transition-all duration-300"
             style={{ width: `${pipelineStatus.progress}%` }}
           />
         </div>

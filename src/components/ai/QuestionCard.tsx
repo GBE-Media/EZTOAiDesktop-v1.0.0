@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { HelpCircle, LocateFixed } from 'lucide-react';
+import { LocateFixed } from 'lucide-react';
 import type { ClarificationFieldAnswer } from '@/types/assistant';
 import { StructuredQuestionFields } from './StructuredQuestionFields';
 import { openAssistantFocus } from '@/lib/openCitation';
@@ -89,9 +89,8 @@ export function QuestionCard({ clarificationId }: { clarificationId: string }) {
   const canContinue = selected.length > 0 || Boolean(freeform.trim());
 
   return (
-    <div className="my-2 rounded-lg border border-border bg-muted/20 p-3">
+    <div className="my-2 rounded-xl border border-border bg-card p-3">
       <div className="flex items-start gap-2">
-        <HelpCircle className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium text-foreground">{clarification.question}</div>
           {clarification.description && (

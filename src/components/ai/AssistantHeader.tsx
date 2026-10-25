@@ -1,4 +1,4 @@
-import { Bot, Check, Eye, Calculator, MapPin, Plus, Settings2, Trash2, X } from 'lucide-react';
+import { Check, Eye, Calculator, MapPin, Plus, Settings2, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -55,6 +55,8 @@ export function AssistantHeader(props: {
   const reviewAnalysisMode = useCanvasLayersStore(state => state.reviewAnalysisMode);
   const setReviewAnalysisMode = useCanvasLayersStore(state => state.setReviewAnalysisMode);
   const pipelineStatus = useAIChatStore(state => state.pipelineStatus);
+  const placementMode = useAIChatStore(state => state.placementMode);
+  const setPlacementMode = useAIChatStore(state => state.setPlacementMode);
   useCanvasStore(state => state.pdfDocuments);
   useEditorStore(state => state.documents);
   const progressByDoc = useIndexProgressStore(state => state.byDoc);
@@ -79,12 +81,9 @@ export function AssistantHeader(props: {
   return (
     <div className="flex-shrink-0 border-b border-border px-3 py-2">
       <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-purple-600">
-            <Bot className="h-3.5 w-3.5 text-white" />
-          </div>
+        <div className="flex min-w-0 items-center">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold leading-tight text-foreground">BidveraAi</h2>
+            <h2 className="text-[13px] font-semibold leading-tight tracking-tight text-foreground">BidveraAi</h2>
             <p className="truncate text-[11px] text-muted-foreground">{subtitle}</p>
           </div>
         </div>
@@ -115,7 +114,7 @@ export function AssistantHeader(props: {
                       key={stage}
                       className={cn(
                         'flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground',
-                        isActive && 'bg-violet-500/10 text-foreground',
+                        isActive && 'bg-muted text-foreground',
                       )}
                       title={`${label}: ${selection.provider} / ${selection.model}`}
                     >
@@ -129,6 +128,15 @@ export function AssistantHeader(props: {
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Project index</DropdownMenuLabel>
               <div className="px-2 pb-2 text-[11px] text-muted-foreground">{indexedLabel}</div>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Markups</DropdownMenuLabel>
+              <DropdownMenuCheckboxItem
+                checked={placementMode === 'confirm'}
+                disabled={pipelineStatus.isRunning}
+                onCheckedChange={(checked) => setPlacementMode(checked === true ? 'confirm' : 'auto')}
+              >
+                Review before placing
+              </DropdownMenuCheckboxItem>
               <DropdownMenuSeparator />
               <DropdownMenuLabel>Display</DropdownMenuLabel>
               <DropdownMenuCheckboxItem

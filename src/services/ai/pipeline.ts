@@ -21,6 +21,7 @@ import {
 } from '@/lib/pdfLoader';
 import { isScannedDocument, performOcr } from '@/lib/ocrEngine';
 import { z } from 'zod';
+import { anchorDetectionsToTextTags, findTypeTagAnchors } from './detection/textTagAnchors';
 import type {
   TradeType,
   BlueprintAnalysisResult,
@@ -394,6 +395,27 @@ async function requestStructuredAnalysis(
   throw new Error(`Vision model returned invalid structured data for page ${page}`);
 }
 
+/** Retry delay base for a failed detail tile (a dropped tile silently undercounts a whole area). */
+export const TILE_RETRY = {
+  attempts: 3,
+  delayMs: typeof process !== 'undefined' && process.env?.VITEST ? 0 : 1200,
+};
+
+async function withTileRetry<T>(run: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < TILE_RETRY.attempts; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error;
+      if (attempt < TILE_RETRY.attempts - 1 && TILE_RETRY.delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, TILE_RETRY.delayMs * (attempt + 1)));
+      }
+    }
+  }
+  throw lastError;
+}
+
 /** Absolute merge radius in page points (~0.25" at 72pt/in). */
 export const TILE_MERGE_RADIUS_PT = 18;
 
@@ -496,6 +518,11 @@ function sameLegendIdentity(
   return detectionIdentity(left) === detectionIdentity(right);
 }
 
+function isUnclassified(item: BlueprintAnalysisResult['items'][number]): boolean {
+  const code = typeof item.legendTypeCode === 'string' ? item.legendTypeCode.trim() : '';
+  return code === 'no_confident_match' || item.matchConfidence === 'low';
+}
+
 function inOverlapBand(
   item: BlueprintAnalysisResult['items'][number],
   region: PageTileRegion,
@@ -583,10 +610,14 @@ export function reconcileTileDetections(
       if (i === j) continue;
       const right = located[j];
       if (left.sourceTileId && right.sourceTileId && left.sourceTileId === right.sourceTileId) continue;
-      if (!sameLegendIdentity(left, right)) continue;
       const rightPoint = pagePoint(right, pageWidth, pageHeight);
       if (!rightPoint) continue;
       const dist = Math.hypot(leftPoint.x - rightPoint.x, leftPoint.y - rightPoint.y);
+      // Two tiles seeing the same symbol don't always agree on its type; when one of them couldn't
+      // classify it, it is still one fixture (not two).
+      const same = sameLegendIdentity(left, right)
+        || (dist < TILE_MERGE_RADIUS_PT && (isUnclassified(left) || isUnclassified(right)));
+      if (!same) continue;
       if (dist < OWNER_LINK_RADIUS_PT && dist < nearestDist) {
         nearestDist = dist;
         nearestIdx = j;
@@ -638,6 +669,7 @@ export function reconcileTileDetections(
       const aOwned = aRegion ? isOwnedByTile(a, aRegion, pageWidth, pageHeight) : false;
       const bOwned = bRegion ? isOwnedByTile(b, bRegion, pageWidth, pageHeight) : false;
       if (aOwned !== bOwned) return aOwned ? -1 : 1;
+      if (isUnclassified(a) !== isUnclassified(b)) return isUnclassified(a) ? 1 : -1;
       if (b.confidence !== a.confidence) return b.confidence - a.confidence;
       return a.id.localeCompare(b.id);
     });
@@ -797,7 +829,7 @@ export async function analyzePageMaximumAccuracy(options: {
       15 + Math.round(((index + 1) / bundle.tiles.length) * 60)
     );
     try {
-      const result = await requestStructuredAnalysis(
+      const result = await withTileRetry(() => requestStructuredAnalysis(
         tile.base64,
         trade,
         `${commonContext}\n\nDETAIL TILE ${tile.region.id}: Find every physical instance visible in this crop. ` +
@@ -807,7 +839,7 @@ export async function analyzePageMaximumAccuracy(options: {
           : '') +
         'Do not count schedule/legend rows as installed items.',
         page
-      );
+      ));
       tileResults.push({ region: tile.region, result });
     } catch (error) {
       failedTiles.push(tile.region.id);
@@ -842,9 +874,44 @@ export async function analyzePageMaximumAccuracy(options: {
   const locatedItems = rawItems.filter(item => !item.locationMissing);
   const missingLocationItems = rawItems.filter(item => !!item.locationMissing);
 
+  // Deterministic cross-check against the type tags printed on the plan (same every run).
+  const extraNotes: string[] = [];
+  let anchoredItems = locatedItems;
+  if (!visibleOnly && legendEntries.length && textEvidence.source === 'native' && textEvidence.items?.length) {
+    const textFrameOk = await Promise.resolve().then(() => pdfDoc.getPage(page)).then(pdfPage => {
+      const view = (pdfPage as unknown as { view?: number[]; rotate?: number });
+      const [vx0, vy0, vx1, vy1] = view.view || [0, 0, pageWidth, pageHeight];
+      return ((view.rotate ?? 0) % 360) === 0 && vx0 === 0 && vy0 === 0
+        && Math.abs(vx1 - pageWidth) < 1 && Math.abs(vy1 - pageHeight) < 1;
+    }).catch(() => false);
+    let anchors = textFrameOk
+      ? findTypeTagAnchors(textEvidence.items, legendEntries.map(entry => entry.typeCode), pageWidth, pageHeight, pageZones)
+      : [];
+    if (analysisRegion) {
+      anchors = anchors.filter(anchor => {
+        const px = (anchor.x / 100) * pageWidth;
+        const py = (anchor.y / 100) * pageHeight;
+        return px >= analysisRegion.x && px <= analysisRegion.x + analysisRegion.width
+          && py >= analysisRegion.y && py <= analysisRegion.y + analysisRegion.height;
+      });
+    }
+    if (anchors.length) {
+      const anchored = anchorDetectionsToTextTags(locatedItems, anchors, pageWidth, pageHeight);
+      anchoredItems = anchored.items;
+      if (anchored.matched || anchored.added) {
+        const tags = Object.entries(anchored.tagCounts).map(([code, n]) => `${code} ${n}`).join(', ');
+        extraNotes.push(
+          `Checked against ${anchored.anchors} type tag(s) printed on the plan (${tags}): `
+          + `${anchored.resolved} unclassified detection(s) typed from their tag, ${anchored.added} tagged fixture(s) the vision pass missed were added.`,
+        );
+      }
+      console.info('[analyzePage] type tags', { page, anchors: anchored.anchors, matched: anchored.matched, resolved: anchored.resolved, added: anchored.added });
+    }
+  }
+
   // Primary: vision-native legendTypeCode fields. Secondary: token-overlap only when absent.
   const legendAware = resolveLegendAwareCounting({
-    items: locatedItems,
+    items: anchoredItems,
     legendEntries,
     trade,
     applyTokenOverlapFallback: applyLegendAwareCounting,
@@ -853,7 +920,6 @@ export async function analyzePageMaximumAccuracy(options: {
   const typeCounts = legendEntries.length > 0
     ? legendAware.legendTypeCounts
     : legendAware.typeCounts;
-  const extraNotes: string[] = [];
   let countReliability = legendAware.reliability;
   if (missingLocationItems.length > 0) {
     extraNotes.push(`${missingLocationItems.length} detection(s) had no location and were counted as unresolved.`);

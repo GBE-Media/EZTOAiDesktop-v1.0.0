@@ -47,7 +47,7 @@ export function PulsingStatus({ className }: { className?: string }) {
         className,
       )}
     >
-      <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-violet-500" />
+      <Loader2 className="h-3.5 w-3.5 flex-shrink-0 animate-spin text-muted-foreground" />
       <span className="relative text-sm">
         <span className="motion-safe:animate-pulse">{label}</span>
         <span className="pointer-events-none absolute inset-0 motion-safe:animate-pulse bg-gradient-to-r from-transparent via-foreground/10 to-transparent" />

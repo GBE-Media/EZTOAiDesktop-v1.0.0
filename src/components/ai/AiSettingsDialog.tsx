@@ -4,7 +4,7 @@
  * API keys are managed by the company via Edge Function proxy
  */
 
-import { Info, Zap } from 'lucide-react';
+import { Info } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -74,10 +74,9 @@ export function AiSettingsDialog({ open, onOpenChange }: AiSettingsDialogProps) 
           </TabsList>
 
           <TabsContent value="models" className="space-y-4 mt-4">
-            <div className="flex items-start gap-2 p-3 bg-violet-500/10 border border-violet-500/20 rounded-lg">
-              <Zap className="w-4 h-4 text-violet-500 mt-0.5" />
-              <div className="text-sm">
-                <p className="font-medium text-violet-500">AI Powered by BidveraAi</p>
+            <div className="flex items-start gap-2 p-3 bg-muted/50 border border-border rounded-lg">
+                            <div className="text-sm">
+                <p className="font-medium text-foreground">AI Powered by BidveraAi</p>
                 <p className="text-muted-foreground text-xs mt-1">
                   AI features are included with your subscription. Stage models are assigned automatically. No API keys required.
                 </p>

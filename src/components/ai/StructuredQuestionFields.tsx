@@ -159,8 +159,8 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
               <div className="flex flex-wrap items-center gap-1.5 pl-5">
                 {picking ? (
                   <>
-                    <span className="inline-flex items-center gap-1 rounded-md border border-violet-500/50 bg-violet-500/10 px-2.5 py-1 text-[11px] text-foreground">
-                      <MousePointerClick className="h-3 w-3 animate-pulse text-violet-400" />
+                    <span className="inline-flex items-center gap-1 rounded-md border border-foreground/30 bg-muted px-2.5 py-1 text-[11px] text-foreground">
+                      <MousePointerClick className="h-3 w-3 animate-pulse text-muted-foreground" />
                       Click on the drawing…
                     </span>
                     <button type="button" className={chip(false)} onClick={() => useDrawingPickStore.getState().cancel()}>
