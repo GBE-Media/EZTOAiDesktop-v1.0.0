@@ -41,7 +41,17 @@ export type SizingSettings = {
   vdTargetPct: number;
   /** NEC edition for article references. */
   necEdition: number;
+  /**
+   * Largest conductor voltage-drop upsizing may reach. Lighting / receptacle branch circuits stop at
+   * #6 — past that the circuit should be split (or the scale is wrong), not fed with feeder cable.
+   */
+  maxConductor?: ConductorSize;
 };
+
+/** Upsizing cap for small branch circuits (≤ 30 A). */
+export function branchUpsizeCap(ocpdAmps: number | undefined): ConductorSize | undefined {
+  return !ocpdAmps || ocpdAmps <= 30 ? '6' : undefined;
+}
 
 export type CircuitSizing = {
   circuitId: string;
@@ -139,9 +149,14 @@ export function sizeCircuit(
 
   let size = ampacitySize;
   let vd = voltageDropPct({ amps, lengthFt, size, material, voltage: input.voltage, phase: input.phase });
-  while (vd > settings.vdTargetPct && sizeIndex(size) < CONDUCTOR_SIZES.length - 1) {
+  const cap = settings.maxConductor ?? branchUpsizeCap(ocpd);
+  const maxIndex = cap ? Math.max(sizeIndex(cap), sizeIndex(ampacitySize)) : CONDUCTOR_SIZES.length - 1;
+  while (vd > settings.vdTargetPct && sizeIndex(size) < maxIndex) {
     size = CONDUCTOR_SIZES[sizeIndex(size) + 1];
     vd = voltageDropPct({ amps, lengthFt, size, material, voltage: input.voltage, phase: input.phase });
+  }
+  if (vd > settings.vdTargetPct && cap && sizeIndex(size) >= maxIndex) {
+    notes.push(`Voltage drop still ${vd.toFixed(1)}% at ${formatSize(size)} — split this circuit or check the drawing scale.`);
   }
   if (size !== ampacitySize) {
     notes.push(`Upsized ${formatSize(ampacitySize)} → ${formatSize(size)} to hold voltage drop ≤ ${settings.vdTargetPct}% (${codeRef(settings.necEdition, 'vdBranch')})`);

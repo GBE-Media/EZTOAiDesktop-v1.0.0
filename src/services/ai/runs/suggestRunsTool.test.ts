@@ -25,7 +25,8 @@ vi.mock('../agent/pageAnalysisCache', () => ({
 
 import { useCanvasStore } from '@/store/canvasStore';
 import { getAssistantTool } from '../tools/registry';
-import { buildRunInputQuestion, createSuggestRunsTool, panelNameCandidates, prepareRunPlan, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
+import { runLengthFt } from './overlay';
+import { buildRunInputQuestion, createSuggestRunsTool, KEEPOUT_COLOR, RUN_COLOR, panelNameCandidates, prepareRunPlan, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
 import { applyFieldAnswers } from '../agent/askUser';
 import { createPageGeometry, docToRender } from '../placement/coords';
 import type { PolygonMarkup } from '@/types/markup';
@@ -153,6 +154,31 @@ describe('suggest_runs tool', () => {
     const nearPanel = [start, end].some(p => Math.hypot(p.x - 0.83 * W, p.y - 0.52 * H) < 0.05 * W);
     expect(nearPanel).toBe(true);
     expect(result.modelSummary.code).toBeTruthy();
+  });
+
+  it('draws visible light-blue runs: branch arcs fixture to fixture, footage stays consistent on edit', async () => {
+    const circuits = circuitsFromTags();
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' } } as never);
+    if ('needs' in result) throw new Error(result.message);
+    const all = result.markups.map(r => r.markup);
+    // Opacity is 0–100: every run-plan markup must be fully visible (was 1 = invisible).
+    expect(all.every(m => m.style.opacity === 100)).toBe(true);
+    const runs = all.filter(m => m.type === 'polyline') as PolygonMarkup[];
+    expect(runs.every(m => m.style.strokeColor === RUN_COLOR)).toBe(true);
+    const branches = runs.filter(m => m.aiRun?.kind === 'branch');
+    expect(branches.length).toBeGreaterThan(0);
+    for (const b of branches) {
+      expect(b.aiRun?.curve).toBe(true);
+      expect(b.points).toHaveLength(3);
+      expect(b.aiRun?.footageFactor ?? 1).toBeGreaterThanOrEqual(1);
+      // Recomputing an untouched branch gives the same footage.
+      expect(Math.abs(runLengthFt(b.points, b.aiRun!) - b.aiRun!.lengthFt)).toBeLessThan(0.3);
+    }
+    const home = runs.find(m => m.aiRun?.kind === 'homerun')!;
+    expect(home.style.strokeWidth).toBeGreaterThan(branches[0].style.strokeWidth);
+    expect(home.aiRun?.circuits?.every(c => typeof c.vdBranchFt === 'number')).toBe(true);
+    const keepouts = all.filter(m => m.aiRun?.kind === 'keepout');
+    expect(keepouts.every(m => m.style.strokeColor === KEEPOUT_COLOR)).toBe(true);
   });
 
   it('is approval-gated and registered', async () => {

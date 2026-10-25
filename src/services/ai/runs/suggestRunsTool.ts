@@ -26,6 +26,7 @@ import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, parseCir
 import { materialTotals, runAssembly, type RunAssembly } from './runMaterials';
 import { getLatestFullPageAnalysis, itemIsUnresolvedForCounts } from '../agent/pageAnalysisCache';
 import { formatSize } from './necTables';
+import { arcLength } from './overlay';
 import type { Box, Obstacle, Pt } from './spatial';
 import type { AskUserRequest } from '../agent/askUser';
 import type { ClarificationField } from '@/types/assistant';
@@ -93,8 +94,10 @@ type SuggestRunsInput = z.infer<typeof suggestRunsSchema>;
 
 const zoneInputCache = new Map<string, ZonePageInput>();
 
-// No reds: count markers are red, runs must read clearly on top of them.
-const HOMERUN_COLORS = ['#2563eb', '#16a34a', '#9333ea', '#0891b2', '#ea580c', '#4f46e5', '#ca8a04', '#0d9488'];
+/** Runs read like Revit wiring: one standard light blue for branch arcs and home runs. */
+export const RUN_COLOR = '#1e9bf0';
+/** Keep-clear (no-fly) areas: orange highlight. */
+export const KEEPOUT_COLOR = '#f97316';
 
 export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestRunsSchema> {
   const definition: AssistantToolDefinition<typeof suggestRunsSchema> = {
@@ -433,6 +436,32 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     };
   }
 
+  // The same tag on two plan views (e.g. first + second floor) is two runs, never one chain
+  // across the sheet.
+  const viewBoxes = zones.filter(z => z.kind === 'plan' && z.source === 'view').map(z => ({
+    x: (z.bounds.x / 100) * W, y: (z.bounds.y / 100) * H, width: (z.bounds.width / 100) * W, height: (z.bounds.height / 100) * H,
+  }));
+  const viewOf = (p: Pt) => viewBoxes.findIndex(b => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height);
+  if (viewBoxes.length > 1) {
+    circuits = circuits.flatMap(c => {
+      const byView = new Map<number, Pt[]>();
+      c.devices.forEach(d => {
+        const v = viewOf(d);
+        byView.set(v, [...(byView.get(v) || []), d]);
+      });
+      if (byView.size <= 1) return [c];
+      const parts = [...byView.values()].sort((a, b) => b.length - a.length);
+      const perDevice = c.loadVA && c.devices.length ? c.loadVA / c.devices.length : undefined;
+      return parts.map((devices, i) => ({
+        ...c,
+        id: i === 0 ? c.id : `${c.id}@${i + 1}`,
+        label: c.label || c.id,
+        devices,
+        loadVA: perDevice ? perDevice * devices.length : c.loadVA,
+      }));
+    });
+  }
+
   // Panels: from the circuit tags (confirmed against the panel schedules) or the one given.
   const normLabel = (t?: string) => (t || '').toUpperCase().replace(/^PANEL\s*/, '').replace(/[^A-Z0-9]/g, '');
   const givenPanels = [...(input.panels || []), ...(input.panel ? [{ ...input.panel, label: input.panel.label || '' }] : [])];
@@ -476,7 +505,7 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   if (!usedTags && needLocation.length && !panelPlans[0].label) missing.push('panel_label');
   if (!input.settings?.wiringMethod && !specMethod) missing.push('wiring_method');
   // The sheet names elevators / stairs / shafts we couldn't outline: let the user mark them.
-  const troubleWithObstacles = routing.obstacleMentions > routing.obstacles.length;
+  const troubleWithObstacles = routing.obstacleMentions > routing.obstacles.filter(o => !o.approximate).length;
   if (input.keepClear === undefined && troubleWithObstacles) missing.push('keep_clear');
   if (missing.length) {
     const toPct = (pt: Pt) => ({ x: round1((pt.x / W) * 100), y: round1((pt.y / H) * 100) });
@@ -543,6 +572,26 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     necEdition: input.settings?.necEdition ?? code.edition,
   } as RunSettings;
 
+  // Circuits on a different plan view than their panel (another floor) home-run to the edge of
+  // their own plan, tagged for the panel.
+  if (viewBoxes.length > 1) {
+    panelPlans = panelPlans.flatMap(pp => {
+      if (!pp.point || pp.offSheet) return [pp];
+      const panelView = viewOf(pp.point);
+      if (panelView < 0) return [pp];
+      const majority = (c: PlannedCircuit) => {
+        const counts = new Map<number, number>();
+        c.devices.forEach(d => counts.set(viewOf(d), (counts.get(viewOf(d)) || 0) + 1));
+        return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? -1;
+      };
+      const here = pp.circuits.filter(c => { const v = majority(c); return v === panelView || v < 0; });
+      const away = pp.circuits.filter(c => !here.includes(c));
+      return away.length
+        ? [{ ...pp, circuits: here }, { label: pp.label, point: null, offSheet: true, candidates: [], circuits: away }]
+        : [pp];
+    }).filter(pp => pp.circuits.length);
+  }
+
   const plan = planAllPanels({
     page, zones, panelPlans, settings, ftPerPt, scaleSource, extraObstacles: userKeepClear, allowed: routing.allowed,
   });
@@ -606,6 +655,7 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
 
 type PlannedRunWithMaterials = PlannedRun & { assembly: RunAssembly | null; panelLabel: string };
 type MultiPanelPlan = Omit<RunPlan, 'runs'> & {
+  loadCenterFt: Record<string, number>;
   runs: PlannedRunWithMaterials[];
   panels: Array<{ label: string; point: Pt; offSheet: boolean }>;
 };
@@ -627,6 +677,7 @@ function planAllPanels(options: {
   const warnings: string[] = [];
   const codeRefs = new Set<string>();
   const panels: MultiPanelPlan['panels'] = [];
+  const loadCenterFt: Record<string, number> = {};
   let hr = 0;
   for (const pp of options.panelPlans) {
     if (!pp.circuits.length) continue;
@@ -656,7 +707,7 @@ function planAllPanels(options: {
       if (run.kind === 'homerun') {
         const id = renumber.get(run.id) || run.id;
         next.id = id;
-        next.label = run.label.replace(/^HR\d+/, id) + (pp.offSheet || !pp.point ? ` → ${label} (other sheet)` : '');
+        next.label = run.label.replace(/^HR\d+/, id) + (pp.offSheet || !pp.point ? ` → ${label} (off this plan)` : '');
         next.note = run.note.replace(/^Home run \d+/, `Home run ${id.slice(2)}`);
       }
       runs.push({
@@ -673,6 +724,7 @@ function planAllPanels(options: {
     }
     warnings.push(...plan.warnings.map(w => w.replace(/^HR\d+/, m => renumber.get(m) || m)));
     plan.codeRefs.forEach(ref => codeRefs.add(ref));
+    Object.assign(loadCenterFt, plan.loadCenterFt || {});
     panels.push({ label, point, offSheet: pp.offSheet || !pp.point });
   }
   return {
@@ -683,6 +735,7 @@ function planAllPanels(options: {
     warnings: [...new Set(warnings)],
     codeRefs: [...codeRefs],
     panels,
+    loadCenterFt,
   };
 }
 
@@ -711,9 +764,10 @@ function buildRunMarkups(
     const id = run.circuitIds[0];
     branchFt.set(id, (branchFt.get(id) || 0) + run.lengthFt);
   }
-  const homeRuns = plan.runs.filter(r => r.kind === 'homerun');
-  const colorFor = new Map<string, string>();
-  homeRuns.forEach((run, i) => run.circuitIds.forEach(id => colorFor.set(id, HOMERUN_COLORS[i % HOMERUN_COLORS.length])));
+  // Paper-space sizes (doc points) so runs scale with the print like a Revit sheet.
+  const docMax = Math.max(geometry.docWidth, geometry.docHeight) || 3000;
+  const homeWidth = Math.max(1.5, docMax * 0.0011);
+  const branchWidth = Math.max(1, docMax * 0.0007);
 
   for (const ob of plan.obstacles) {
     const a = toDoc({ x: ob.box.x, y: ob.box.y });
@@ -726,8 +780,8 @@ function buildRunMarkups(
       y: Math.min(a.y, b.y),
       width: Math.abs(b.x - a.x),
       height: Math.abs(b.y - a.y),
-      style: style('#d97706', 'rgba(245, 158, 11, 0.22)', 2, 1),
-      label: `Keep clear: ${ob.label}`,
+      style: style(KEEPOUT_COLOR, 'rgba(249, 115, 22, 0.22)', Math.max(1.5, docMax * 0.0009), 100),
+      label: `Keep clear: ${ob.label}${ob.approximate ? ' (approx.)' : ''}`,
       aiNote: `Runs routed around ${ob.label}.`,
       aiRun: { runId: `keepout-${ob.label}`, kind: 'keepout', ftPerPt: plan.ftPerPt, lengthFt: 0, summary: `Keep clear: ${ob.label}` },
     };
@@ -746,7 +800,7 @@ function buildRunMarkups(
       y: c.y - size / 2,
       width: size * 2,
       height: size,
-      style: style('#111827', 'rgba(17, 24, 39, 0.85)', 1.5, 1),
+      style: style('#111827', 'rgba(17, 24, 39, 0.85)', 1.5, 100),
       label: `Panel ${panel.label}`,
       aiNote: `Home runs end at panel ${panel.label}.`,
       aiRun: { runId: `panel-${panel.label}`, kind: 'panel', ftPerPt: plan.ftPerPt, lengthFt: 0, panel: panel.label, summary: `Panel ${panel.label}` },
@@ -755,10 +809,12 @@ function buildRunMarkups(
   }
 
   for (const run of plan.runs) {
-    const color = colorFor.get(run.circuitIds[0]) || '#2563eb';
-    const points = run.path.map(toDoc);
-    if (points.length < 2) continue;
     const isHome = run.kind === 'homerun';
+    const curve = !isHome && run.arc ? run.arc.map(toDoc) : null;
+    const points = curve || run.path.map(toDoc);
+    if (points.length < 2) continue;
+    const arcFt = curve ? arcLength(curve[0], curve[1], curve[2]) * plan.ftPerPt : 0;
+    const footageFactor = curve && arcFt > 0 ? Math.max(1, Math.round((run.lengthFt / arcFt) * 1000) / 1000) : undefined;
     const runCircuits: AiRunCircuit[] = run.circuitIds.map(id => {
       const c = byId.get(id);
       return {
@@ -771,6 +827,7 @@ function buildRunMarkups(
         continuous: c?.continuous,
         ocpdAmps: c?.ocpdAmps,
         branchFt: branchFt.get(id) || 0,
+        vdBranchFt: plan.loadCenterFt?.[id],
       };
     });
     const offSheet = plan.panels.find(p => p.label === run.panelLabel)?.offSheet;
@@ -779,7 +836,7 @@ function buildRunMarkups(
       id: `run_${run.id}_${crypto.randomUUID()}`,
       type: 'polyline',
       points,
-      style: style(color, 'transparent', isHome ? 3.5 : 2, isHome ? 1 : 0.9),
+      style: style(RUN_COLOR, 'transparent', isHome ? homeWidth : branchWidth, 100),
       label: isHome ? run.label : `${run.circuitIds[0]} branch`,
       aiNote: isHome
         ? run.note
@@ -790,6 +847,7 @@ function buildRunMarkups(
         ftPerPt: plan.ftPerPt,
         lengthFt: run.lengthFt,
         panel: run.panelLabel,
+        ...(curve ? { curve: true, footageFactor } : {}),
         ...(isHome && offSheet ? { offSheet: true } : {}),
         ...(run.assembly ? { assembly: { key: run.assembly.key, name: run.assembly.name, materials: run.assembly.materials } } : {}),
         circuits: isHome ? runCircuits : undefined,

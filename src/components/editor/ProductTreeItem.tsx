@@ -3,6 +3,7 @@ import { ChevronRight, ChevronDown, Folder, FolderOpen, Package, Check, MoreHori
 import { cn } from '@/lib/utils';
 import { ProductNode } from '@/types/product';
 import { useProductStore } from '@/store/productStore';
+import { useCanvasStore } from '@/store/canvasStore';
 import { useEditorStore } from '@/store/editorStore';
 import { useCatalogStore } from '@/store/catalogStore';
 import { useCatalogSync } from '@/components/catalog/CatalogSyncProvider';
@@ -60,6 +61,20 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
   const measurementCount = activeDocument && node.type !== 'folder'
     ? (node.measurements || []).filter((m) => m.documentId === activeDocument).length
     : 0;
+
+  // Color of this product's markers on the print (count types are color-coded).
+  const markerColor = useCanvasStore((state) => {
+    if (!activeDocument || node.type === 'folder') return null;
+    const doc = state.pdfDocuments[activeDocument];
+    if (!doc) return null;
+    for (const m of (node.measurements || []).slice(0, 5)) {
+      if (m.documentId !== activeDocument) continue;
+      const markup = (doc.markupsByPage[m.page] || []).find((row) => row.id === m.markupId);
+      if (markup?.type === 'count-marker') return markup.style.strokeColor;
+      if (markup?.aiRun) return markup.style.strokeColor;
+    }
+    return null;
+  });
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -266,8 +281,15 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
                 onClick={(e) => e.stopPropagation()}
               />
             ) : (
-              <span className={cn('flex-1 truncate', isActive && 'text-status-success font-medium')}>
-                {node.name}
+              <span className={cn('flex flex-1 items-center gap-1.5 truncate', isActive && 'text-status-success font-medium')}>
+                {markerColor && (
+                  <span
+                    className="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-white/40"
+                    style={{ backgroundColor: markerColor }}
+                    title="Marker color on the print"
+                  />
+                )}
+                <span className="truncate">{node.name}</span>
               </span>
             )}
 

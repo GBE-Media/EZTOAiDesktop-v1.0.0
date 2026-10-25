@@ -5,6 +5,16 @@ import { beginEditorInteraction, endEditorInteraction } from '@/store/editorInte
 import { useEditorStore } from '@/store/editorStore';
 import type { ToolType } from '@/types/editor';
 import { useProductStore } from '@/store/productStore';
+import { productHighlight } from '@/lib/productHighlight';
+import { takeoffColor } from '@/lib/takeoffColors';
+
+/** Count markers for a product share its color (same key the AI uses for fixture types). */
+function productMarkerColor(productId: string): { strokeColor: string; fillColor: string } {
+  const node = useProductStore.getState().nodes[productId];
+  const key = node?.notes?.match(/bidvera-key:(\S+)/)?.[1] || `product:${productId}`;
+  const color = takeoffColor(key);
+  return { strokeColor: color, fillColor: color };
+}
 import { useHistoryStore } from '@/store/historyStore';
 import { 
   getTextContentWithBounds, 
@@ -211,6 +221,12 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const currentPage = currentDocData?.currentPage || 1;
   const markupsByPage = currentDocData?.markupsByPage;
   const markups = (markupsByPage && markupsByPage[currentPage]) || EMPTY_MARKUPS;
+  // Product picked in the Products panel: its counts / runs light up, on every page.
+  const selectedProductNodeId = useProductStore(state => state.selectedNodeId);
+  const productNodes = useProductStore(state => state.nodes);
+  const highlight = productHighlight(productNodes, selectedProductNodeId, activeDocId);
+  const highlightKey = highlight ? `${highlight.nodeId}:${highlight.total}` : '';
+  const highlightIds = highlight?.ids;
   const pickRequest = useDrawingPickStore(state => state.request);
   const pickPins = useDrawingPickStore(state => state.pins);
   const pickAreas = useDrawingPickStore(state => state.areas);
@@ -270,13 +286,49 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     }
     
     // Draw existing markups
+    const highlighting = !!highlightIds && highlightIds.size > 0;
     markups.forEach((markup) => {
       const isSelected = selectedMarkupIds.includes(markup.id);
       const isHovered = hoveredMarkupId === markup.id;
       const isEraserHovered = eraserHoveredId === markup.id;
-      
+      const dim = highlighting && !highlightIds!.has(markup.id) && (markup.type === 'count-marker' || !!markup.aiRun);
+      if (dim) {
+        ctx.save();
+        ctx.globalAlpha = 0.22;
+      }
       drawMarkup(ctx, markup, isSelected, isHovered, isEraserHovered);
+      if (dim) ctx.restore();
     });
+    if (highlighting) {
+      // Halo every markup of the selected product so it's easy to spot on the print.
+      const s = 100 / Math.max(zoom, 10);
+      ctx.save();
+      ctx.setLineDash([]);
+      markups.forEach(markup => {
+        if (!highlightIds!.has(markup.id)) return;
+        ctx.strokeStyle = 'rgba(250, 204, 21, 0.95)';
+        ctx.shadowColor = 'rgba(250, 204, 21, 0.9)';
+        ctx.shadowBlur = 10 * s;
+        if (markup.type === 'count-marker') {
+          ctx.lineWidth = 3 * s;
+          ctx.beginPath();
+          ctx.arc(markup.x, markup.y, 17, 0, Math.PI * 2);
+          ctx.stroke();
+        } else if ('points' in markup && Array.isArray(markup.points) && markup.points.length > 1) {
+          ctx.globalAlpha = 0.45;
+          ctx.lineWidth = Math.max(6 * s, (markup.style.strokeWidth || 1) * 3);
+          ctx.beginPath();
+          ctx.moveTo(markup.points[0].x, markup.points[0].y);
+          markup.points.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+        } else if ('width' in markup && 'x' in markup) {
+          ctx.lineWidth = 3 * s;
+          ctx.strokeRect(markup.x, markup.y, markup.width, markup.height);
+        }
+      });
+      ctx.restore();
+    }
 
     if (aiPreview && aiPreview.docId === activeDocId) {
       const previewRows = aiPreview.markups.filter(row => row.page === currentPage);
@@ -536,7 +588,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       }
       
     }
-  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit, aiPreview, aiPreviewHoverId, showPageZones, activeDocId, currentPage, pickPins, pickAreas, areaDrag]);
+  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit, aiPreview, aiPreviewHoverId, showPageZones, activeDocId, currentPage, pickPins, pickAreas, areaDrag, highlightKey]);
 
   useEffect(() => {
     draw();
@@ -601,15 +653,14 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           ctx.fillRect(m.x, m.y, m.width, m.height);
         }
         if (m.aiRun?.kind === 'keepout' && !isEraserHovered) {
-          // Keep-clear areas: diagonal hatch so they read as "no runs here".
-          const scale = zoom / 100;
-          const step = 10 / scale;
+          // Keep-clear (no-fly) areas: diagonal hatch in paper units so they read as "no runs here".
+          const step = Math.max(4, m.style.strokeWidth * 5);
           ctx.save();
           ctx.beginPath();
           ctx.rect(m.x, m.y, m.width, m.height);
           ctx.clip();
-          ctx.strokeStyle = 'rgba(217, 119, 6, 0.45)';
-          ctx.lineWidth = 1 / scale;
+          ctx.strokeStyle = 'rgba(249, 115, 22, 0.55)';
+          ctx.lineWidth = Math.max(0.5, m.style.strokeWidth * 0.5);
           ctx.setLineDash([]);
           ctx.beginPath();
           for (let d = -m.height; d < m.width; d += step) {
@@ -619,8 +670,13 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           ctx.stroke();
           ctx.restore();
         }
+        if (m.aiRun?.kind === 'keepout') ctx.setLineDash([m.style.strokeWidth * 4, m.style.strokeWidth * 2.5]);
         ctx.strokeRect(m.x, m.y, m.width, m.height);
-        if (m.aiGenerated && m.label && !isEraserHovered) {
+        ctx.setLineDash([]);
+        if (m.aiRun && m.label && !isEraserHovered) {
+          // Run-plan boxes (keep-clear, panel): label in paper units, tied to the box.
+          drawPaperTag(ctx, m.label, { x: m.x, y: m.y }, m.aiRun.kind === 'keepout' ? '#c2410c' : '#111827', Math.max(6, m.style.strokeWidth * 4.5));
+        } else if (m.aiGenerated && m.label && !isEraserHovered) {
           const fontSize = Math.max(10, m.style.fontSize || 11);
           ctx.save();
           ctx.font = `600 ${fontSize}px ${m.style.fontFamily || 'Arial'}`;
@@ -721,6 +777,10 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           }
           // Close with scalloped edge back to first point
           drawCloudEdge(ctx, m.points[m.points.length - 1], m.points[0], true);
+        } else if (m.aiRun?.curve && m.points.length === 3) {
+          // Revit-style wiring arc from fixture to fixture, through the (draggable) middle point.
+          const [a, mid, b] = m.points;
+          ctx.quadraticCurveTo(2 * mid.x - (a.x + b.x) / 2, 2 * mid.y - (a.y + b.y) / 2, b.x, b.y);
         } else {
           for (let i = 1; i < m.points.length; i++) {
             ctx.lineTo(m.points[i].x, m.points[i].y);
@@ -736,13 +796,13 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         if (m.style.fillColor !== 'transparent' || isEraserHovered) {
           ctx.fill();
         }
-        if (m.aiRun && markup.type === 'polyline') {
-          // Runs stay readable at any zoom (never thinner than ~2–3 screen px).
-          const scale = zoom / 100;
-          ctx.lineWidth = Math.max(ctx.lineWidth, (m.aiRun.kind === 'homerun' ? 3 : 2) / scale);
+        if (m.aiRun) {
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
         }
         ctx.stroke();
-        if (m.aiRun?.kind === 'homerun' && !m.aiRun.offSheet) drawRunArrow(ctx, m);
+        // Home runs: arrow + conductor tick marks at the panel end (Revit home-run symbol).
+        if (m.aiRun?.kind === 'homerun') drawRunArrow(ctx, m);
         if (m.aiRun?.kind === 'homerun' && m.label) drawRunLabel(ctx, m);
         break;
       }
@@ -948,47 +1008,98 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   };
 
   // Home-run tag at the middle of the longest segment (constant on-screen size)
+  /** Filled tag (white text) above-left of an anchor, sized in paper units. */
+  const drawPaperTag = (ctx: CanvasRenderingContext2D, text: string, at: Point, color: string, fontSize: number) => {
+    ctx.save();
+    ctx.shadowBlur = 0;
+    ctx.globalAlpha = 1;
+    ctx.setLineDash([]);
+    ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+    const pad = fontSize * 0.35;
+    const w = ctx.measureText(text).width + pad * 2;
+    const h = fontSize + pad * 1.4;
+    ctx.fillStyle = color;
+    ctx.fillRect(at.x, at.y - h, w, h);
+    ctx.fillStyle = '#ffffff';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, at.x + pad, at.y - h / 2);
+    ctx.restore();
+  };
+
+  /**
+   * Home-run tag drawn like a Revit callout: a boxed tag beside the run with a leader to it. Sized
+   * in paper units (scales with the print when zooming, like the drawing's own text).
+   */
   const drawRunLabel = (ctx: CanvasRenderingContext2D, m: PolygonMarkup) => {
-    let best = 0;
-    let bestLen = -1;
-    for (let i = 0; i + 1 < m.points.length; i += 1) {
-      const len = Math.hypot(m.points[i + 1].x - m.points[i].x, m.points[i + 1].y - m.points[i].y);
-      if (len > bestLen) { bestLen = len; best = i; }
-    }
-    const a = m.points[best];
-    const b = m.points[best + 1];
-    if (!a || !b) return;
-    const scale = zoom / 100;
-    const fontSize = 10 / scale;
-    const text = m.label || '';
+    if (m.points.length < 2) return;
+    // Anchor ~35% along the run from the fixture end.
+    const segs = m.points.slice(1).map((p, i) => Math.hypot(p.x - m.points[i].x, p.y - m.points[i].y));
+    const total = segs.reduce((x, y) => x + y, 0);
+    let target = total * 0.35;
+    let i = 0;
+    while (i < segs.length - 1 && target > segs[i]) { target -= segs[i]; i += 1; }
+    const a = m.points[i];
+    const b = m.points[i + 1];
+    const t = segs[i] > 0 ? target / segs[i] : 0;
+    const anchor = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+    const sw = Math.max(0.8, m.style.strokeWidth);
+    const fontSize = sw * 3.6;
+    const raw = m.label || '';
+    const split = raw.indexOf(': ');
+    const line1 = split > 0 ? raw.slice(0, split) : raw;
+    const line2 = split > 0 ? raw.slice(split + 2) : '';
     ctx.save();
     ctx.shadowBlur = 0;
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
-    ctx.font = `600 ${fontSize}px Inter, sans-serif`;
-    const w = ctx.measureText(text).width + 8 / scale;
-    const h = fontSize + 6 / scale;
-    // Sit beside the line (perpendicular offset) so the label never hides the run.
+    ctx.font = `700 ${fontSize}px Inter, sans-serif`;
+    const w1 = ctx.measureText(line1).width;
+    ctx.font = `500 ${fontSize * 0.85}px Inter, sans-serif`;
+    const w2 = line2 ? ctx.measureText(line2).width : 0;
+    const pad = fontSize * 0.4;
+    const w = Math.max(w1, w2) + pad * 2;
+    const h = fontSize * (line2 ? 2.1 : 1.1) + pad * 1.2;
+    // Offset perpendicular to the run (upper side), leader back to the anchor.
     const segLen = Math.max(1e-6, Math.hypot(b.x - a.x, b.y - a.y));
     let nx = -(b.y - a.y) / segLen;
     let ny = (b.x - a.x) / segLen;
     if (ny > 0 || (ny === 0 && nx > 0)) { nx = -nx; ny = -ny; }
-    const offset = h / 2 + 6 / scale + (Math.abs(nx) > 0.7 ? w / 2 - h / 2 : 0);
-    const cx = (a.x + b.x) / 2 + nx * offset;
-    const cy = (a.y + b.y) / 2 + ny * offset;
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+    const gap = fontSize * 2.4;
+    const cx = anchor.x + nx * (gap + (Math.abs(nx) > 0.7 ? w / 2 : 0));
+    const cy = anchor.y + ny * (gap + (Math.abs(ny) > 0.7 ? h / 2 : 0));
+    const bx = cx - w / 2;
+    const by = cy - h / 2;
+    // Leader: anchor dot → nearest point on the tag box.
+    const lx = Math.max(bx, Math.min(anchor.x, bx + w));
+    const ly = Math.max(by, Math.min(anchor.y, by + h));
     ctx.strokeStyle = m.style.strokeColor;
-    ctx.lineWidth = 1 / scale;
-    ctx.fillRect(cx - w / 2, cy - h / 2, w, h);
-    ctx.strokeRect(cx - w / 2, cy - h / 2, w, h);
+    ctx.lineWidth = sw * 0.45;
+    ctx.beginPath();
+    ctx.moveTo(anchor.x, anchor.y);
+    ctx.lineTo(lx, ly);
+    ctx.stroke();
     ctx.fillStyle = m.style.strokeColor;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, cx, cy);
+    ctx.beginPath();
+    ctx.arc(anchor.x, anchor.y, sw * 0.9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+    ctx.fillRect(bx, by, w, h);
+    ctx.lineWidth = sw * 0.45;
+    ctx.strokeRect(bx, by, w, h);
+    ctx.fillStyle = '#0b5c99';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.font = `700 ${fontSize}px Inter, sans-serif`;
+    ctx.fillText(line1, bx + pad, by + pad * 0.6);
+    if (line2) {
+      ctx.font = `500 ${fontSize * 0.85}px Inter, sans-serif`;
+      ctx.fillStyle = '#1f2937';
+      ctx.fillText(line2, bx + pad, by + pad * 0.6 + fontSize * 1.15);
+    }
     ctx.restore();
   };
 
-  /** Arrowhead at the panel end of a home run. */
+  /** Arrowhead + conductor tick marks at the panel end of a home run (paper units). */
   const drawRunArrow = (ctx: CanvasRenderingContext2D, m: PolygonMarkup) => {
     const n = m.points.length;
     if (n < 2) return;
@@ -996,18 +1107,53 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     let from = m.points[n - 2];
     for (let i = n - 2; i >= 0 && Math.hypot(tip.x - from.x, tip.y - from.y) < 1e-3; i -= 1) from = m.points[i];
     const angle = Math.atan2(tip.y - from.y, tip.x - from.x);
-    const scale = zoom / 100;
-    const head = 12 / scale;
+    const sw = Math.max(0.8, m.style.strokeWidth);
+    const head = sw * 5;
     ctx.save();
     ctx.setLineDash([]);
     ctx.globalAlpha = 1;
+    ctx.shadowBlur = 0;
     ctx.fillStyle = m.style.strokeColor;
-    ctx.beginPath();
-    ctx.moveTo(tip.x, tip.y);
-    ctx.lineTo(tip.x - head * Math.cos(angle - Math.PI / 7), tip.y - head * Math.sin(angle - Math.PI / 7));
-    ctx.lineTo(tip.x - head * Math.cos(angle + Math.PI / 7), tip.y - head * Math.sin(angle + Math.PI / 7));
-    ctx.closePath();
-    ctx.fill();
+    ctx.strokeStyle = m.style.strokeColor;
+    {
+      ctx.beginPath();
+      ctx.moveTo(tip.x, tip.y);
+      ctx.lineTo(tip.x - head * Math.cos(angle - Math.PI / 7), tip.y - head * Math.sin(angle - Math.PI / 7));
+      ctx.lineTo(tip.x - head * Math.cos(angle + Math.PI / 7), tip.y - head * Math.sin(angle + Math.PI / 7));
+      ctx.closePath();
+      ctx.fill();
+    }
+    // Ticks: long = hot, short = neutral, long with a dot = ground (per Revit wiring tags).
+    const segLen = Math.hypot(tip.x - from.x, tip.y - from.y);
+    const circuits = Math.max(1, m.aiRun?.circuits?.length || 1);
+    const ticks: Array<'hot' | 'neutral' | 'ground'> = [];
+    for (let c = 0; c < circuits; c += 1) ticks.push('hot');
+    for (let c = 0; c < circuits; c += 1) ticks.push('neutral');
+    ticks.push('ground');
+    const spacing = sw * 1.8;
+    const start = head * 1.6;
+    if (segLen > start + spacing * ticks.length) {
+      const ux = Math.cos(angle);
+      const uy = Math.sin(angle);
+      const px = -uy;
+      const py = ux;
+      ctx.lineWidth = sw * 0.6;
+      ticks.forEach((kind, i) => {
+        const d = start + i * spacing;
+        const cx = tip.x - ux * d;
+        const cy = tip.y - uy * d;
+        const len = kind === 'neutral' ? sw * 1.6 : sw * 2.8;
+        ctx.beginPath();
+        ctx.moveTo(cx - px * len * 0.2 - ux * len * 0.3, cy - py * len * 0.2 - uy * len * 0.3);
+        ctx.lineTo(cx + px * len + ux * len * 0.3, cy + py * len + uy * len * 0.3);
+        ctx.stroke();
+        if (kind === 'ground') {
+          ctx.beginPath();
+          ctx.arc(cx + px * len + ux * len * 0.3, cy + py * len + uy * len * 0.3, sw * 0.55, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+    }
     ctx.restore();
   };
 
@@ -1700,7 +1846,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         id: `count-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         type: 'count-marker',
         page: currentPage,
-        style: { ...defaultStyle },
+        style: activeProductId ? { ...defaultStyle, ...productMarkerColor(activeProductId) } : { ...defaultStyle },
         locked: false,
         author: 'Current User',
         createdAt: new Date().toISOString(),
@@ -2482,6 +2628,44 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
               onClick={() => useDrawingPickStore.getState().cancel()}
             >
               Cancel
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {highlight && createPortal(
+        <div className="pointer-events-none fixed left-1/2 top-28 z-[9998] -translate-x-1/2">
+          <div className="pointer-events-auto flex max-w-[640px] flex-wrap items-center gap-2 rounded-full border border-yellow-400/50 bg-popover/95 px-4 py-1.5 text-xs shadow-xl backdrop-blur">
+            <span className="h-2 w-2 rounded-full bg-yellow-400" />
+            <span className="font-medium text-foreground">{highlight.name}</span>
+            <span className="text-muted-foreground">
+              {(highlight.byPage[currentPage] || []).length} on this page · {highlight.total} total
+            </span>
+            {Object.keys(highlight.byPage)
+              .map(Number)
+              .filter(page => page !== currentPage)
+              .sort((a, b) => a - b)
+              .slice(0, 8)
+              .map(page => (
+                <button
+                  key={page}
+                  type="button"
+                  className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:border-yellow-400/60 hover:text-foreground"
+                  onClick={() => useCanvasStore.getState().setCurrentPage(page)}
+                >
+                  p.{page} · {highlight.byPage[page].length}
+                </button>
+              ))}
+            {highlight.otherDocuments > 0 && (
+              <span className="text-muted-foreground">+{highlight.otherDocuments} in other documents</span>
+            )}
+            <button
+              type="button"
+              className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+              onClick={() => useProductStore.getState().setSelectedNode(null)}
+            >
+              Clear
             </button>
           </div>
         </div>,

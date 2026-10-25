@@ -10,7 +10,13 @@ import type { ZonePageInput } from '../detection/pageZones';
 export type Pt = { x: number; y: number };
 export type Box = { x: number; y: number; width: number; height: number };
 
-export type Obstacle = { kind: 'elevator' | 'shaft' | 'stair' | 'opening' | 'equipment'; label: string; box: Box };
+export type Obstacle = {
+  kind: 'elevator' | 'shaft' | 'stair' | 'opening' | 'equipment';
+  label: string;
+  box: Box;
+  /** Room outline not found — box is an estimate around the label. */
+  approximate?: boolean;
+};
 
 const OBSTACLE_PATTERNS: Array<{ kind: Obstacle['kind']; re: RegExp }> = [
   { kind: 'elevator', re: /\b(ELEV(ATOR)?|ELEV\.?\s*\d*|LIFT)\b/i },
@@ -93,16 +99,19 @@ export function detectObstacles(input: ZonePageInput, within?: Box[], excluded?:
     if (within?.length && !within.some(box => pointIn(center, box))) continue;
     if (excluded?.some(box => pointIn(center, box))) continue;
     if (out.some(o => pointIn(center, o.box))) continue;
-    const room = floodRoom(walls, raster, center, maxCells);
+    let room = floodRoom(walls, raster, center, maxCells);
+    // A "room" much bigger than a stair / elevator core leaked through an opening: don't trust it.
+    const maxSide = Math.max(W, H) * 0.08;
+    if (room && (room.width > maxSide || room.height > maxSide)) room = null;
     const fh = item.fontHeight || item.height || 8;
-    const fallbackSize = Math.max(item.width * 1.6, fh * 8);
+    const fallbackSize = Math.max(item.width * 2.2, fh * 14);
     const box = room || {
       x: center.x - fallbackSize / 2,
       y: center.y - fallbackSize / 2,
       width: fallbackSize,
       height: fallbackSize,
     };
-    out.push({ kind: hit.kind, label: text, box });
+    out.push({ kind: hit.kind, label: text, box, ...(room ? {} : { approximate: true }) });
   }
   return out;
 }
