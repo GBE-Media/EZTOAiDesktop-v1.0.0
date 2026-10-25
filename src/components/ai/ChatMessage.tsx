@@ -4,7 +4,7 @@
  */
 
 import { memo, useEffect, useRef, useState } from 'react';
-import { Bot, AlertCircle, Copy, Check, RotateCcw } from 'lucide-react';
+import { AlertCircle, Copy, Check, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ChatMessage as ChatMessageType } from '@/store/aiChatStore';
 import { AssistantMessageBlocks } from './AssistantMessageBlocks';
@@ -120,7 +120,7 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
   if (isUser) {
     return (
       <div className="flex justify-end px-4 py-3">
-        <div className="max-w-[min(100%,36rem)] rounded-2xl bg-secondary/80 px-3.5 py-2.5 text-sm text-foreground shadow-sm">
+        <div className="max-w-[min(100%,36rem)] rounded-2xl bg-secondary/80 px-3.5 py-2.5 text-sm text-foreground">
           <div className="whitespace-pre-wrap break-words">
             {formatContent(message.content, {
               messageId: message.id,
@@ -145,27 +145,8 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
   }
 
   return (
-    <div className="flex gap-3 px-4 py-4">
-      <div className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-violet-500 to-purple-600 text-white">
-        <Bot className="h-3.5 w-3.5" />
-      </div>
-
+    <div className="group flex px-4 py-3">
       <div className="min-w-0 max-w-[min(100%,40rem)] flex-1">
-        <div className="mb-1 flex items-center gap-2">
-          <span className="text-sm font-medium">BidveraAi</span>
-          <span className="text-xs text-muted-foreground">{formatTime(message.timestamp)}</span>
-          {!message.isLoading && (
-            <div className="ml-auto flex items-center">
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={copy} title="Copy answer">
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-              </Button>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={retry} title="Retry">
-                <RotateCcw className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          )}
-        </div>
-
         {message.isLoading ? (
           <PulsingStatus />
         ) : (
@@ -196,6 +177,16 @@ export const ChatMessage = memo(function ChatMessage({ message }: ChatMessagePro
           </>
         )}
         <AssistantMessageBlocks blocks={message.blocks} />
+        {!message.isLoading && (
+          <div className="-ml-1.5 mt-1 flex h-7 items-center opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100" title={formatTime(message.timestamp)}>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={copy} title="Copy answer">
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </Button>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={retry} title="Retry">
+              <RotateCcw className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        )}
         
         {/* Images if any */}
         {message.images && message.images.length > 0 && (

@@ -104,3 +104,37 @@ describe('AI takeoff products survive catalog sync', () => {
     registerCatalogPersister(null);
   });
 });
+
+describe('cards after an answer appear below it', () => {
+  it('puts the follow-up card in a new message after the user answer', async () => {
+    const { resumeTaskAfterClarification } = await import('./orchestrator');
+    clearAgentSessionMemoryForTests();
+    await assistantDb.agentSessions.clear();
+    useAIChatStore.setState({
+      messages: [{ id: 'msg-first', role: 'assistant', content: '', isLoading: true, timestamp: new Date() }],
+      runs: { 'run-follow': { id: 'run-follow', messageId: 'msg-first', conversationId: 's', status: 'running', summary: 'runs', steps: [], startedAt: new Date().toISOString() } },
+      approvals: {}, clarifications: {},
+    } as never);
+    const ctx = createAgentToolContext({ runId: 'run-follow', messageId: 'msg-first', trade: 'electrical', placeMarkups: () => ({ placed: 0 }) });
+    const first = await runPrimaryAgentLoop({
+      session: { runId: 'run-follow', messageId: 'msg-first', messages: [{ role: 'user', content: 'runs' }], toolHistory: [], actionsTaken: [], contextText: '' } as never,
+      toolContext: ctx,
+      model: { complete: vi.fn<ModelAdapter['complete']>().mockResolvedValueOnce({ type: 'final', message: 'Which panel feeds these fixtures?' }) },
+    });
+    const card = first.clarificationRequest!;
+    const resumed = await resumeTaskAfterClarification({
+      clarification: card,
+      answer: { selectedValues: [], displayText: 'Panel B', fields: { answer: { value: 'Panel B' } } },
+      toolContext: ctx,
+      model: { complete: vi.fn<ModelAdapter['complete']>().mockResolvedValueOnce({ type: 'final', message: 'Got it. Could you point me to where panel B is on the drawing?' }) },
+    });
+    expect(resumed.status).toBe('needs_clarification');
+    const messages = useAIChatStore.getState().messages;
+    const roles = messages.map(m => m.role);
+    expect(roles).toEqual(['assistant', 'user', 'assistant']);
+    const last = messages[2];
+    expect(resumed.messageId).toBe(last.id);
+    expect(last.blocks?.some(b => b.type === 'question' && b.clarificationId === resumed.clarificationRequest?.id)).toBe(true);
+    expect(messages[0].blocks?.some(b => b.type === 'question' && b.clarificationId === resumed.clarificationRequest?.id)).toBeFalsy();
+  });
+});

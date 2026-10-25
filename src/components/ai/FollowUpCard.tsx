@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
 import type { AssistantMessageBlock } from '@/types/assistant';
@@ -26,21 +25,20 @@ export function FollowUpCard({ block }: { block: FollowUpBlock }) {
 
   return (
     <div
-      className="my-2 rounded-xl border border-primary/30 bg-primary/5 p-3 shadow-sm"
+      className="my-2 rounded-xl border border-border bg-card p-3"
       data-testid="follow-up-card"
       role="group"
       aria-label="Suggested next step"
     >
       <div className="flex items-start gap-2">
-        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
         <div className="min-w-0 flex-1 text-xs font-medium text-foreground">{block.question}</div>
       </div>
       {settled ? (
-        <div className="mt-2 pl-6 text-[11px] text-muted-foreground">
+        <div className="mt-1.5 text-[11px] text-muted-foreground">
           {chosen || (laterUserReply ? 'Replied' : 'Dismissed')}
         </div>
       ) : (
-        <div className="mt-3 flex flex-wrap gap-2 pl-6">
+        <div className="mt-2.5 flex flex-wrap gap-2">
           {block.options.map(option => (
             <Button
               key={option.label}

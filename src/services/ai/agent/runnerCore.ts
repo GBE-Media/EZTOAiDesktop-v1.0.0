@@ -316,6 +316,8 @@ export interface ResumeClarificationOptions {
     fields?: Record<string, import('@/types/assistant').ClarificationFieldAnswer>;
   };
   toolContext: AssistantToolContext;
+  /** Continue in this (new) assistant message, below the user's answer. */
+  messageId?: string;
   model?: ModelAdapter;
   maxSteps?: number;
   onStatus?: (status: AgentTurnResult['status'], detail?: string) => void;
@@ -451,9 +453,10 @@ export async function resumeAgentAfterClarification(
       finalStatus: 'failed',
       errorCode: 'SESSION_EXPIRED',
       runId: options.runId,
-      messageId: options.clarification.messageId,
+      messageId: options.messageId || options.clarification.messageId,
     };
   }
+  if (options.messageId) session.messageId = options.messageId;
   const signal = registerAssistantRunController(options.runId);
   const toolContext: AssistantToolContext = {
     ...options.toolContext,

@@ -469,7 +469,8 @@ class AIService {
         },
       ],
       responseFormat: 'json',
-      temperature: 0.2,
+      // Counting must give the same answer on every run.
+      temperature: 0,
       maxTokens: 16384,
     });
   }

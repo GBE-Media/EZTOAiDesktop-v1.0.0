@@ -5,7 +5,7 @@
 
 import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { workspaceConversationContextId, workspaceConversationTitle } from '@/lib/workspaceConversation';
-import { Sparkles, AlertCircle, Loader2, FolderPlus, PackagePlus, Boxes } from 'lucide-react';
+import { AlertCircle, Loader2, FolderPlus, PackagePlus, Boxes } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -1079,14 +1079,15 @@ export function AgentAssistantDrawer() {
             return;
           }
           const result = orchestrated.agentResult;
+          const replyMessageId = orchestrated.messageId || clarification.messageId;
           if (!result) {
-            store.updateMessage(clarification.messageId, {
+            store.updateMessage(replyMessageId, {
               isLoading: orchestrated.status === 'needs_clarification',
             });
             return;
           }
           const assistantMessage = result.assistantMessage || 'The assistant could not continue this task.';
-          store.updateMessage(clarification.messageId, {
+          store.updateMessage(replyMessageId, {
             content: ensureNumberedCalloutMentions(assistantMessage, []),
             isLoading: result.status === 'needs_approval',
             error: result.status === 'failed' ? assistantMessage : undefined,
@@ -1095,7 +1096,9 @@ export function AgentAssistantDrawer() {
             store.finishRun(clarification.runId, 'error', assistantMessage);
           }
         } catch (error) {
-          store.updateMessage(clarification.messageId, {
+          const latest = useAIChatStore.getState().messages.at(-1);
+          const errorMessageId = latest?.role === 'assistant' && latest.isLoading ? latest.id : clarification.messageId;
+          store.updateMessage(errorMessageId, {
             isLoading: false,
             error: error instanceof Error ? error.message : String(error),
           });
@@ -1146,10 +1149,7 @@ export function AgentAssistantDrawer() {
             >
             {!hasMessages ? (
               <div className="flex h-full flex-col items-center justify-center p-8 text-center">
-                <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500/20 to-purple-600/20">
-                  <Sparkles className="h-7 w-7 text-violet-500" />
-                </div>
-                <h3 className="mb-1 text-base font-medium">BidveraAi</h3>
+                <h3 className="mb-1 text-base font-semibold tracking-tight">What are we estimating?</h3>
                 <p className="mb-6 max-w-[280px] text-sm text-muted-foreground">
                   Ask about this plan, counts, or markups.
                 </p>

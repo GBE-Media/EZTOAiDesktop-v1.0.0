@@ -1,4 +1,4 @@
-import { Check, Copy, ShieldCheck, X } from 'lucide-react';
+import { Check, Copy, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useAIChatStore } from '@/store/aiChatStore';
@@ -130,9 +130,8 @@ export function ApprovalCardView({
   const previewPage = preview?.markups[0]?.page;
 
   return (
-    <div className="my-2 rounded-2xl border border-emerald-500/30 bg-emerald-500/5 p-3 shadow-sm">
+    <div className="my-2 rounded-xl border border-border bg-card p-3">
       <div className="flex items-start gap-2">
-        <ShieldCheck className="mt-0.5 h-4 w-4 text-emerald-500" />
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium">{approval.title}</div>
           <div className="mt-0.5 text-xs text-muted-foreground">{approval.description}</div>

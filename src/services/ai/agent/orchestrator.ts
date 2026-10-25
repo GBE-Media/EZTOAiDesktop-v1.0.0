@@ -194,7 +194,12 @@ export async function resumeTaskAfterClarification(
   store.addMessage({ role: 'user', content: options.answer.displayText });
 
   if (session.continuation?.kind !== 'pipeline') {
+    // The rest of the turn (next card, approvals, the answer) goes in a new message under the
+    // user's answer — appending to the earlier message hid new cards above the answer.
+    store.updateMessage(options.clarification.messageId, { isLoading: false });
+    const followUpMessageId = store.addMessage({ role: 'assistant', content: '', isLoading: true });
     const result = await resumeAgentAfterClarification({
+      messageId: followUpMessageId,
       runId: options.clarification.runId,
       clarification: options.clarification,
       answer: options.answer,

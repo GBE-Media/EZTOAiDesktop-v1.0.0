@@ -186,7 +186,7 @@ export function ChatInput({
             size="icon"
             className={cn(
               'h-10 w-10 shrink-0 rounded-xl',
-              canSend && 'bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700',
+              canSend && 'bg-foreground text-background hover:bg-foreground/90',
             )}
             title="Send"
           >
