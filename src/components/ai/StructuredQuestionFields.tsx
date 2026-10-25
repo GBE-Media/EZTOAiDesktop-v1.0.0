@@ -266,6 +266,15 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
                     )}
                   </button>
                 ))}
+                {field.placeholder && (
+                  <Input
+                    value={answer && !field.options?.some(option => option.value === answer.value) ? answer.value || '' : ''}
+                    disabled={submitting}
+                    placeholder={field.placeholder}
+                    className="h-7 w-44 text-xs"
+                    onChange={event => setAnswer(field.id, event.target.value ? { value: event.target.value } : undefined)}
+                  />
+                )}
               </div>
             )}
 

@@ -5,6 +5,8 @@
  */
 import { useProductStore } from '@/store/productStore';
 import type { ProductComponent, ProductNode } from '@/types/product';
+import { useCatalogStore } from '@/store/catalogStore';
+import { getCatalogPersister } from './catalogPersister';
 
 export interface TakeoffProductSpec {
   /** Stable key, e.g. "fixture:A" or "run:3/4\" EMT – 2#12, 1#12G". */
@@ -60,13 +62,70 @@ export function ensureTakeoffProduct(spec: TakeoffProductSpec): { productId: str
   store.updateProductUnitOfMeasure(id, spec.unit);
   if (spec.description) store.updateProductDescription(id, spec.description);
   for (const component of spec.components || []) store.addComponent(id, component);
+  const notes = `${KEY_PREFIX}${spec.key}\nCreated by BidveraAi from the drawings.`;
+  const categoryPath = `${ROOT_FOLDER}/${spec.folder}`;
+  const persister = getCatalogPersister();
   useProductStore.setState(state => ({
     nodes: {
       ...state.nodes,
-      [id]: { ...state.nodes[id], notes: `${KEY_PREFIX}${spec.key}\nCreated by BidveraAi from the drawings.` },
+      [id]: { ...state.nodes[id], notes, categoryPath, ...(persister ? { pendingCatalog: true } : {}) },
     },
   }));
+  persistTakeoffProduct(id, spec, notes, categoryPath);
   return { productId: id, created: true };
+}
+
+const savedPaths = new Set<string>();
+let saveChain: Promise<void> = Promise.resolve();
+
+/**
+ * Save an AI-created product to the user's catalog (same id as the local node, so linked counts
+ * and footages carry over when the catalog sync rebuilds the product tree).
+ */
+function persistTakeoffProduct(id: string, spec: TakeoffProductSpec, notes: string, categoryPath: string): void {
+  const persister = getCatalogPersister();
+  if (!persister) return;
+  const description = [
+    spec.description || '',
+    ...(spec.components?.length ? [`Per ${spec.unit}: ${spec.components.map(c => `${c.quantity} ${c.unit} ${c.name}`).join(', ')}`] : []),
+  ].filter(Boolean).join('\n');
+  saveChain = saveChain.then(async () => {
+    const now = new Date().toISOString();
+    const existingPaths = new Set(Object.values(useCatalogStore.getState().categories).map(c => c.path));
+    for (const path of [ROOT_FOLDER, categoryPath]) {
+      if (existingPaths.has(path) || savedPaths.has(path)) continue;
+      savedPaths.add(path);
+      await persister.queue('product_categories', 'insert', {
+        id: crypto.randomUUID(), user_id: persister.userId, path, sort_order: 0, created_at: now, updated_at: now,
+      });
+    }
+    if (useCatalogStore.getState().products[id]) return;
+    await persister.queue('product_catalog', 'insert', {
+      id,
+      user_id: persister.userId,
+      name: spec.name,
+      description,
+      category: categoryPath,
+      unit_of_measure: spec.unit === 'ea' ? 'each' : 'ft',
+      unit_price: 0,
+      labor_cost: 0,
+      material_cost: 0,
+      supplier: null,
+      sku: null,
+      notes,
+      created_at: now,
+      updated_at: now,
+      organization_id: null,
+      is_org_catalog: false,
+    });
+  }).catch(error => {
+    console.warn('[takeoffProducts] could not save product to the catalog', error);
+  });
+}
+
+/** Test hook: wait for queued catalog saves. */
+export function flushTakeoffProductSaves(): Promise<void> {
+  return saveChain;
 }
 
 /** Product spec for a counted fixture / device type. */

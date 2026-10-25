@@ -24,6 +24,7 @@ import { catalogSnapshotToProductTree } from '@/lib/catalogAdapter';
 import { useCatalogStore } from '@/store/catalogStore';
 import { useProductStore } from '@/store/productStore';
 import type { CatalogMutation, CatalogTable } from '@/types/catalog';
+import { registerCatalogPersister } from '@/services/ai/catalog/catalogPersister';
 
 interface CatalogSyncContextValue {
   isLoading: boolean;
@@ -163,6 +164,16 @@ export function CatalogSyncProvider({ children }: { children: ReactNode }) {
     },
     [handleConflict, hydrate, user],
   );
+
+  // Products the AI creates during takeoff are saved through the same queue as manual ones.
+  useEffect(() => {
+    if (!user) {
+      registerCatalogPersister(null);
+      return;
+    }
+    registerCatalogPersister({ userId: user.id, queue: (table, operation, row) => queueMutation(table, operation, row) });
+    return () => registerCatalogPersister(null);
+  }, [queueMutation, user]);
 
   const value = useMemo<CatalogSyncContextValue>(
     () => ({

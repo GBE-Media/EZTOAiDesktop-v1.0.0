@@ -120,6 +120,15 @@ export function catalogSnapshotToProductTree(
     if (parentId && nodes[parentId]) nodes[parentId].children.push(assembly.id);
   }
 
+  // Products created locally (AI takeoff) whose catalog insert hasn't come back yet: keep them in
+  // their category so counts linked to them aren't lost mid-sync.
+  for (const previous of Object.values(previousNodes)) {
+    if (!previous.pendingCatalog || previous.type === 'folder' || nodes[previous.id]) continue;
+    const parentId = ensureCategoryPath(previous.categoryPath || '');
+    nodes[previous.id] = { ...previous, parentId };
+    if (parentId && nodes[parentId]) nodes[parentId].children.push(previous.id);
+  }
+
   // Keep project-only snapshots that are no longer present in the shared
   // catalog. They remain read-only and retain measurement history.
   for (const previous of Object.values(previousNodes)) {
