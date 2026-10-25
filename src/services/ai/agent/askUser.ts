@@ -20,7 +20,7 @@ export interface AskUserRequest {
   resume?: { toolId: string; args: Record<string, unknown>; apply: Record<string, string> };
 }
 
-const KINDS = new Set(['choice', 'point', 'text']);
+const KINDS = new Set(['choice', 'point', 'text', 'area']);
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
@@ -96,13 +96,15 @@ export function fieldsComplete(fields: ClarificationField[], answers: Record<str
     if (field.optional) return true;
     const answer = answers[field.id];
     if (!answer) return false;
-    if (field.kind === 'point') return !!answer.point;
+    if (field.kind === 'point') return !!answer.point || !!str(answer.value);
+    if (field.kind === 'area') return !!answer.areas?.length || !!str(answer.value);
     return !!str(answer.value);
   });
 }
 
 export function describeFieldAnswer(field: ClarificationField, answer: ClarificationFieldAnswer | undefined): string {
   if (!answer) return 'skipped';
+  if (answer.areas?.length) return `${answer.areas.length} area${answer.areas.length === 1 ? '' : 's'} marked`;
   if (answer.point) {
     return answer.label
       ? answer.label
@@ -128,7 +130,7 @@ function setPath(target: Record<string, unknown>, path: string, value: unknown):
   let cursor: Record<string, unknown> = target;
   for (const part of parts.slice(0, -1)) {
     const next = cursor[part];
-    if (!next || typeof next !== 'object' || Array.isArray(next)) cursor[part] = {};
+    if (!next || typeof next !== 'object') cursor[part] = {};
     cursor = cursor[part] as Record<string, unknown>;
   }
   cursor[parts[parts.length - 1]] = value;
@@ -147,12 +149,25 @@ export function applyFieldAnswers(
   for (const [fieldId, path] of Object.entries(apply)) {
     const answer = answers[fieldId];
     if (!answer || !path) continue;
+    if (answer.areas) {
+      setPath(merged, path, answer.areas.map(area => ({
+        x: round1(area.xPct),
+        y: round1(area.yPct),
+        width: round1(area.wPct),
+        height: round1(area.hPct),
+      })));
+      continue;
+    }
     if (answer.point) {
       setPath(merged, `${path}.x`, round1(answer.point.xPct));
       setPath(merged, `${path}.y`, round1(answer.point.yPct));
       continue;
     }
     const value = str(answer.value);
+    if (value.startsWith('flag:')) {
+      setPath(merged, `${path}.${value.slice(5)}`, true);
+      continue;
+    }
     if (value) setPath(merged, path, value);
   }
   return merged;
@@ -175,7 +190,9 @@ export function formatFieldAnswersForModel(
       lines.push(`- ${field.id}: (not answered)`);
       continue;
     }
-    if (answer.point) {
+    if (answer.areas) {
+      lines.push(`- ${field.id}: user marked ${answer.areas.length} area${answer.areas.length === 1 ? '' : 's'}${answer.areas.length ? `: ${answer.areas.map(a => `x=${round1(a.xPct)} y=${round1(a.yPct)} w=${round1(a.wPct)} h=${round1(a.hPct)}`).join('; ')} (percent of the displayed page)` : ''}`);
+    } else if (answer.point) {
       const p = answer.point;
       lines.push(`- ${field.id}: user picked a point on page ${p.page}${p.documentId ? ` of document ${p.documentId}` : ''} at x=${round1(p.xPct)}, y=${round1(p.yPct)} (percent of the displayed page)${answer.label ? ` — ${answer.label}` : ''}`);
     } else {

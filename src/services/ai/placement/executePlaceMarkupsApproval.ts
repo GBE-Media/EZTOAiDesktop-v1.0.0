@@ -7,6 +7,7 @@ import { normalizeAgentMarkupPayload, type NormalizeDroppedRow } from './normali
 import { ensureCachedPageGeometry, placementMarkupsFromCachedItemIds } from './cachedCountMarkers';
 import { verifyPlacementMarkupsWithGeometryGate } from './normalizeAgentMarkupPayload';
 import type { PdfDocumentLike } from './loadPageGeometries';
+import { bindTakeoffProducts, describeBoundProducts, type BoundProduct } from '../catalog/bindTakeoffProducts';
 
 export type MarkupExecutionResult = {
   status: 'ok' | 'partial' | 'failed';
@@ -17,6 +18,9 @@ export type MarkupExecutionResult = {
   dropped: Array<{ index?: number; itemId?: string; reason: string }>;
   error?: string;
   perMarker?: Array<{ index?: number; itemId?: string; reason: string }>;
+  /** Products in the user's library the placed markers were linked to (created when missing). */
+  products?: BoundProduct[];
+  productsSummary?: string;
 };
 
 function isLegacyMarkupPair(item: unknown): item is { page: number; markup: CanvasMarkup } {
@@ -211,6 +215,9 @@ export async function executePlaceMarkupsApproval(options: ResolvePlaceMarkupsOp
     };
   }
 
+  // Counted fixtures land on the user's products (created under "AI Takeoff" when missing).
+  const products = bindTakeoffProducts(markups);
+
   const gated = commitMarkupsByConfidence({
     markups,
     forceConfirm: options.placementMode === 'confirm',
@@ -241,6 +248,7 @@ export async function executePlaceMarkupsApproval(options: ResolvePlaceMarkupsOp
     reviewQueued: gated.review,
     dropped,
     perMarker: dropped,
+    ...(products.length ? { products, productsSummary: describeBoundProducts(products) } : {}),
     error: status === 'partial'
       ? `Placed ${gated.placed}; dropped ${dropped.length}`
       : undefined,

@@ -51,7 +51,7 @@ export const DEFAULT_RUN_SETTINGS: RunSettings = {
   necEdition: 2023,
 };
 
-export type PlannedCircuit = CircuitInput & { devices: Pt[] };
+export type PlannedCircuit = CircuitInput & { devices: Pt[]; panel?: string };
 
 export type PlannedRun = {
   id: string;
@@ -89,25 +89,66 @@ export type PlanRunsInput = {
   /** Feet per display point (calibration or view scale). */
   ftPerPt: number;
   scaleSource: string;
+  /** Keep-clear areas the user marked (display points). */
+  extraObstacles?: Obstacle[];
+  /** Home runs leave the sheet (panel is on another sheet): route to the plan-view edge. */
+  panelOffSheet?: boolean;
 };
 
 const NON_ROUTABLE = new Set(['schedule', 'legend', 'notes', 'title_block', 'key_plan', 'revisions', 'detail', 'diagram']);
+
+/** Plan-view routing area + keep-clear rooms (elevators, stairs, shafts) found from their labels. */
+export function planRoutingContext(page: ZonePageInput, zones: PageZone[], devices: Pt[], panels: Pt[] = []): {
+  allowed: Box[];
+  blocked: Box[];
+  obstacles: Obstacle[];
+  /** Elevator / stair / shaft labels printed inside the plan view. */
+  obstacleMentions: number;
+} {
+  const W = page.pageWidth;
+  const H = page.pageHeight;
+  const pct = (z: PageZone): Box => ({ x: (z.bounds.x / 100) * W, y: (z.bounds.y / 100) * H, width: (z.bounds.width / 100) * W, height: (z.bounds.height / 100) * H });
+  const planViews = zones.filter(z => z.kind === 'plan' && z.source === 'view').map(pct);
+  const usedViews = planViews.filter(box => devices.some(d => pointIn(d, box)) || panels.some(p => pointIn(p, box)));
+  const allowed = usedViews.length ? usedViews.map(b => expand(b, Math.max(W, H) * 0.01)) : [];
+  const blocked = zones.filter(z => NON_ROUTABLE.has(z.kind)).map(pct)
+    .filter(box => !devices.some(d => pointIn(d, box)));
+  const obstacles = detectObstacles(page, allowed.length ? allowed : undefined, blocked);
+  const obstacleMentions = page.textItems.filter(item => {
+    const text = item.str.trim();
+    if (text.length > 30 || !/\b(ELEV(ATOR)?|STAIRS?|STAIRWELL|SHAFT|CHASE)\b/i.test(text)) return false;
+    const c = { x: item.x + item.width / 2, y: item.y + item.height / 2 };
+    return (!allowed.length || allowed.some(box => pointIn(c, box))) && !blocked.some(box => pointIn(c, box));
+  }).length;
+  return { allowed, blocked, obstacles, obstacleMentions };
+}
+
+/** Point on the plan-view edge nearest the devices' centroid (home runs that leave the sheet). */
+export function offSheetExitPoint(allowed: Box[], devices: Pt[], page: ZonePageInput): Pt {
+  const cx = devices.reduce((sum, d) => sum + d.x, 0) / Math.max(1, devices.length);
+  const cy = devices.reduce((sum, d) => sum + d.y, 0) / Math.max(1, devices.length);
+  const box = allowed.find(b => pointIn({ x: cx, y: cy }, b)) || allowed[0] || { x: 0, y: 0, width: page.pageWidth, height: page.pageHeight };
+  const inset = Math.max(page.pageWidth, page.pageHeight) * 0.012;
+  const options: Pt[] = [
+    { x: box.x + inset, y: cy },
+    { x: box.x + box.width - inset, y: cy },
+    { x: cx, y: box.y + inset },
+    { x: cx, y: box.y + box.height - inset },
+  ];
+  return options.reduce((best, p) => (dist(p, { x: cx, y: cy }) < dist(best, { x: cx, y: cy }) ? p : best), options[0]);
+}
 
 export function planRuns(input: PlanRunsInput): RunPlan {
   const { page, zones, settings } = input;
   const W = page.pageWidth;
   const H = page.pageHeight;
-  const pct = (z: PageZone): Box => ({ x: (z.bounds.x / 100) * W, y: (z.bounds.y / 100) * H, width: (z.bounds.width / 100) * W, height: (z.bounds.height / 100) * H });
   const warnings: string[] = [];
 
   // Route only inside the plan view that holds the devices (or the whole sheet if none).
   const allDevices = input.circuits.flatMap(c => c.devices);
-  const planViews = zones.filter(z => z.kind === 'plan' && z.source === 'view').map(pct);
-  const usedViews = planViews.filter(box => allDevices.some(d => pointIn(d, box)) || pointIn(input.panel, box));
-  const allowed = usedViews.length ? usedViews.map(b => expand(b, Math.max(W, H) * 0.01)) : [];
-  const blocked = zones.filter(z => NON_ROUTABLE.has(z.kind)).map(pct)
-    .filter(box => !allDevices.some(d => pointIn(d, box)));
-  const obstacles = detectObstacles(page, allowed.length ? allowed : undefined, blocked);
+  const context = planRoutingContext(page, zones, allDevices, [input.panel]);
+  const { allowed, blocked } = context;
+  const obstacles = [...context.obstacles, ...(input.extraObstacles || [])];
   // Devices or the panel inside an obstacle footprint must not be walled in.
   const obstacleBoxes = obstacles.map(o => o.box).filter(box => !pointIn(input.panel, box) && !allDevices.some(d => pointIn(d, box)));
   const router = new OrthoRouter({ width: W, height: H, segments: page.segments, obstacles: obstacleBoxes, allowed, blocked });
@@ -207,7 +248,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
       lengthFt: round1(homeFt),
       bendsDeg: bends,
       wallCrossings: route.wallCrossings,
-      label: `HR${index + 1}: ${label}`,
+      label: `HR${index + 1} ${shortCircuitList(group.map(c => c.label || c.id))}: ${label}`,
       note,
       conduit,
       sizing,
@@ -229,6 +270,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     }
   }
   if (!obstacles.length) warnings.push('No elevators, shafts or stairs were labeled on this view.');
+  if (input.panelOffSheet) warnings.push(`Panel ${input.panelLabel} is on another sheet: home runs stop at the plan edge; add the remaining length from that sheet.`);
   return { runs, obstacles, ftPerPt: input.ftPerPt, scaleSource: input.scaleSource, warnings, codeRefs: [...codeRefs] };
 }
 
@@ -377,6 +419,18 @@ function dist(a: Pt, b: Pt): number {
 
 function manhattan(a: Pt, b: Pt): number {
   return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+}
+
+/** "B-4, B-6, B-8" → "B-4,6,8" (how home-run arrows are tagged on plans). */
+export function shortCircuitList(ids: string[]): string {
+  const byPanel = new Map<string, string[]>();
+  const loose: string[] = [];
+  for (const id of ids) {
+    const m = id.match(/^(.+?)-(\d[\d,]*)$/);
+    if (!m) { loose.push(id); continue; }
+    byPanel.set(m[1], [...(byPanel.get(m[1]) || []), m[2]]);
+  }
+  return [...[...byPanel.entries()].map(([panel, nums]) => `${panel}-${nums.join(',')}`), ...loose].join(' ');
 }
 
 function round1(n: number): number {

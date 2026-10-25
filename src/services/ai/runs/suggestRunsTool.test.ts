@@ -20,11 +20,12 @@ vi.mock('../detection/pageZones', async importOriginal => {
 const analysisItems: Array<{ id: string; location: { x: number; y: number } }> = [];
 vi.mock('../agent/pageAnalysisCache', () => ({
   getLatestFullPageAnalysis: vi.fn(() => ({ analysis: { items: analysisItems } })),
+  itemIsUnresolvedForCounts: vi.fn(() => ({ unresolved: false })),
 }));
 
 import { useCanvasStore } from '@/store/canvasStore';
 import { getAssistantTool } from '../tools/registry';
-import { createSuggestRunsTool, panelNameCandidates, prepareRunPlan, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
+import { buildRunInputQuestion, createSuggestRunsTool, panelNameCandidates, prepareRunPlan, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
 import { applyFieldAnswers } from '../agent/askUser';
 import { createPageGeometry, docToRender } from '../placement/coords';
 import type { PolygonMarkup } from '@/types/markup';
@@ -91,6 +92,34 @@ describe('suggest_runs tool', () => {
     const again = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval } as never, args as never);
     expect(again.status).toBe('approval-required');
     expect(again.askUser).toBeUndefined();
+  });
+
+  it('circuits from the engineer\'s tags when the model lumps every fixture together', async () => {
+    const tagged = circuitsFromTags();
+    const lumped = [{ id: 'C1', itemIds: tagged.flatMap(c => c.itemIds), vaPerDevice: 100 }];
+    const result = await prepareRunPlan({ page: 4, circuits: lumped, settings: { wiringMethod: 'EMT' } } as never);
+    if ('needs' in result) {
+      // Panel LP is not uniquely labelled on this sheet: one point question per tag panel.
+      expect(result.needs).toBe('input');
+      const needed = result as RunInputNeeded;
+      expect(needed.panels.map(p => p.label)).toEqual(['LP']);
+      expect(needed.panels[0].circuits.length).toBe(tagged.length);
+      expect(needed.missing).not.toContain('panel_label');
+      const ask = buildRunInputQuestion(needed, { page: 4, circuits: lumped });
+      expect(ask.fields[0].id).toBe('panel_loc_0');
+      expect(ask.fields[0].options?.some(o => o.value === 'flag:offSheet')).toBe(true);
+      const args = applyFieldAnswers(ask.resume!.args, ask.resume!.apply, { panel_loc_0: { point: { page: 4, xPct: 83, yPct: 52 } } });
+      expect(args).toMatchObject({ panels: [{ label: 'LP', x: 83, y: 52 }] });
+      const again = await prepareRunPlan(args as never);
+      if ('needs' in again) throw new Error(again.message);
+      const homeRuns = again.markups.map(r => r.markup).filter(m => m.aiRun?.kind === 'homerun');
+      expect(homeRuns.length).toBeGreaterThan(1);
+      expect(again.markups.some(r => r.markup.aiRun?.kind === 'panel')).toBe(true);
+      expect(homeRuns.every(m => !!m.aiRun?.assembly)).toBe(true);
+    } else {
+      const homeRuns = result.markups.map(r => r.markup).filter(m => m.aiRun?.kind === 'homerun');
+      expect(homeRuns.length).toBeGreaterThan(1);
+    }
   });
 
   it('reads panel names and the wiring method from the specs', () => {

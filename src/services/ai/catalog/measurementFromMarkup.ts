@@ -41,5 +41,16 @@ export function buildMeasurementFromMarkup(
     };
   }
 
+  if (markup.type === 'polyline' && markup.aiRun && (markup.aiRun.kind === 'homerun' || markup.aiRun.kind === 'branch')) {
+    return {
+      markupId: markup.id,
+      documentId,
+      page: markup.page,
+      type: 'length',
+      value: Math.round((markup.aiRun.lengthFt || 0) * 10) / 10,
+      unit: 'ft',
+    };
+  }
+
   return null;
 }

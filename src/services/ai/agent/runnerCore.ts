@@ -665,6 +665,37 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
     });
 
     let pendingAsk: AskUserRequest | null = null;
+    // Several read-only tools in one batch (e.g. counting 4 pages): run them concurrently
+    // (max 3 at a time); results are still recorded in the model's order below.
+    const prefetched = new Map<string, Promise<AssistantToolResult>>();
+    const allRead = toolCalls.length >= 2 && toolCalls.every(call => {
+      const safety = resolveToolSafety(call.name);
+      return safety.allowed && safety.mode === 'auto' && safety.tool?.risk === 'read';
+    });
+    if (allRead) {
+      let active = 0;
+      const waiters: Array<() => void> = [];
+      // A slot is handed straight to the next waiter on release, so at most 3 run at once.
+      const acquire = (): Promise<void> => {
+        if (active < 3) {
+          active += 1;
+          return Promise.resolve();
+        }
+        return new Promise<void>(resolve => waiters.push(resolve));
+      };
+      const release = () => {
+        const next = waiters.shift();
+        if (next) next();
+        else active -= 1;
+      };
+      for (const call of toolCalls) {
+        const promise = acquire()
+          .then(() => executeAssistantTool(call.name, call.arguments, toolContext))
+          .finally(release);
+        promise.catch(() => undefined);
+        prefetched.set(call.id, promise);
+      }
+    }
     for (const call of toolCalls) {
       onStatus?.('running_tool', call.name);
       const safety = resolveToolSafety(call.name);
@@ -705,7 +736,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         },
       });
 
-      const result = await executeAssistantTool(call.name, call.arguments, toolContext);
+      const result = await (prefetched.get(call.id) ?? executeAssistantTool(call.name, call.arguments, toolContext));
       emitAgentTrace(session.runId, 'tool_result', {
         toolId: call.name,
         status: result.status,
