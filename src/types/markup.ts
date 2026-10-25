@@ -71,7 +71,13 @@ export interface AiRunCircuit {
 
 export interface AiRunMeta {
   runId: string;
-  kind: 'homerun' | 'branch' | 'keepout';
+  kind: 'homerun' | 'branch' | 'keepout' | 'panel';
+  /** Panel this run belongs to (from the engineer's circuit tags or the user). */
+  panel?: string;
+  /** Home run continues to a panel on another sheet. */
+  offSheet?: boolean;
+  /** What each foot of the run is made of (linked to a product on placement). */
+  assembly?: { key: string; name: string; materials: Array<{ name: string; unit: 'ft'; perFt: number }> };
   /** Feet per document point used for lengths. */
   ftPerPt: number;
   lengthFt: number;

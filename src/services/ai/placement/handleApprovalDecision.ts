@@ -1,3 +1,4 @@
+import type { CanvasMarkup } from '@/types/markup';
 import { offerAfterPlacement } from '@/lib/nextStepOffer';
 import type { MarkupStyle } from '@/types/markup';
 import { useAIChatStore } from '@/store/aiChatStore';
@@ -6,6 +7,7 @@ import { useEditorStore } from '@/store/editorStore';
 import type { AssistantToolContext } from '../tools/types';
 import { executeApprovedAssistantAction } from '../tools/registry';
 import { executePlaceMarkupsApproval } from './executePlaceMarkupsApproval';
+import { bindTakeoffProducts, describeBoundProducts, type BoundProduct } from '../catalog/bindTakeoffProducts';
 import { resumeTaskAfterApproval } from '../agent';
 import { resolveApprovalTarget, suggestedRunMarkups } from './approvalTarget';
 
@@ -201,15 +203,22 @@ export async function handleApprovalDecision(
 }
 
 /** Commit an approved suggested-run overlay to its document (one undo step). */
-export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarkups>[0]): { status: 'completed' | 'failed'; placed: number; error?: string } {
+export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarkups>[0]): { status: 'completed' | 'failed'; placed: number; error?: string; products?: BoundProduct[]; productsSummary?: string } {
   const rows = suggestedRunMarkups(approval);
   if ('error' in rows) return { status: 'failed', placed: 0, error: rows.error };
+  // Each run's footage goes to a product (conduit + wire / cable per foot as components).
+  const markups = rows.markups.map(row => ({ page: row.page, markup: { ...row.markup } as CanvasMarkup }));
+  const products = bindTakeoffProducts(markups);
   const canvas = useCanvasStore.getState();
   if (rows.docId !== canvas.activeDocId) {
     canvas.setActiveDocId(rows.docId);
     useEditorStore.getState().setActiveDocument(rows.docId);
   }
-  const result = useCanvasStore.getState().addAIMarkupBatch(rows.markups, false);
+  const result = useCanvasStore.getState().addAIMarkupBatch(markups, false);
   if (!result.ok) return { status: 'failed', placed: 0, error: result.reason || 'Could not place runs' };
-  return { status: 'completed', placed: result.placed };
+  return {
+    status: 'completed',
+    placed: result.placed,
+    ...(products.length ? { products, productsSummary: describeBoundProducts(products) } : {}),
+  };
 }

@@ -37,7 +37,9 @@ describe('structured question fields', () => {
       { id: 'note', kind: 'text', prompt: 'Notes?', optional: true },
     ]);
     expect(fieldsComplete(fields, {})).toBe(false);
-    expect(fieldsComplete(fields, { panel: { value: 'x' } })).toBe(false);
+    expect(fieldsComplete(fields, { panel: { label: 'x' } })).toBe(false);
+    // "On another sheet" style options answer a point field with a value.
+    expect(fieldsComplete(fields, { panel: { value: 'flag:offSheet' } })).toBe(true);
     expect(fieldsComplete(fields, { panel: { point: { page: 1, xPct: 10, yPct: 20 } } })).toBe(true);
   });
 
@@ -125,5 +127,56 @@ describe('tool-driven question cards pause and resume the run', () => {
       expect.objectContaining({ role: 'user', content: expect.stringContaining('Now call zz_ask_tool with exactly these arguments: {"page":4,"panel":{"x":40,"y":12}}') }),
     ]));
     expect(execute).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('structured answers: flags and areas', () => {
+  it('sets flags and area lists, including inside arrays', () => {
+    const args = { panels: [{ label: 'B' }, { label: 'C' }], keepClear: [] };
+    const merged = applyFieldAnswers(args, { p0: 'panels.0', p1: 'panels.1', keep: 'keepClear' }, {
+      p0: { point: { page: 1, xPct: 10.04, yPct: 20 } },
+      p1: { value: 'flag:offSheet', label: 'On another sheet' },
+      keep: { areas: [{ page: 1, xPct: 5, yPct: 6, wPct: 7, hPct: 8 }] },
+    });
+    expect(merged).toEqual({
+      panels: [{ label: 'B', x: 10, y: 20 }, { label: 'C', offSheet: true }],
+      keepClear: [{ x: 5, y: 6, width: 7, height: 8 }],
+    });
+    const fields = sanitizeClarificationFields([{ id: 'keep', kind: 'area', prompt: 'Keep clear?' }]);
+    expect(fields[0].kind).toBe('area');
+    expect(fieldsComplete(fields, { keep: { areas: [{ page: 1, xPct: 1, yPct: 1, wPct: 1, hPct: 1 }] } })).toBe(true);
+    expect(formatFieldAnswersForModel({ fields }, { keep: { areas: [{ page: 1, xPct: 1, yPct: 2, wPct: 3, hPct: 4 }] } })[0]).toContain('marked 1 area');
+  });
+
+  it('runs a batch of read-only tools concurrently and records results in order', async () => {
+    let active = 0;
+    let peak = 0;
+    registerAssistantTool({
+      id: 'zz_read_tool',
+      title: 'zz read',
+      description: 'test',
+      risk: 'read',
+      requiresConfirmation: false,
+      undoable: false,
+      schema: z.object({ n: z.number() }),
+      execute: async (_ctx: unknown, input: { n: number }) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise(resolve => setTimeout(resolve, 20));
+        active -= 1;
+        return { status: 'completed' as const, summary: `page ${input.n}`, output: { n: input.n } };
+      },
+    } as never);
+    const ctx = createAgentToolContext({ runId: 'run-par', messageId: 'msg-par', trade: 'electrical', placeMarkups: () => ({ placed: 0 }) });
+    const complete = vi.fn<ModelAdapter['complete']>()
+      .mockResolvedValueOnce({ type: 'tool_calls', toolCalls: [1, 2, 3, 4].map(n => ({ id: `c${n}`, name: 'zz_read_tool', arguments: { n } })) })
+      .mockResolvedValueOnce({ type: 'final', message: 'Counted.' });
+    useAIChatStore.setState({ runs: { 'run-par': { id: 'run-par', messageId: 'msg-par', conversationId: 's', status: 'running', summary: 'x', steps: [], startedAt: new Date().toISOString() } } } as never);
+    const session = { runId: 'run-par', messageId: 'msg-par', messages: [{ role: 'user', content: 'count' }], toolHistory: [], actionsTaken: [], contextText: '' } as never;
+    await runPrimaryAgentLoop({ session, toolContext: ctx, model: { complete } });
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(3);
+    const toolMsgs = (session as { messages: Array<{ role: string; toolCallId?: string }> }).messages.filter(m => m.role === 'tool');
+    expect(toolMsgs.map(m => m.toolCallId)).toEqual(['c1', 'c2', 'c3', 'c4']);
   });
 });

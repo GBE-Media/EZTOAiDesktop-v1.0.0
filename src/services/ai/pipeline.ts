@@ -752,12 +752,17 @@ export async function analyzePageMaximumAccuracy(options: {
   ].filter(Boolean).join('\n\n');
 
   onProgress?.(`Analyzing page ${page} overview...`, 12);
-  let overview = await requestStructuredAnalysis(
+  // The overview runs alongside the detail tiles (tiles don't depend on it) — saves a full
+  // vision round-trip per page.
+  const overviewPromise = requestStructuredAnalysis(
     bundle.overview.base64,
     trade,
     `${commonContext}\n\nOVERVIEW PASS: Understand the drawing, legend, and schedule relationships. Report detections for context, but do not infer counts from schedule rows.`,
     page
   );
+  overviewPromise.catch(() => undefined);
+  const finishOverview = async () => {
+  let overview = await overviewPromise;
   if (analysisRegion) {
     const overviewRegion: PageTileRegion = {
       id: 'overview-region',
@@ -771,10 +776,12 @@ export async function analyzePageMaximumAccuracy(options: {
       items: overview.items.flatMap(item => mapTileItemToPage(item, overviewRegion, pageWidth, pageHeight)),
     };
   }
+  return overview;
+  };
 
   const tileResults: Array<{ region: PageTileRegion; result: BlueprintAnalysisResult }> = [];
   const failedTiles: string[] = [];
-  const tileConcurrency = 3;
+  const tileConcurrency = 5;
   const visionCallsBefore = 1 + bundle.tiles.length;
   console.info('[analyzePage] vision calls', {
     page,
@@ -822,6 +829,7 @@ export async function analyzePageMaximumAccuracy(options: {
     },
   );
   await Promise.all(workers);
+  const overview = await finishOverview();
 
   onProgress?.(`Reconciling page ${page} detections...`, 80);
   tileResults.sort((a, b) => {
@@ -903,13 +911,14 @@ Do not invent or remove coordinates. Check whether counts equal the number of un
 
 Page ${page}; text source: ${textEvidence.source}; detections:
 ${JSON.stringify(items.map(item => ({
-    type: item.type,
-    name: item.name,
-    x: item.location.x,
-    y: item.location.y,
-    confidence: item.confidence,
-    evidence: item.evidence,
-  })))}`;
+    t: item.type,
+    n: item.name,
+    x: Math.round(item.location.x * 10) / 10,
+    y: Math.round(item.location.y * 10) / 10,
+    c: Math.round((item.confidence || 0) * 100) / 100,
+    ...(item.evidence ? { e: String(item.evidence).slice(0, 60) } : {}),
+  })))}
+(t=type, n=name, x/y=location 0-100, c=confidence, e=evidence)`;
   const verifierResponse = await getAIService().complete('estimation', {
     messages: [
       { role: 'system', content: 'You verify construction blueprint detections. Return only valid JSON and preserve observed facts.' },
@@ -917,7 +926,8 @@ ${JSON.stringify(items.map(item => ({
     ],
     responseFormat: 'json',
     temperature: 0.1,
-    maxTokens: 8192,
+    // Questions + short evidence notes only — a small budget keeps this step fast.
+    maxTokens: 2048,
   });
   const verifier = parseJsonResponse(verifierResponse.content) as {
     questions?: unknown;

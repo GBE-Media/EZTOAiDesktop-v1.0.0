@@ -1,21 +1,28 @@
 import { create } from 'zustand';
-import type { PickedPoint } from '@/types/assistant';
+import type { PickedArea, PickedPoint } from '@/types/assistant';
 
-/** A question card asking the user to click a spot on the drawing. */
+/** A question card asking the user to click a spot (or drag boxes) on the drawing. */
 export interface DrawingPickRequest {
   /** clarificationId:fieldId */
   key: string;
   label: string;
   documentId?: string;
   page?: number;
+  /** point: one click · area: drag a box (repeatable). */
+  mode?: 'point' | 'area';
 }
 
 interface DrawingPickState {
   request: DrawingPickRequest | null;
   /** Pins already picked (shown on the drawing until the card is answered). */
   pins: Record<string, PickedPoint & { label: string }>;
+  /** Boxes dragged for area questions, per key. */
+  areas: Record<string, PickedArea[]>;
   start: (request: DrawingPickRequest) => void;
   complete: (point: PickedPoint) => void;
+  /** Add a dragged box; area mode stays on so the user can mark several. */
+  addArea: (area: PickedArea) => void;
+  clearAreas: (key: string) => void;
   cancel: () => void;
   clearPins: (keyPrefix: string) => void;
 }
@@ -23,6 +30,7 @@ interface DrawingPickState {
 export const useDrawingPickStore = create<DrawingPickState>((set, get) => ({
   request: null,
   pins: {},
+  areas: {},
   start: request => set({ request }),
   complete: point => {
     const request = get().request;
@@ -32,9 +40,20 @@ export const useDrawingPickStore = create<DrawingPickState>((set, get) => ({
       pins: { ...state.pins, [request.key]: { ...point, label: request.label } },
     }));
   },
+  addArea: area => {
+    const request = get().request;
+    if (!request) return;
+    set(state => ({ areas: { ...state.areas, [request.key]: [...(state.areas[request.key] || []), area] } }));
+  },
+  clearAreas: key => set(state => {
+    const areas = { ...state.areas };
+    delete areas[key];
+    return { areas };
+  }),
   cancel: () => set({ request: null }),
   clearPins: keyPrefix => set(state => ({
     pins: Object.fromEntries(Object.entries(state.pins).filter(([key]) => !key.startsWith(keyPrefix))),
+    areas: Object.fromEntries(Object.entries(state.areas).filter(([key]) => !key.startsWith(keyPrefix))),
     request: state.request?.key.startsWith(keyPrefix) ? null : state.request,
   })),
 }));

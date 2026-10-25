@@ -5,15 +5,28 @@ import type { AssistantToolDefinition } from '../tools/types';
 import { createApproval } from '../tools/registry';
 import { resolveDocumentRef } from '../documentRef';
 import { ensurePageZones, extractZoneInputs, type PageZone, type ZonePageInput } from '../detection/pageZones';
-import { getLatestFullPageAnalysis } from '../agent/pageAnalysisCache';
 import { allIndexedPages } from '../projectIndex/store';
 import { pageGeometryFromUnrotated } from '../placement/visionDisplayPctToDoc';
 import { normalizeRotationDeg, renderToDoc } from '../placement/coords';
 import type { PageGeometry } from '../placement/types';
 import { detectProjectLocation, governingNec, NEC_ADOPTION_CHECKED } from './jurisdiction';
-import { DEFAULT_RUN_SETTINGS, findViewScale, planRuns, type PlannedCircuit, type RunPlan, type RunSettings } from './planRuns';
+import {
+  DEFAULT_RUN_SETTINGS,
+  findViewScale,
+  offSheetExitPoint,
+  planRoutingContext,
+  planRuns,
+  shortCircuitList,
+  type PlannedCircuit,
+  type PlannedRun,
+  type RunPlan,
+  type RunSettings,
+} from './planRuns';
+import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, parseCircuitTag, suggestPanels } from './circuitTags';
+import { materialTotals, runAssembly, type RunAssembly } from './runMaterials';
+import { getLatestFullPageAnalysis, itemIsUnresolvedForCounts } from '../agent/pageAnalysisCache';
 import { formatSize } from './necTables';
-import type { Pt } from './spatial';
+import type { Box, Obstacle, Pt } from './spatial';
 import type { AskUserRequest } from '../agent/askUser';
 import type { ClarificationField } from '@/types/assistant';
 
@@ -40,7 +53,21 @@ export const suggestRunsSchema = z.object({
     label: z.string().optional().describe('Panel name as shown on the plan, e.g. "LP" or "LP-1".'),
     x: z.number().min(0).max(100).optional(),
     y: z.number().min(0).max(100).optional(),
+    offSheet: z.boolean().optional().describe('Panel is on another sheet: home runs stop at the plan edge.'),
   }).optional().describe('Panel the home runs go to. Omit x/y to find the label on the sheet. If unknown, omit it — the tool asks the user (they can click it on the drawing).'),
+  panels: z.array(z.object({
+    label: z.string().min(1),
+    x: z.number().min(0).max(100).optional(),
+    y: z.number().min(0).max(100).optional(),
+    offSheet: z.boolean().optional(),
+  })).optional().describe('Several panels (circuit tags like "B-4" → panel B). Omit — the tool reads the tags and asks for locations.'),
+  keepClear: z.array(z.object({
+    x: z.number().min(0).max(100),
+    y: z.number().min(0).max(100),
+    width: z.number().min(0).max(100),
+    height: z.number().min(0).max(100),
+    label: z.string().optional(),
+  })).optional().describe('Extra keep-clear areas in page display percent (from the user).'),
   circuits: z.array(circuitSchema).optional().describe('Circuits with their devices. Omit to group devices automatically.'),
   autoCircuits: z.object({
     itemIds: z.array(z.string()).optional().describe('Devices to circuit (defaults to all counted items on the page).'),
@@ -66,7 +93,8 @@ type SuggestRunsInput = z.infer<typeof suggestRunsSchema>;
 
 const zoneInputCache = new Map<string, ZonePageInput>();
 
-const HOMERUN_COLORS = ['#e11d48', '#2563eb', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#ca8a04', '#db2777'];
+// No reds: count markers are red, runs must read clearly on top of them.
+const HOMERUN_COLORS = ['#2563eb', '#16a34a', '#9333ea', '#0891b2', '#ea580c', '#4f46e5', '#ca8a04', '#0d9488'];
 
 export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestRunsSchema> {
   const definition: AssistantToolDefinition<typeof suggestRunsSchema> = {
@@ -123,17 +151,23 @@ type Prepared =
   | { needs: 'document' | 'panel' | 'scale' | 'devices' | 'page'; message: string; [key: string]: unknown }
   | RunInputNeeded;
 
-/** Panel location and/or wiring method are missing: the user answers with one card. */
+/** Panel locations / wiring method / keep-clear areas are missing: the user answers with one card. */
 export interface RunInputNeeded {
   needs: 'input';
   message: string;
   documentId: string;
   page: number;
-  missing: Array<'panel_location' | 'panel_label' | 'wiring_method'>;
+  missing: Array<'panel_location' | 'panel_label' | 'wiring_method' | 'keep_clear'>;
   panelLabel?: string;
+  /** Panels from the engineer's circuit tags that still need a location. */
+  panels: Array<{ label: string; index: number; circuits: string[]; candidates: Array<{ text: string; x: number; y: number }>; scheduled: boolean }>;
+  /** Panel-args to pre-fill on resume (one per tag panel, in order). */
+  panelArgs: Array<{ label: string; x?: number; y?: number; offSheet?: boolean }>;
   candidates: Array<{ text: string; x: number; y: number }>;
   panelNames: string[];
   recommendedWiring?: WiringMethodValue;
+  obstacleMentions?: number;
+  obstaclesFound?: number;
 }
 
 type WiringMethodValue = 'EMT' | 'MC' | 'PVC40' | 'RMC';
@@ -145,9 +179,15 @@ const WIRING_LABELS: Record<WiringMethodValue, string> = {
   RMC: 'Rigid (RMC)',
 };
 
+function circuitPreview(ids: string[]): string {
+  const short = shortCircuitList(ids.slice(0, 8));
+  return ids.length > 8 ? `${short}…` : short;
+}
+
 /** Build the structured card for missing run inputs (resumes suggest_runs with the answers). */
 export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<string, unknown>): AskUserRequest {
   const fields: ClarificationField[] = [];
+  const apply: Record<string, string> = { wiring_method: 'settings.wiringMethod', keep_clear: 'keepClear' };
   const label = needed.panelLabel;
   if (needed.missing.includes('panel_label')) {
     fields.push({
@@ -158,8 +198,33 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
         ? { options: needed.panelNames.map(name => ({ id: `panel_${name}`, label: `Panel ${name}`, value: name })) }
         : { placeholder: 'e.g. LP-1' }),
     });
+    apply.panel_label = 'panel.label';
   }
-  if (needed.missing.includes('panel_location')) {
+  const offSheetOption = { id: 'off_sheet', label: 'On another sheet', value: 'flag:offSheet' };
+  if (needed.panels.length) {
+    for (const panel of needed.panels) {
+      const id = `panel_loc_${panel.index}`;
+      apply[id] = `panels.${panel.index}`;
+      fields.push({
+        id,
+        kind: 'point',
+        prompt: `Where is panel ${panel.label}? (${panel.circuits.length} circuit${panel.circuits.length === 1 ? '' : 's'}: ${circuitPreview(panel.circuits)})`,
+        documentId: needed.documentId,
+        page: needed.page,
+        pickLabel: `Click panel ${panel.label} on the drawing`,
+        options: [
+          ...panel.candidates.slice(0, 3).map((c, i) => ({
+            id: `${id}_cand_${i + 1}`,
+            label: panel.candidates.length === 1 ? `Use "${c.text}" on this sheet` : `"${c.text}" #${i + 1}`,
+            value: `${c.x},${c.y}`,
+            point: { documentId: needed.documentId, page: needed.page, xPct: c.x, yPct: c.y },
+          })),
+          offSheetOption,
+        ],
+      });
+    }
+  } else if (needed.missing.includes('panel_location')) {
+    apply.panel_location = 'panel';
     fields.push({
       id: 'panel_location',
       kind: 'point',
@@ -167,16 +232,15 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
       documentId: needed.documentId,
       page: needed.page,
       pickLabel: label ? `Click panel ${label} on the drawing` : 'Click the panel on the drawing',
-      ...(needed.candidates.length
-        ? {
-          options: needed.candidates.slice(0, 4).map((c, i) => ({
-            id: `cand_${i + 1}`,
-            label: needed.candidates.length === 1 ? `Use "${c.text}" found on the sheet` : `"${c.text}" #${i + 1}`,
-            value: `${c.x},${c.y}`,
-            point: { documentId: needed.documentId, page: needed.page, xPct: c.x, yPct: c.y },
-          })),
-        }
-        : {}),
+      options: [
+        ...needed.candidates.slice(0, 4).map((c, i) => ({
+          id: `cand_${i + 1}`,
+          label: needed.candidates.length === 1 ? `Use "${c.text}" found on the sheet` : `"${c.text}" #${i + 1}`,
+          value: `${c.x},${c.y}`,
+          point: { documentId: needed.documentId, page: needed.page, xPct: c.x, yPct: c.y },
+        })),
+        offSheetOption,
+      ],
     });
   }
   if (needed.missing.includes('wiring_method')) {
@@ -192,26 +256,52 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
       ...(needed.recommendedWiring ? { recommended: needed.recommendedWiring } : {}),
     });
   }
+  if (needed.missing.includes('keep_clear')) {
+    fields.push({
+      id: 'keep_clear',
+      kind: 'area',
+      prompt: needed.obstaclesFound
+        ? `I found ${needed.obstaclesFound} keep-clear area${needed.obstaclesFound === 1 ? '' : 's'} (highlighted). Mark any others — elevators, stairs, shafts`
+        : 'Mark areas to keep runs out of — elevators, stairs, shafts',
+      documentId: needed.documentId,
+      page: needed.page,
+      pickLabel: 'Drag a box around each area to keep clear',
+      optional: true,
+    });
+  }
   const page = needed.page;
+  const onlyWiring = fields.length === 1 && fields[0].id === 'wiring_method';
+  const tagNote = needed.panels.length
+    ? `The engineer tagged each fixture with its panel and circuit, so I grouped the circuits by those tags. `
+    : '';
   return {
-    question: fields.length === 1 && fields[0].id === 'wiring_method'
+    question: onlyWiring
       ? `Which wiring method should I use for the runs on page ${page}?`
       : `A couple of details before I lay out the runs on page ${page}`,
-    description: needed.recommendedWiring
-      ? `The specs point to ${WIRING_LABELS[needed.recommendedWiring]}; change it if this job differs.`
-      : undefined,
+    description: `${tagNote}${needed.recommendedWiring ? `The specs point to ${WIRING_LABELS[needed.recommendedWiring]}; change it if this job differs.` : ''}`.trim() || undefined,
     fields,
     focus: { documentId: needed.documentId, page },
     resume: {
       toolId: 'suggest_runs',
-      args: { ...rawArgs, documentId: needed.documentId, page },
-      apply: { panel_location: 'panel', panel_label: 'panel.label', wiring_method: 'settings.wiringMethod' },
+      args: {
+        ...rawArgs,
+        documentId: needed.documentId,
+        page,
+        ...(needed.panelArgs.length ? { panels: needed.panelArgs } : {}),
+        ...(needed.missing.includes('keep_clear') ? { keepClear: [] } : {}),
+      },
+      apply,
     },
   };
 }
 
 /** Panel names from panel schedules / plan text in the project ("PANEL LP-1", "PANELBOARD A"). */
 export function panelNameCandidates(lines: string[]): string[] {
+  return panelNamesFromSchedules(lines).slice(0, 6);
+}
+
+/** @deprecated kept for reference; panelNamesFromSchedules has the word-boundary fix. */
+export function legacyPanelNameCandidates(lines: string[]): string[] {
   const counts = new Map<string, number>();
   const re = /\bPANEL(?:BOARD)?\s*(?:[:#]|NAME:?|DESIGNATION:?)?\s*["']?([A-Z]{1,4}[0-9]{0,2}(?:-[A-Z0-9]{1,3})?)\b/g;
   const stop = new Set(['SCHEDULE', 'BOARD', 'BOARDS', 'TO', 'IN', 'ON', 'AND', 'OR', 'THE', 'FED', 'FROM', 'MAIN', 'SEE', 'NEW', 'TYPE', 'MOUNTED', 'LOCATION', 'SCHED', 'NAME']);
@@ -274,13 +364,21 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   });
   const toDisplay = (p: { x: number; y: number }): Pt => ({ x: (p.x / 100) * W, y: (p.y / 100) * H });
 
-  // Devices.
+  // Devices (counted items).
   const analysis = getLatestFullPageAnalysis(docId, input.page, revision);
-  const itemsById = new Map((analysis?.analysis?.items || []).map(item => [item.id, item]));
+  const analysisItems = analysis?.analysis?.items || [];
+  const legendCodes = analysis?.analysis?.legendTypeCodes;
+  const itemsById = new Map(analysisItems.map(item => [item.id, item]));
   const devicePoint = (id: string): Pt | null => {
     const item = itemsById.get(id);
     if (!item || item.locationMissing || !item.location) return null;
     return toDisplay(item.location);
+  };
+  const loadDefaults = {
+    vaPerDevice: input.autoCircuits?.vaPerDevice ?? input.circuits?.find(c => c.vaPerDevice)?.vaPerDevice ?? 100,
+    voltage: input.autoCircuits?.voltage ?? input.circuits?.[0]?.voltage ?? 120,
+    phase: (input.autoCircuits?.phase ?? input.circuits?.[0]?.phase ?? 1) as 1 | 3,
+    continuous: input.autoCircuits?.continuous ?? input.circuits?.[0]?.continuous ?? true,
   };
   let circuits: PlannedCircuit[] = (input.circuits || []).map(c => {
     const devices = [
@@ -288,19 +386,44 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
       ...(c.points || []).map(toDisplay),
     ];
     const loadVA = c.loadVA ?? (c.vaPerDevice ? c.vaPerDevice * devices.length : undefined);
-    return { id: c.id, label: c.label || c.id, devices, loadVA, loadAmps: c.loadAmps, voltage: c.voltage ?? 120, phase: c.phase ?? 1, continuous: c.continuous ?? true, ocpdAmps: c.ocpdAmps };
+    const tag = parseCircuitTag(c.id);
+    return { id: c.id, label: c.label || c.id, devices, loadVA, loadAmps: c.loadAmps, voltage: c.voltage ?? 120, phase: c.phase ?? 1, continuous: c.continuous ?? true, ocpdAmps: c.ocpdAmps, ...(tag ? { panel: tag.panel } : {}) };
   }).filter(c => c.devices.length > 0);
-  if (!circuits.length && input.autoCircuits) {
-    const ids = input.autoCircuits.itemIds?.length ? input.autoCircuits.itemIds : [...itemsById.keys()];
-    const devices = ids.map(devicePoint).filter((p): p is Pt => !!p);
-    const a = input.autoCircuits;
-    circuits = autoCircuit(devices, page, {
-      vaPerDevice: a.vaPerDevice ?? 100,
-      voltage: a.voltage ?? 120,
-      phase: a.phase ?? 1,
-      continuous: a.continuous ?? true,
-      breakerAmps: a.breakerAmps ?? 20,
-      useCircuitTags: a.useCircuitTags ?? true,
+
+  // The engineer's circuit tags ("B-4" next to a fixture = panel B, circuit 4) beat any grouping
+  // the model guessed (e.g. every fixture on one circuit).
+  const poolIds = input.circuits?.some(c => c.itemIds?.length)
+    ? input.circuits.flatMap(c => c.itemIds || [])
+    : input.autoCircuits?.itemIds?.length
+      ? input.autoCircuits.itemIds
+      : analysisItems.filter(item => !itemIsUnresolvedForCounts(item, legendCodes).unresolved).map(item => item.id);
+  const poolDevices = [...new Set(poolIds)].flatMap(id => {
+    const point = devicePoint(id);
+    return point ? [{ point, itemId: id }] : [];
+  });
+  const extraPoints = (input.circuits || []).flatMap(c => (c.points || []).map(p => ({ point: toDisplay(p as Pt) })));
+  const projectLines = allIndexedPages().flatMap(row => (row.lines || []).map(line => line.text));
+  const scheduleNames = panelNamesFromSchedules(projectLines);
+  const specMethod = specWiringMethod(projectLines);
+  const useTags = input.autoCircuits?.useCircuitTags !== false;
+  const tagged = useTags
+    ? circuitsFromTags([...poolDevices, ...extraPoints], page, { ...loadDefaults, knownPanels: scheduleNames })
+    : null;
+  const modelCircuitsAreTags = circuits.length > 1 && circuits.every(c => !!c.panel);
+  const lumped = circuits.length <= 1 || circuits.some(c => c.devices.length > 24);
+  let usedTags = false;
+  if (tagged && tagged.circuits.length && tagged.coverage >= 0.3 && (!circuits.length || lumped || !modelCircuitsAreTags)) {
+    const extra = tagged.untagged.length
+      ? autoCircuit(tagged.untagged.map(d => d.point), page, { ...loadDefaults, breakerAmps: 20, useCircuitTags: false })
+      : [];
+    circuits = [...tagged.circuits, ...extra];
+    usedTags = true;
+  }
+  if (!circuits.length && poolDevices.length) {
+    circuits = autoCircuit(poolDevices.map(d => d.point), page, {
+      ...loadDefaults,
+      breakerAmps: input.autoCircuits?.breakerAmps ?? 20,
+      useCircuitTags: useTags,
     });
   }
   if (!circuits.length) {
@@ -310,29 +433,75 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     };
   }
 
-  // Panel.
-  let panel: Pt | null = null;
-  const panelLabel = input.panel?.label?.trim() || undefined;
-  if (typeof input.panel?.x === 'number' && typeof input.panel?.y === 'number') panel = toDisplay({ x: input.panel.x, y: input.panel.y });
-  const candidates = panel || !panelLabel ? [] : findPanelLabel(page, zones, panelLabel);
-  if (!panel && candidates.length === 1) panel = candidates[0].point;
-  const projectLines = allIndexedPages().flatMap(row => (row.lines || []).map(line => line.text));
-  const specMethod = specWiringMethod(projectLines);
+  // Panels: from the circuit tags (confirmed against the panel schedules) or the one given.
+  const normLabel = (t?: string) => (t || '').toUpperCase().replace(/^PANEL\s*/, '').replace(/[^A-Z0-9]/g, '');
+  const givenPanels = [...(input.panels || []), ...(input.panel ? [{ ...input.panel, label: input.panel.label || '' }] : [])];
+  const tagPanels = panelsFromCircuits(circuits);
+  type PanelPlan = { label: string; point: Pt | null; offSheet: boolean; candidates: Array<{ text: string; point: Pt }>; circuits: PlannedCircuit[] };
+  const resolvePanel = (label: string, given?: { x?: number; y?: number; offSheet?: boolean }): Omit<PanelPlan, 'circuits'> => {
+    if (given?.offSheet) return { label, point: null, offSheet: true, candidates: [] };
+    if (typeof given?.x === 'number' && typeof given?.y === 'number') return { label, point: toDisplay({ x: given.x, y: given.y }), offSheet: false, candidates: [] };
+    const candidates = label ? findPanelLabel(page, zones, label) : [];
+    return { label, point: candidates.length === 1 ? candidates[0].point : null, offSheet: false, candidates };
+  };
+  let panelPlans: PanelPlan[];
+  if (usedTags && tagPanels.length) {
+    const top = tagPanels.slice(0, 6);
+    panelPlans = top.map(row => {
+      const given = givenPanels.find(p => normLabel(p.label) === normLabel(row.panel))
+        || (top.length === 1 && givenPanels.length === 1 && !givenPanels[0].label ? givenPanels[0] : undefined);
+      return { ...resolvePanel(row.panel, given), circuits: circuits.filter(c => c.panel === row.panel) };
+    });
+    // Untagged / overflow circuits ride with the busiest panel.
+    const assigned = new Set(panelPlans.flatMap(p => p.circuits.map(c => c.id)));
+    panelPlans[0].circuits.push(...circuits.filter(c => !assigned.has(c.id)));
+  } else {
+    const given = givenPanels[0];
+    const label = given?.label?.trim() || '';
+    panelPlans = [{ ...resolvePanel(label, given), circuits }];
+  }
+
+  // Keep-clear areas: found from room labels; the user's marked areas are added.
+  const allDevicePts = circuits.flatMap(c => c.devices);
+  const routing = planRoutingContext(page, zones, allDevicePts, panelPlans.flatMap(p => (p.point ? [p.point] : [])));
+  const userKeepClear: Obstacle[] = (input.keepClear || []).map((area, i) => ({
+    kind: 'opening',
+    label: area.label || `Keep clear ${i + 1}`,
+    box: { x: (area.x / 100) * W, y: (area.y / 100) * H, width: (area.width / 100) * W, height: (area.height / 100) * H },
+  }));
+
   const missing: RunInputNeeded['missing'] = [];
-  if (!panel) missing.push('panel_location');
-  if (!panel && !panelLabel) missing.push('panel_label');
+  const needLocation = panelPlans.filter(p => !p.point && !p.offSheet);
+  if (needLocation.length) missing.push('panel_location');
+  if (!usedTags && needLocation.length && !panelPlans[0].label) missing.push('panel_label');
   if (!input.settings?.wiringMethod && !specMethod) missing.push('wiring_method');
-  if (!panel || missing.includes('wiring_method')) {
+  // The sheet names elevators / stairs / shafts we couldn't outline: let the user mark them.
+  const troubleWithObstacles = routing.obstacleMentions > routing.obstacles.length;
+  if (input.keepClear === undefined && troubleWithObstacles) missing.push('keep_clear');
+  if (missing.length) {
+    const toPct = (pt: Pt) => ({ x: round1((pt.x / W) * 100), y: round1((pt.y / H) * 100) });
     return {
       needs: 'input',
       message: 'Asked the user with a card for: ' + missing.join(', ') + '. Wait for their answer; it includes the exact arguments to call suggest_runs again.',
       documentId: docId,
       page: input.page,
       missing,
-      panelLabel,
-      candidates: candidates.slice(0, 6).map(c => ({ text: c.text, x: round1((c.point.x / W) * 100), y: round1((c.point.y / H) * 100) })),
-      panelNames: missing.includes('panel_label') ? panelNameCandidates(projectLines.concat(page.textItems.map(item => item.str))) : [],
+      panelLabel: panelPlans[0].label || undefined,
+      panels: usedTags
+        ? panelPlans.flatMap((p, index) => (!p.point && !p.offSheet
+          ? [{ label: p.label, index, circuits: p.circuits.map(c => c.id), candidates: p.candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })), scheduled: scheduleNames.includes(p.label) }]
+          : []))
+        : [],
+      panelArgs: usedTags
+        ? panelPlans.map(p => ({ label: p.label, ...(p.point ? toPct(p.point) : {}), ...(p.offSheet ? { offSheet: true } : {}) }))
+        : [],
+      candidates: usedTags ? [] : panelPlans[0].candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })),
+      panelNames: missing.includes('panel_label')
+        ? suggestPanels(panelsFromCircuits(circuits).map(r => r.panel), scheduleNames).map(r => r.name)
+        : [],
       recommendedWiring: specMethod,
+      obstacleMentions: routing.obstacleMentions,
+      obstaclesFound: routing.obstacles.length,
     };
   }
 
@@ -374,14 +543,19 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     necEdition: input.settings?.necEdition ?? code.edition,
   } as RunSettings;
 
-  const plan = planRuns({ page, zones, panel, panelLabel: panelLabel || 'Panel', circuits, settings, ftPerPt, scaleSource });
+  const plan = planAllPanels({
+    page, zones, panelPlans, settings, ftPerPt, scaleSource, extraObstacles: userKeepClear, allowed: routing.allowed,
+  });
   const markups = buildRunMarkups(plan, circuits, settings, geometry, input.page);
+  const materials = materialTotals(plan.runs.map(run => ({ assembly: run.assembly, lengthFt: run.lengthFt })));
   const homeRuns = plan.runs.filter(r => r.kind === 'homerun');
   const codeLine = `${code.summary}${location ? ` Project: ${location.text}.` : ''}`;
   const summaryLines = [
     codeLine,
     ...homeRuns.map(r => `${r.label} · ≈${Math.round(r.lengthFt)} ft · VD ${Math.max(...r.sizing.map(s => s.vdPct)).toFixed(1)}%`),
     ...(plan.obstacles.length ? [`Routed around: ${[...new Set(plan.obstacles.map(o => o.label))].join(', ')}`] : []),
+    ...(materials.length ? [`Materials: ${materials.slice(0, 6).map(m => `${m.name} ${m.ft.toLocaleString()} ft`).join(' · ')}`] : []),
+    ...(usedTags ? [`Circuits from the engineer's tags: ${panelPlans.map(p => `panel ${p.label} (${p.circuits.length})`).join(', ')}`] : []),
   ];
   return {
     docId,
@@ -413,6 +587,10 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
         warnings: r.warnings,
       })),
       branchSegments: plan.runs.filter(r => r.kind === 'branch').length,
+      circuitsFrom: usedTags ? 'engineer circuit tags on the plan' : 'model / proximity grouping',
+      panels: panelPlans.map(p => ({ label: p.label, circuits: p.circuits.map(c => c.id), offSheet: p.offSheet || undefined })),
+      materials,
+      productsNote: 'On placement each run is linked to a product in the user\'s library (created under "AI Takeoff" when missing), with conduit/wire/cable per foot as components.',
       obstacles: plan.obstacles.map(o => ({ kind: o.kind, label: o.label })),
       codeRefs: plan.codeRefs,
       warnings: plan.warnings,
@@ -426,8 +604,90 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   };
 }
 
+type PlannedRunWithMaterials = PlannedRun & { assembly: RunAssembly | null; panelLabel: string };
+type MultiPanelPlan = Omit<RunPlan, 'runs'> & {
+  runs: PlannedRunWithMaterials[];
+  panels: Array<{ label: string; point: Pt; offSheet: boolean }>;
+};
+
+/** One planRuns pass per panel; home runs numbered across panels. */
+function planAllPanels(options: {
+  page: ZonePageInput;
+  zones: PageZone[];
+  panelPlans: Array<{ label: string; point: Pt | null; offSheet: boolean; circuits: PlannedCircuit[] }>;
+  settings: RunSettings;
+  ftPerPt: number;
+  scaleSource: string;
+  extraObstacles: Obstacle[];
+  allowed: Box[];
+}): MultiPanelPlan {
+  const runs: PlannedRunWithMaterials[] = [];
+  const obstacles: Obstacle[] = [];
+  const seenObstacles = new Set<string>();
+  const warnings: string[] = [];
+  const codeRefs = new Set<string>();
+  const panels: MultiPanelPlan['panels'] = [];
+  let hr = 0;
+  for (const pp of options.panelPlans) {
+    if (!pp.circuits.length) continue;
+    const label = pp.label || 'Panel';
+    const point = pp.point || offSheetExitPoint(options.allowed, pp.circuits.flatMap(c => c.devices), options.page);
+    const plan = planRuns({
+      page: options.page,
+      zones: options.zones,
+      panel: point,
+      panelLabel: label,
+      circuits: pp.circuits,
+      settings: options.settings,
+      ftPerPt: options.ftPerPt,
+      scaleSource: options.scaleSource,
+      extraObstacles: options.extraObstacles,
+      panelOffSheet: pp.offSheet || !pp.point,
+    });
+    const renumber = new Map<string, string>();
+    for (const run of plan.runs) {
+      if (run.kind !== 'homerun') continue;
+      hr += 1;
+      renumber.set(run.id, `HR${hr}`);
+    }
+    const sizingByCircuit = new Map(plan.runs.flatMap(run => run.sizing.map(s => [s.circuitId, s] as const)));
+    for (const run of plan.runs) {
+      const next = { ...run };
+      if (run.kind === 'homerun') {
+        const id = renumber.get(run.id) || run.id;
+        next.id = id;
+        next.label = run.label.replace(/^HR\d+/, id) + (pp.offSheet || !pp.point ? ` → ${label} (other sheet)` : '');
+        next.note = run.note.replace(/^Home run \d+/, `Home run ${id.slice(2)}`);
+      }
+      runs.push({
+        ...next,
+        assembly: runAssembly(next, options.settings, run.kind === 'branch' ? sizingByCircuit.get(run.circuitIds[0]) : undefined),
+        panelLabel: label,
+      });
+    }
+    for (const ob of plan.obstacles) {
+      const key = `${ob.label}:${Math.round(ob.box.x)}:${Math.round(ob.box.y)}`;
+      if (seenObstacles.has(key)) continue;
+      seenObstacles.add(key);
+      obstacles.push(ob);
+    }
+    warnings.push(...plan.warnings.map(w => w.replace(/^HR\d+/, m => renumber.get(m) || m)));
+    plan.codeRefs.forEach(ref => codeRefs.add(ref));
+    panels.push({ label, point, offSheet: pp.offSheet || !pp.point });
+  }
+  return {
+    runs,
+    obstacles,
+    ftPerPt: options.ftPerPt,
+    scaleSource: options.scaleSource,
+    warnings: [...new Set(warnings)],
+    codeRefs: [...codeRefs],
+    panels,
+  };
+}
+
 function buildRunMarkups(
-  plan: RunPlan,
+  plan: MultiPanelPlan,
   circuits: PlannedCircuit[],
   settings: RunSettings,
   geometry: PageGeometry,
@@ -466,7 +726,7 @@ function buildRunMarkups(
       y: Math.min(a.y, b.y),
       width: Math.abs(b.x - a.x),
       height: Math.abs(b.y - a.y),
-      style: style('#dc2626', 'rgba(220, 38, 38, 0.10)', 1.5, 0.9),
+      style: style('#d97706', 'rgba(245, 158, 11, 0.22)', 2, 1),
       label: `Keep clear: ${ob.label}`,
       aiNote: `Runs routed around ${ob.label}.`,
       aiRun: { runId: `keepout-${ob.label}`, kind: 'keepout', ftPerPt: plan.ftPerPt, lengthFt: 0, summary: `Keep clear: ${ob.label}` },
@@ -474,9 +734,30 @@ function buildRunMarkups(
     out.push({ page: pageNumber, markup: rect });
   }
 
+  for (const panel of plan.panels) {
+    if (panel.offSheet) continue;
+    const c = toDoc(panel.point);
+    const size = Math.max(geometry.docWidth, geometry.docHeight) * 0.006;
+    const rect: RectangleMarkup = {
+      ...base,
+      id: `run_panel_${crypto.randomUUID()}`,
+      type: 'rectangle',
+      x: c.x - size,
+      y: c.y - size / 2,
+      width: size * 2,
+      height: size,
+      style: style('#111827', 'rgba(17, 24, 39, 0.85)', 1.5, 1),
+      label: `Panel ${panel.label}`,
+      aiNote: `Home runs end at panel ${panel.label}.`,
+      aiRun: { runId: `panel-${panel.label}`, kind: 'panel', ftPerPt: plan.ftPerPt, lengthFt: 0, panel: panel.label, summary: `Panel ${panel.label}` },
+    };
+    out.push({ page: pageNumber, markup: rect });
+  }
+
   for (const run of plan.runs) {
     const color = colorFor.get(run.circuitIds[0]) || '#2563eb';
     const points = run.path.map(toDoc);
+    if (points.length < 2) continue;
     const isHome = run.kind === 'homerun';
     const runCircuits: AiRunCircuit[] = run.circuitIds.map(id => {
       const c = byId.get(id);
@@ -492,19 +773,25 @@ function buildRunMarkups(
         branchFt: branchFt.get(id) || 0,
       };
     });
+    const offSheet = plan.panels.find(p => p.label === run.panelLabel)?.offSheet;
     const markup: PolygonMarkup = {
       ...base,
       id: `run_${run.id}_${crypto.randomUUID()}`,
       type: 'polyline',
       points,
-      style: style(color, 'transparent', isHome ? 3 : 1.25, isHome ? 0.95 : 0.75),
+      style: style(color, 'transparent', isHome ? 3.5 : 2, isHome ? 1 : 0.9),
       label: isHome ? run.label : `${run.circuitIds[0]} branch`,
-      aiNote: isHome ? run.note : `${run.circuitIds[0]} branch ≈${Math.round(run.lengthFt)} ft`,
+      aiNote: isHome
+        ? run.note
+        : `${run.circuitIds[0]} branch ≈${Math.round(run.lengthFt)} ft${run.assembly ? ` · ${run.assembly.name}` : ''}`,
       aiRun: {
         runId: run.id,
         kind: run.kind,
         ftPerPt: plan.ftPerPt,
         lengthFt: run.lengthFt,
+        panel: run.panelLabel,
+        ...(isHome && offSheet ? { offSheet: true } : {}),
+        ...(run.assembly ? { assembly: { key: run.assembly.key, name: run.assembly.name, materials: run.assembly.materials } } : {}),
         circuits: isHome ? runCircuits : undefined,
         settings: isHome ? {
           wiringMethod: settings.wiringMethod,
@@ -514,7 +801,7 @@ function buildRunMarkups(
           necEdition: settings.necEdition,
         } : undefined,
         summary: isHome ? run.label : undefined,
-        vdPct: isHome ? Math.max(...run.sizing.map(s => s.vdPct)) : undefined,
+        vdPct: isHome && run.sizing.length ? Math.max(...run.sizing.map(s => s.vdPct)) : undefined,
       },
     };
     out.push({ page: pageNumber, markup });

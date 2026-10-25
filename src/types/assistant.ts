@@ -150,7 +150,7 @@ export interface ClarificationField {
   id: string;
   prompt: string;
   /** choice: buttons · point: "Show me on the drawing" · text: typed answer. */
-  kind: 'choice' | 'point' | 'text';
+  kind: 'choice' | 'point' | 'text' | 'area';
   options?: Array<ClarificationOption & { point?: PickedPoint }>;
   /** Value of the option the AI recommends (pre-selected). */
   recommended?: string;
@@ -163,10 +163,21 @@ export interface ClarificationField {
   placeholder?: string;
 }
 
+/** A box dragged on the drawing (0–100 of the displayed page). */
+export interface PickedArea {
+  documentId?: string;
+  page: number;
+  xPct: number;
+  yPct: number;
+  wPct: number;
+  hPct: number;
+}
+
 export interface ClarificationFieldAnswer {
   value?: string;
   label?: string;
   point?: PickedPoint;
+  areas?: PickedArea[];
 }
 
 export interface ClarificationRequest {

@@ -213,6 +213,9 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const markups = (markupsByPage && markupsByPage[currentPage]) || EMPTY_MARKUPS;
   const pickRequest = useDrawingPickStore(state => state.request);
   const pickPins = useDrawingPickStore(state => state.pins);
+  const pickAreas = useDrawingPickStore(state => state.areas);
+  /** Box being dragged for an "areas to keep clear" question (doc points). */
+  const [areaDrag, setAreaDrag] = useState<{ start: Point; current: Point } | null>(null);
   const isPicking = !!pickRequest && (!pickRequest.documentId || pickRequest.documentId === activeDocId);
   const isPanMode = activeTool === 'pan' && !isPicking;
   // Prefer per-page PageCalibration; fall back to legacy document-wide scale.
@@ -356,6 +359,36 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         ctx.fillText(pin.label.replace(/^Click\s+/i, '').replace(/\s+on the drawing$/i, ''), p.x + 18 * s, p.y + 4 * s);
         ctx.restore();
       });
+    }
+
+    // Areas the user dragged for an AI question card (and the one being dragged).
+    const areaGeometry = pickGeometry(currentPage);
+    const areasHere = Object.values(pickAreas).flat().filter(a => a.page === currentPage && (!a.documentId || a.documentId === activeDocId));
+    const areaRects = areasHere.map(a => {
+      const p1 = visionDisplayPctToDoc({ x: a.xPct, y: a.yPct }, areaGeometry);
+      const p2 = visionDisplayPctToDoc({ x: a.xPct + a.wPct, y: a.yPct + a.hPct }, areaGeometry);
+      return { x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), w: Math.abs(p2.x - p1.x), h: Math.abs(p2.y - p1.y) };
+    });
+    if (areaDrag) {
+      areaRects.push({
+        x: Math.min(areaDrag.start.x, areaDrag.current.x),
+        y: Math.min(areaDrag.start.y, areaDrag.current.y),
+        w: Math.abs(areaDrag.current.x - areaDrag.start.x),
+        h: Math.abs(areaDrag.current.y - areaDrag.start.y),
+      });
+    }
+    if (areaRects.length) {
+      const s = 100 / Math.max(zoom, 10);
+      ctx.save();
+      areaRects.forEach(r => {
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.22)';
+        ctx.strokeStyle = '#d97706';
+        ctx.lineWidth = 2 * s;
+        ctx.setLineDash([6 * s, 4 * s]);
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+        ctx.strokeRect(r.x, r.y, r.w, r.h);
+      });
+      ctx.restore();
     }
 
     // Draw preview markup while drawing
@@ -503,7 +536,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       }
       
     }
-  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit, aiPreview, aiPreviewHoverId, showPageZones, activeDocId, currentPage, pickPins]);
+  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit, aiPreview, aiPreviewHoverId, showPageZones, activeDocId, currentPage, pickPins, pickAreas, areaDrag]);
 
   useEffect(() => {
     draw();
@@ -567,6 +600,25 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         if (m.style.fillColor !== 'transparent' || isEraserHovered) {
           ctx.fillRect(m.x, m.y, m.width, m.height);
         }
+        if (m.aiRun?.kind === 'keepout' && !isEraserHovered) {
+          // Keep-clear areas: diagonal hatch so they read as "no runs here".
+          const scale = zoom / 100;
+          const step = 10 / scale;
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(m.x, m.y, m.width, m.height);
+          ctx.clip();
+          ctx.strokeStyle = 'rgba(217, 119, 6, 0.45)';
+          ctx.lineWidth = 1 / scale;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          for (let d = -m.height; d < m.width; d += step) {
+            ctx.moveTo(m.x + d, m.y + m.height);
+            ctx.lineTo(m.x + d + m.height, m.y);
+          }
+          ctx.stroke();
+          ctx.restore();
+        }
         ctx.strokeRect(m.x, m.y, m.width, m.height);
         if (m.aiGenerated && m.label && !isEraserHovered) {
           const fontSize = Math.max(10, m.style.fontSize || 11);
@@ -579,7 +631,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           const labelHeight = fontSize + 8;
           const labelY = Math.max(0, m.y - labelHeight);
           ctx.globalAlpha = 1;
-          ctx.fillStyle = '#10b981';
+          ctx.fillStyle = m.aiRun ? (m.aiRun.kind === 'keepout' ? '#b45309' : '#111827') : '#10b981';
           ctx.fillRect(m.x, labelY, labelWidth, labelHeight);
           ctx.fillStyle = '#ffffff';
           ctx.textBaseline = 'middle';
@@ -684,7 +736,13 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         if (m.style.fillColor !== 'transparent' || isEraserHovered) {
           ctx.fill();
         }
+        if (m.aiRun && markup.type === 'polyline') {
+          // Runs stay readable at any zoom (never thinner than ~2–3 screen px).
+          const scale = zoom / 100;
+          ctx.lineWidth = Math.max(ctx.lineWidth, (m.aiRun.kind === 'homerun' ? 3 : 2) / scale);
+        }
         ctx.stroke();
+        if (m.aiRun?.kind === 'homerun' && !m.aiRun.offSheet) drawRunArrow(ctx, m);
         if (m.aiRun?.kind === 'homerun' && m.label) drawRunLabel(ctx, m);
         break;
       }
@@ -910,8 +968,14 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     ctx.font = `600 ${fontSize}px Inter, sans-serif`;
     const w = ctx.measureText(text).width + 8 / scale;
     const h = fontSize + 6 / scale;
-    const cx = (a.x + b.x) / 2;
-    const cy = (a.y + b.y) / 2;
+    // Sit beside the line (perpendicular offset) so the label never hides the run.
+    const segLen = Math.max(1e-6, Math.hypot(b.x - a.x, b.y - a.y));
+    let nx = -(b.y - a.y) / segLen;
+    let ny = (b.x - a.x) / segLen;
+    if (ny > 0 || (ny === 0 && nx > 0)) { nx = -nx; ny = -ny; }
+    const offset = h / 2 + 6 / scale + (Math.abs(nx) > 0.7 ? w / 2 - h / 2 : 0);
+    const cx = (a.x + b.x) / 2 + nx * offset;
+    const cy = (a.y + b.y) / 2 + ny * offset;
     ctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
     ctx.strokeStyle = m.style.strokeColor;
     ctx.lineWidth = 1 / scale;
@@ -921,6 +985,29 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(text, cx, cy);
+    ctx.restore();
+  };
+
+  /** Arrowhead at the panel end of a home run. */
+  const drawRunArrow = (ctx: CanvasRenderingContext2D, m: PolygonMarkup) => {
+    const n = m.points.length;
+    if (n < 2) return;
+    const tip = m.points[n - 1];
+    let from = m.points[n - 2];
+    for (let i = n - 2; i >= 0 && Math.hypot(tip.x - from.x, tip.y - from.y) < 1e-3; i -= 1) from = m.points[i];
+    const angle = Math.atan2(tip.y - from.y, tip.x - from.x);
+    const scale = zoom / 100;
+    const head = 12 / scale;
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = m.style.strokeColor;
+    ctx.beginPath();
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(tip.x - head * Math.cos(angle - Math.PI / 7), tip.y - head * Math.sin(angle - Math.PI / 7));
+    ctx.lineTo(tip.x - head * Math.cos(angle + Math.PI / 7), tip.y - head * Math.sin(angle + Math.PI / 7));
+    ctx.closePath();
+    ctx.fill();
     ctx.restore();
   };
 
@@ -1385,7 +1472,11 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       .find(m => m.id === id);
     if (!latest || !isRunMarkup(latest)) return;
     const next = recomputeRunMarkup(latest);
-    if (next) updateMarkup(currentPage, id, { label: next.label, aiNote: next.aiNote, aiRun: next.aiRun } as Partial<CanvasMarkup>);
+    if (next) {
+      updateMarkup(currentPage, id, { label: next.label, aiNote: next.aiNote, aiRun: next.aiRun } as Partial<CanvasMarkup>);
+      // Keep the linked product's footage in step with the edited run.
+      if (next.aiRun?.lengthFt != null) useProductStore.getState().updateMeasurementValueByMarkupId(id, next.aiRun.lengthFt);
+    }
   };
 
   const nearestSegmentIndex = (pts: Point[], p: Point): number | null => {
@@ -1503,6 +1594,10 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       setCountMenu(null);
     }
     const rawPoint = getMousePosition(e);
+    if (isPicking && pickRequest?.mode === 'area') {
+      setAreaDrag({ start: rawPoint, current: rawPoint });
+      return;
+    }
     if (isPicking) {
       // Answering an AI question: "click the panel on the drawing".
       const geometry = pickGeometry(currentPage);
@@ -1741,6 +1836,10 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
 
   const handleMouseMove = (e: MouseEvent<HTMLCanvasElement>) => {
     const rawPoint = getMousePosition(e);
+    if (areaDrag) {
+      setAreaDrag({ start: areaDrag.start, current: rawPoint });
+      return;
+    }
     // Only apply snapping when "Snap to Objects" is enabled
     // Freehand always bypasses snapping for fluid strokes
     const point = (activeTool === 'freehand' || !snapToObjects) 
@@ -1984,6 +2083,32 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   }, [drawing, activeTool, defaultStyle, measureScale, measureUnit, currentPage, addMarkup, finishDrawing]);
 
   const handleMouseUp = async (e: MouseEvent<HTMLCanvasElement>) => {
+    if (areaDrag) {
+      const end = getMousePosition(e);
+      setAreaDrag(null);
+      const geometry = pickGeometry(currentPage);
+      const identity = { ...geometry, renderScale: 1 };
+      const size = getRenderPageSize(identity);
+      const clamp = (v: number) => Math.max(0, Math.min(100, v));
+      const a = docToRender(areaDrag.start, identity);
+      const b = docToRender(end, identity);
+      const x1 = clamp((Math.min(a.x, b.x) / size.width) * 100);
+      const y1 = clamp((Math.min(a.y, b.y) / size.height) * 100);
+      const x2 = clamp((Math.max(a.x, b.x) / size.width) * 100);
+      const y2 = clamp((Math.max(a.y, b.y) / size.height) * 100);
+      const r1 = (v: number) => Math.round(v * 10) / 10;
+      if (x2 - x1 >= 0.3 && y2 - y1 >= 0.3) {
+        useDrawingPickStore.getState().addArea({
+          documentId: activeDocId || undefined,
+          page: currentPage,
+          xPct: r1(x1),
+          yPct: r1(y1),
+          wPct: r1(x2 - x1),
+          hPct: r1(y2 - y1),
+        });
+      }
+      return;
+    }
     // End resizing
     if (resizing) {
       const editedId = resizing.originalMarkup.id;
