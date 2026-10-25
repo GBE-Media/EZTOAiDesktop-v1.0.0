@@ -21,8 +21,19 @@ function lastEntry(history: HistoryEntry[], toolId: string): HistoryEntry | unde
   return undefined;
 }
 
+const RUNS_REQUEST_RE = /\b(home ?runs?|branch circuits?|conduit|runs?\b.*\b(suggest|lay ?out|route)|suggest(ed)? runs?|wiring)\b/i;
+
+export interface OfferAfterCountContext {
+  /** The user's request this turn — no "place markers?" card when they asked for something else (e.g. runs). */
+  request?: string;
+  /** AI count markers already on that page (from an earlier turn) — don't offer to place them again. */
+  aiMarkersOnPage?: (page: number | undefined) => number;
+}
+
 /** After counting (and nothing placed yet): "Place these on the drawing?" */
-export function offerAfterCount(history: HistoryEntry[]): FollowUpOffer | null {
+export function offerAfterCount(history: HistoryEntry[], context: OfferAfterCountContext = {}): FollowUpOffer | null {
+  if (context.request && RUNS_REQUEST_RE.test(context.request)) return null;
+  if (history.some(entry => entry.toolId === 'suggest_runs')) return null;
   const count = lastEntry(history, 'count_page_items');
   if (!count || count.result?.status !== 'completed') return null;
   const output = (count.result.output || {}) as CountOutput;
@@ -33,6 +44,7 @@ export function offerAfterCount(history: HistoryEntry[]): FollowUpOffer | null {
   if (placedAfter) return null;
   const args = (count.args || {}) as { page?: number; query?: string };
   const page = args.page || output.analysisRef?.page || output.page;
+  if (context.aiMarkersOnPage && context.aiMarkersOnPage(page) > 0) return null;
   const unresolved = (output.unresolvedReturned || 0) + (output.unresolvedOmitted || 0);
   const where = page ? ` on page ${page}` : '';
   const options: FollowUpOffer['options'] = [
@@ -70,7 +82,7 @@ export function offerAfterPlacement(options: {
     options: [
       {
         label: 'Suggest runs',
-        reply: `Suggest home runs and branch circuits for the counted fixtures${where}. Ask me for the panel and wiring method if they are not on the drawings or specs.`,
+        reply: `Suggest home runs and branch circuits for the counted fixtures${where}.`,
         primary: true,
       },
       { label: 'Not now', reply: null },

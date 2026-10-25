@@ -1,4 +1,5 @@
 import { parseAssistantFocus } from './clarificationTemplates';
+import { sanitizeClarificationFields } from './askUser';
 import type { AgentModelDecision, AgentToolCallRequest } from './types';
 
 /** Parse model JSON (or prose fallback) into an agent decision. */
@@ -59,6 +60,8 @@ export function parseAgentDecision(raw: string): AgentModelDecision {
     }
     const focus = parseAssistantFocus(obj.focus);
     if (focus) decision.focus = focus;
+    const fields = sanitizeClarificationFields(obj.fields);
+    if (fields.length) decision.fields = fields;
     return decision;
   }
 

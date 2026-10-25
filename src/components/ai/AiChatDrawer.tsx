@@ -776,7 +776,15 @@ export function AgentAssistantDrawer() {
 
       if (agentResult.status === 'completed' && !runSignal.aborted) {
         const offer = detectFollowUpOffer(answerText)
-          || offerAfterCount(agentResult.toolHistory as Parameters<typeof offerAfterCount>[0]);
+          || offerAfterCount(agentResult.toolHistory as Parameters<typeof offerAfterCount>[0], {
+            request: content,
+            aiMarkersOnPage: page => {
+              const canvasState = useCanvasStore.getState();
+              const doc = canvasState.activeDocId ? canvasState.pdfDocuments[canvasState.activeDocId] : undefined;
+              const rows = doc?.markupsByPage[page || canvasState.getCurrentPage() || 1] || [];
+              return rows.filter(m => m.aiGenerated && !m.aiRun).length;
+            },
+          });
         if (offer) {
           useAIChatStore.getState().addMessageBlock(assistantMsgId, {
             id: `block_followup_${assistantMsgId}`,
@@ -997,6 +1005,7 @@ export function AgentAssistantDrawer() {
           selectedValues: detail.selectedValues || [],
           freeform: detail.freeform,
           displayText: detail.displayText,
+          ...(detail.fields ? { fields: detail.fields } : {}),
         };
         const toolContext = createEditorToolContext(clarification.runId, clarification.messageId);
 

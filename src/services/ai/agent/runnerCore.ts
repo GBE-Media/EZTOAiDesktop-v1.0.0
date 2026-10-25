@@ -22,6 +22,7 @@ import {
   emitClarificationQuestion,
   labelForAgentStatus,
 } from './clarification';
+import { formatFieldAnswersForModel, type AskUserRequest } from './askUser';
 import {
   deleteExpiredAgentSessions,
   deletePersistedAgentSession,
@@ -311,6 +312,7 @@ export interface ResumeClarificationOptions {
     selectedValues: string[];
     freeform?: string;
     displayText: string;
+    fields?: Record<string, import('@/types/assistant').ClarificationFieldAnswer>;
   };
   toolContext: AssistantToolContext;
   model?: ModelAdapter;
@@ -480,6 +482,9 @@ export async function resumeAgentAfterClarification(
   if (options.answer.freeform?.trim()) {
     answerLines.push(`Freeform: ${options.answer.freeform.trim()}`);
   }
+  if (options.answer.fields && (options.clarification.fields?.length || options.clarification.resume)) {
+    answerLines.push(...formatFieldAnswersForModel(options.clarification, options.answer.fields));
+  }
 
   emitAgentTrace(options.runId, 'request', {
     clarificationId: options.clarification.id,
@@ -603,6 +608,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         questions: decision.questions,
         options: decision.options,
         focus: decision.focus,
+        fields: decision.fields,
       });
       return finishWith(session, {
         status: 'needs_clarification',
@@ -658,6 +664,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       startedAt: new Date().toISOString(),
     });
 
+    let pendingAsk: AskUserRequest | null = null;
     for (const call of toolCalls) {
       onStatus?.('running_tool', call.name);
       const safety = resolveToolSafety(call.name);
@@ -774,6 +781,35 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         name: call.name,
         toolCallId: call.id,
         content: formatToolResultForPrompt(result),
+      });
+      if (result.askUser?.fields?.length && !pendingAsk) pendingAsk = result.askUser;
+    }
+
+    if (pendingAsk) {
+      // A tool needs the user's input (e.g. where the panel is): ask with a card, mid-run.
+      session.messages.push({
+        role: 'assistant',
+        content: JSON.stringify({ type: 'clarify', message: pendingAsk.question, fields: pendingAsk.fields.map(field => field.id) }),
+      });
+      session.continuation = { kind: 'agent', waitingFor: 'clarification' };
+      await parkAgentSession(session, 'waiting-clarification');
+      onStatus?.('needs_clarification');
+      const clarification = emitClarificationQuestion({
+        runId: session.runId,
+        messageId: session.messageId,
+        question: pendingAsk.question,
+        description: pendingAsk.description,
+        fields: pendingAsk.fields,
+        focus: pendingAsk.focus,
+        resume: pendingAsk.resume,
+        allowFreeform: false,
+      });
+      return finishWith(session, {
+        status: 'needs_clarification',
+        finalStatus: 'needs_clarification',
+        assistantMessage: sanitizeAssistantVisibleText(decision.assistantText) || pendingAsk.question,
+        clarifyingQuestions: [pendingAsk.question],
+        clarificationRequest: clarification,
       });
     }
   }

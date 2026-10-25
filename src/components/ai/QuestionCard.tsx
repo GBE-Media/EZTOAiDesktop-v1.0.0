@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { HelpCircle, LocateFixed } from 'lucide-react';
+import type { ClarificationFieldAnswer } from '@/types/assistant';
+import { StructuredQuestionFields } from './StructuredQuestionFields';
 import { openAssistantFocus } from '@/lib/openCitation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,6 +13,7 @@ export interface ClarificationAnswerDetail {
   selectedValues: string[];
   freeform?: string;
   displayText: string;
+  fields?: Record<string, ClarificationFieldAnswer>;
 }
 
 function buildDisplayText(
@@ -107,7 +110,9 @@ export function QuestionCard({ clarificationId }: { clarificationId: string }) {
         </div>
       </div>
 
-      {isPending ? (
+      {clarification.fields?.length ? (
+        <StructuredQuestionFields clarification={clarification} />
+      ) : isPending ? (
         <>
           {options.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">

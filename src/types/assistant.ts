@@ -136,6 +136,39 @@ export interface ClarificationOption {
   focus?: AssistantFocus;
 }
 
+/** A point the user picked on a drawing (display percent of the page, as the AI tools use). */
+export interface PickedPoint {
+  documentId?: string;
+  page: number;
+  /** 0–100 of the displayed (rotated) page. */
+  xPct: number;
+  yPct: number;
+}
+
+/** One question inside a multi-step question card. */
+export interface ClarificationField {
+  id: string;
+  prompt: string;
+  /** choice: buttons · point: "Show me on the drawing" · text: typed answer. */
+  kind: 'choice' | 'point' | 'text';
+  options?: Array<ClarificationOption & { point?: PickedPoint }>;
+  /** Value of the option the AI recommends (pre-selected). */
+  recommended?: string;
+  /** Point fields: where to pick (defaults to the current page). */
+  documentId?: string;
+  page?: number;
+  /** Banner text while picking, e.g. "Click Panel LP-1". */
+  pickLabel?: string;
+  optional?: boolean;
+  placeholder?: string;
+}
+
+export interface ClarificationFieldAnswer {
+  value?: string;
+  label?: string;
+  point?: PickedPoint;
+}
+
 export interface ClarificationRequest {
   id: string;
   runId: string;
@@ -144,6 +177,10 @@ export interface ClarificationRequest {
   question: string;
   description?: string;
   options: ClarificationOption[];
+  /** Structured questions (one card, answered together). */
+  fields?: ClarificationField[];
+  /** Tool to re-run with the answers merged into its arguments (set by tools that ask). */
+  resume?: { toolId: string; args: Record<string, unknown>; apply: Record<string, string> };
   allowMultiSelect?: boolean;
   allowFreeform?: boolean;
   /** What on the drawings/specs the question is about (auto-navigated, "Show on drawing"). */
@@ -155,6 +192,7 @@ export interface ClarificationRequest {
     selectedValues: string[];
     freeform?: string;
     displayText: string;
+    fields?: Record<string, ClarificationFieldAnswer>;
   };
 }
 
