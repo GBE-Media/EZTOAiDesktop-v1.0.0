@@ -146,9 +146,17 @@ export function applyFieldAnswers(
   answers: Record<string, ClarificationFieldAnswer>,
 ): Record<string, unknown> {
   const merged = JSON.parse(JSON.stringify(args || {})) as Record<string, unknown>;
-  for (const [fieldId, path] of Object.entries(apply)) {
+  for (const [fieldId, rawPath] of Object.entries(apply)) {
     const answer = answers[fieldId];
-    if (!answer || !path) continue;
+    if (!answer || !rawPath) continue;
+    // "path#num": the answer is a number (e.g. "40" or a typed "52 VA").
+    const numeric = rawPath.endsWith('#num');
+    const path = numeric ? rawPath.slice(0, -4) : rawPath;
+    if (numeric) {
+      const n = parseFloat(str(answer.value).replace(/,/g, ''));
+      if (Number.isFinite(n) && n > 0) setPath(merged, path, n);
+      continue;
+    }
     if (answer.areas) {
       setPath(merged, path, answer.areas.map(area => ({
         x: round1(area.xPct),

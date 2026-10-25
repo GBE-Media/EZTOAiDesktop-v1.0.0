@@ -4,6 +4,7 @@ import { createEstimatingStubTools } from './estimatingTools';
 import { createProjectIndexTools } from '../../projectIndex/projectTools';
 import { createSuggestRunsTool } from '../../runs/suggestRunsTool';
 import { createFlagDiscrepanciesTool } from '../../discrepancies/discrepancyTool';
+import { createAskUserTool } from './askUserTool';
 
 let registered = false;
 
@@ -23,6 +24,7 @@ export function registerAllAgentTools(): void {
     ...createProjectIndexTools(),
     createSuggestRunsTool(),
     createFlagDiscrepanciesTool(),
+    createAskUserTool(),
   ]);
   registered = true;
 }

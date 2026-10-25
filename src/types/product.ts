@@ -13,6 +13,8 @@ export interface ProductNode {
   components?: ProductComponent[];
   measurements?: LinkedMeasurement[];
   categoryPath?: string | null;
+  /** Created locally (e.g. by AI takeoff); kept until the catalog sync returns it. */
+  pendingCatalog?: boolean;
   updatedAt?: string;
   readOnly?: boolean;
   unitPrice?: number;

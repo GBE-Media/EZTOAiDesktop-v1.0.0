@@ -23,6 +23,7 @@ import {
   labelForAgentStatus,
 } from './clarification';
 import { formatFieldAnswersForModel, type AskUserRequest } from './askUser';
+import { proseQuestionToCard } from './proseQuestion';
 import {
   deleteExpiredAgentSessions,
   deletePersistedAgentSession,
@@ -620,6 +621,29 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
     }
 
     if (decision.type === 'final') {
+      // Questions always come as cards: a final answer that asks for input in prose parks the run.
+      const docContext = (toolContext.getDocumentContext?.() || {}) as { page?: number };
+      const prose = proseQuestionToCard(decision.message, typeof docContext.page === 'number' ? docContext.page : undefined);
+      if (prose) {
+        session.messages.push({ role: 'assistant', content: JSON.stringify({ type: 'clarify', message: prose.ask.question, fields: prose.ask.fields.map(f => f.id) }) });
+        session.continuation = { kind: 'agent', waitingFor: 'clarification' };
+        await parkAgentSession(session, 'waiting-clarification');
+        onStatus?.('needs_clarification');
+        const clarification = emitClarificationQuestion({
+          runId: session.runId,
+          messageId: session.messageId,
+          question: prose.ask.question,
+          fields: prose.ask.fields,
+          allowFreeform: false,
+        });
+        return finishWith(session, {
+          status: 'needs_clarification',
+          finalStatus: 'needs_clarification',
+          assistantMessage: sanitizeAssistantVisibleText(prose.remainder) || prose.ask.question,
+          clarifyingQuestions: [prose.ask.question],
+          clarificationRequest: clarification,
+        });
+      }
       const cites = collectTurnCitations(session);
       const result = finishWith(session, {
         status: 'completed',

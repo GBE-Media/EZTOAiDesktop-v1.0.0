@@ -72,7 +72,7 @@ export const suggestRunsSchema = z.object({
   circuits: z.array(circuitSchema).optional().describe('Circuits with their devices. Omit to group devices automatically.'),
   autoCircuits: z.object({
     itemIds: z.array(z.string()).optional().describe('Devices to circuit (defaults to all counted items on the page).'),
-    vaPerDevice: z.number().positive(),
+    vaPerDevice: z.number().positive().optional().describe('VA per fixture from the fixture schedule. Omit when unknown — the tool asks the user with a card.'),
     voltage: z.number().positive().default(120),
     phase: z.union([z.literal(1), z.literal(3)]).default(1),
     continuous: z.boolean().default(true),
@@ -160,7 +160,7 @@ export interface RunInputNeeded {
   message: string;
   documentId: string;
   page: number;
-  missing: Array<'panel_location' | 'panel_label' | 'wiring_method' | 'keep_clear'>;
+  missing: Array<'panel_location' | 'panel_label' | 'wiring_method' | 'keep_clear' | 'fixture_load'>;
   panelLabel?: string;
   /** Panels from the engineer's circuit tags that still need a location. */
   panels: Array<{ label: string; index: number; circuits: string[]; candidates: Array<{ text: string; x: number; y: number }>; scheduled: boolean }>;
@@ -257,6 +257,22 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
         value,
       })),
       ...(needed.recommendedWiring ? { recommended: needed.recommendedWiring } : {}),
+    });
+  }
+  if (needed.missing.includes('fixture_load')) {
+    apply.fixture_load = 'autoCircuits.vaPerDevice#num';
+    fields.push({
+      id: 'fixture_load',
+      kind: 'choice',
+      prompt: "What load per fixture should I circuit with? (the fixture schedule doesn't list VA)",
+      options: [
+        { id: 'va_40', label: '40 VA (typical LED)', value: '40' },
+        { id: 'va_75', label: '75 VA', value: '75' },
+        { id: 'va_100', label: '100 VA', value: '100' },
+        { id: 'va_180', label: '180 VA (NEC 220.14 general outlet)', value: '180' },
+      ],
+      recommended: '40',
+      placeholder: 'Or type the VA, e.g. 52',
     });
   }
   if (needed.missing.includes('keep_clear')) {
@@ -388,7 +404,8 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
       ...(c.itemIds || []).map(devicePoint).filter((p): p is Pt => !!p),
       ...(c.points || []).map(toDisplay),
     ];
-    const loadVA = c.loadVA ?? (c.vaPerDevice ? c.vaPerDevice * devices.length : undefined);
+    const perDevice = c.vaPerDevice ?? (c.loadAmps == null ? input.autoCircuits?.vaPerDevice : undefined);
+    const loadVA = c.loadVA ?? (perDevice ? perDevice * devices.length : undefined);
     const tag = parseCircuitTag(c.id);
     return { id: c.id, label: c.label || c.id, devices, loadVA, loadAmps: c.loadAmps, voltage: c.voltage ?? 120, phase: c.phase ?? 1, continuous: c.continuous ?? true, ocpdAmps: c.ocpdAmps, ...(tag ? { panel: tag.panel } : {}) };
   }).filter(c => c.devices.length > 0);
@@ -507,6 +524,10 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   // The sheet names elevators / stairs / shafts we couldn't outline: let the user mark them.
   const troubleWithObstacles = routing.obstacleMentions > routing.obstacles.filter(o => !o.approximate).length;
   if (input.keepClear === undefined && troubleWithObstacles) missing.push('keep_clear');
+  // Circuiting needs a load per fixture; never stop the run over it — ask on the same card.
+  const hasLoad = input.autoCircuits?.vaPerDevice != null
+    || (input.circuits?.length && input.circuits.every(c => c.loadVA != null || c.vaPerDevice != null || c.loadAmps != null));
+  if (!hasLoad) missing.push('fixture_load');
   if (missing.length) {
     const toPct = (pt: Pt) => ({ x: round1((pt.x / W) * 100), y: round1((pt.y / H) * 100) });
     return {
