@@ -14,6 +14,8 @@ import { detectProjectLocation, governingNec, NEC_ADOPTION_CHECKED } from './jur
 import { DEFAULT_RUN_SETTINGS, findViewScale, planRuns, type PlannedCircuit, type RunPlan, type RunSettings } from './planRuns';
 import { formatSize } from './necTables';
 import type { Pt } from './spatial';
+import type { AskUserRequest } from '../agent/askUser';
+import type { ClarificationField } from '@/types/assistant';
 
 const pointSchema = z.object({ x: z.number().min(0).max(100), y: z.number().min(0).max(100) });
 
@@ -35,10 +37,10 @@ export const suggestRunsSchema = z.object({
   documentId: z.string().optional().describe('Open document id. Defaults to the active tab.'),
   page: z.number().int().positive(),
   panel: z.object({
-    label: z.string().min(1).describe('Panel name as shown on the plan, e.g. "LP" or "LP-1".'),
+    label: z.string().optional().describe('Panel name as shown on the plan, e.g. "LP" or "LP-1".'),
     x: z.number().min(0).max(100).optional(),
     y: z.number().min(0).max(100).optional(),
-  }).describe('Panel the home runs go to. Omit x/y to find the label on the sheet.'),
+  }).optional().describe('Panel the home runs go to. Omit x/y to find the label on the sheet. If unknown, omit it — the tool asks the user (they can click it on the drawing).'),
   circuits: z.array(circuitSchema).optional().describe('Circuits with their devices. Omit to group devices automatically.'),
   autoCircuits: z.object({
     itemIds: z.array(z.string()).optional().describe('Devices to circuit (defaults to all counted items on the page).'),
@@ -75,7 +77,9 @@ export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestR
       + 'elevators, shafts, stairs and openings, stay inside the plan view, and minimize bends and wall '
       + 'penetrations. Sizes conductors for ampacity and voltage drop, EGCs and raceway fill per the NEC '
       + 'edition adopted at the project address. Shows a preview; the user approves placement. '
-      + 'Placed runs are editable: dragging points re-sizes them. Use count_page_items first for devices.',
+      + 'Placed runs are editable: dragging points re-sizes them. Use count_page_items first for devices. '
+      + 'Call it even when the panel location or wiring method is unknown: it pauses and asks the user '
+      + 'with a card (they click the panel on the drawing), then you get the exact arguments to call again.',
     risk: 'write',
     requiresConfirmation: true,
     undoable: true,
@@ -84,7 +88,8 @@ export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestR
       const input = suggestRunsSchema.parse(rawInput);
       const prepared = await prepareRunPlan(input);
       if ('needs' in prepared) {
-        return { status: 'completed', summary: prepared.message, output: prepared };
+        const askUser = prepared.needs === 'input' ? buildRunInputQuestion(prepared as RunInputNeeded, rawInput as Record<string, unknown>) : undefined;
+        return { status: 'completed', summary: prepared.message, output: prepared, ...(askUser ? { askUser } : {}) };
       }
       const approval = createApproval(definition, context, {
         payload: {
@@ -115,7 +120,126 @@ type Prepared =
     summaryLines: string[];
     modelSummary: Record<string, unknown>;
   }
-  | { needs: 'document' | 'panel' | 'scale' | 'devices' | 'page'; message: string; [key: string]: unknown };
+  | { needs: 'document' | 'panel' | 'scale' | 'devices' | 'page'; message: string; [key: string]: unknown }
+  | RunInputNeeded;
+
+/** Panel location and/or wiring method are missing: the user answers with one card. */
+export interface RunInputNeeded {
+  needs: 'input';
+  message: string;
+  documentId: string;
+  page: number;
+  missing: Array<'panel_location' | 'panel_label' | 'wiring_method'>;
+  panelLabel?: string;
+  candidates: Array<{ text: string; x: number; y: number }>;
+  panelNames: string[];
+  recommendedWiring?: WiringMethodValue;
+}
+
+type WiringMethodValue = 'EMT' | 'MC' | 'PVC40' | 'RMC';
+
+const WIRING_LABELS: Record<WiringMethodValue, string> = {
+  EMT: 'EMT conduit',
+  MC: 'MC cable',
+  PVC40: 'PVC Sch 40',
+  RMC: 'Rigid (RMC)',
+};
+
+/** Build the structured card for missing run inputs (resumes suggest_runs with the answers). */
+export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<string, unknown>): AskUserRequest {
+  const fields: ClarificationField[] = [];
+  const label = needed.panelLabel;
+  if (needed.missing.includes('panel_label')) {
+    fields.push({
+      id: 'panel_label',
+      kind: needed.panelNames.length ? 'choice' : 'text',
+      prompt: 'Which panel do these home runs go to?',
+      ...(needed.panelNames.length
+        ? { options: needed.panelNames.map(name => ({ id: `panel_${name}`, label: `Panel ${name}`, value: name })) }
+        : { placeholder: 'e.g. LP-1' }),
+    });
+  }
+  if (needed.missing.includes('panel_location')) {
+    fields.push({
+      id: 'panel_location',
+      kind: 'point',
+      prompt: label ? `Where is panel ${label}?` : 'Where is the panel?',
+      documentId: needed.documentId,
+      page: needed.page,
+      pickLabel: label ? `Click panel ${label} on the drawing` : 'Click the panel on the drawing',
+      ...(needed.candidates.length
+        ? {
+          options: needed.candidates.slice(0, 4).map((c, i) => ({
+            id: `cand_${i + 1}`,
+            label: needed.candidates.length === 1 ? `Use "${c.text}" found on the sheet` : `"${c.text}" #${i + 1}`,
+            value: `${c.x},${c.y}`,
+            point: { documentId: needed.documentId, page: needed.page, xPct: c.x, yPct: c.y },
+          })),
+        }
+        : {}),
+    });
+  }
+  if (needed.missing.includes('wiring_method')) {
+    fields.push({
+      id: 'wiring_method',
+      kind: 'choice',
+      prompt: 'Which wiring method?',
+      options: (Object.keys(WIRING_LABELS) as WiringMethodValue[]).map(value => ({
+        id: `wm_${value}`,
+        label: WIRING_LABELS[value],
+        value,
+      })),
+      ...(needed.recommendedWiring ? { recommended: needed.recommendedWiring } : {}),
+    });
+  }
+  const page = needed.page;
+  return {
+    question: fields.length === 1 && fields[0].id === 'wiring_method'
+      ? `Which wiring method should I use for the runs on page ${page}?`
+      : `A couple of details before I lay out the runs on page ${page}`,
+    description: needed.recommendedWiring
+      ? `The specs point to ${WIRING_LABELS[needed.recommendedWiring]}; change it if this job differs.`
+      : undefined,
+    fields,
+    focus: { documentId: needed.documentId, page },
+    resume: {
+      toolId: 'suggest_runs',
+      args: { ...rawArgs, documentId: needed.documentId, page },
+      apply: { panel_location: 'panel', panel_label: 'panel.label', wiring_method: 'settings.wiringMethod' },
+    },
+  };
+}
+
+/** Panel names from panel schedules / plan text in the project ("PANEL LP-1", "PANELBOARD A"). */
+export function panelNameCandidates(lines: string[]): string[] {
+  const counts = new Map<string, number>();
+  const re = /\bPANEL(?:BOARD)?\s*(?:[:#]|NAME:?|DESIGNATION:?)?\s*["']?([A-Z]{1,4}[0-9]{0,2}(?:-[A-Z0-9]{1,3})?)\b/g;
+  const stop = new Set(['SCHEDULE', 'BOARD', 'BOARDS', 'TO', 'IN', 'ON', 'AND', 'OR', 'THE', 'FED', 'FROM', 'MAIN', 'SEE', 'NEW', 'TYPE', 'MOUNTED', 'LOCATION', 'SCHED', 'NAME']);
+  for (const line of lines) {
+    for (const m of line.toUpperCase().matchAll(re)) {
+      const name = m[1];
+      if (stop.has(name) || name.length > 8) continue;
+      counts.set(name, (counts.get(name) || 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([name]) => name);
+}
+
+/** The wiring method the specs/plan notes favor, if they clearly name one. */
+export function specWiringMethod(lines: string[]): WiringMethodValue | undefined {
+  const score: Record<WiringMethodValue, number> = { EMT: 0, MC: 0, PVC40: 0, RMC: 0 };
+  for (const raw of lines) {
+    const line = raw.toUpperCase();
+    if (!/WIRING METHOD|RACEWAY|BRANCH CIRCUIT|CONDUIT|CABLE/.test(line)) continue;
+    if (/\bEMT\b|ELECTRICAL METALLIC TUBING/.test(line)) score.EMT += 1;
+    if (/\bTYPE MC\b|\bMC CABLE\b|METAL[- ]CLAD CABLE/.test(line)) score.MC += 1;
+    if (/\bPVC\b|RIGID NONMETALLIC/.test(line)) score.PVC40 += 1;
+    if (/\bRMC\b|RIGID METAL CONDUIT|RIGID STEEL/.test(line)) score.RMC += 1;
+  }
+  const ranked = (Object.entries(score) as Array<[WiringMethodValue, number]>).sort((a, b) => b[1] - a[1]);
+  if (!ranked[0][1] || ranked[0][1] === ranked[1][1]) return undefined;
+  return ranked[0][0];
+}
 
 export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared> {
   const resolved = resolveDocumentRef(input.documentId);
@@ -188,18 +312,27 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
 
   // Panel.
   let panel: Pt | null = null;
-  if (typeof input.panel.x === 'number' && typeof input.panel.y === 'number') panel = toDisplay({ x: input.panel.x, y: input.panel.y });
-  const candidates = panel ? [] : findPanelLabel(page, zones, input.panel.label);
+  const panelLabel = input.panel?.label?.trim() || undefined;
+  if (typeof input.panel?.x === 'number' && typeof input.panel?.y === 'number') panel = toDisplay({ x: input.panel.x, y: input.panel.y });
+  const candidates = panel || !panelLabel ? [] : findPanelLabel(page, zones, panelLabel);
   if (!panel && candidates.length === 1) panel = candidates[0].point;
-  if (!panel) {
+  const projectLines = allIndexedPages().flatMap(row => (row.lines || []).map(line => line.text));
+  const specMethod = specWiringMethod(projectLines);
+  const missing: RunInputNeeded['missing'] = [];
+  if (!panel) missing.push('panel_location');
+  if (!panel && !panelLabel) missing.push('panel_label');
+  if (!input.settings?.wiringMethod && !specMethod) missing.push('wiring_method');
+  if (!panel || missing.includes('wiring_method')) {
     return {
-      needs: 'panel',
-      message: candidates.length
-        ? `Found ${candidates.length} places labeled "${input.panel.label}". Ask the user which one is the panel (use clarify with focus on each candidate).`
-        : `Could not find panel "${input.panel.label}" on page ${input.page}. Ask the user where the panel is (or whether it is on another sheet).`,
-      candidates: candidates.slice(0, 6).map(c => ({ text: c.text, x: round1((c.point.x / W) * 100), y: round1((c.point.y / H) * 100) })),
+      needs: 'input',
+      message: 'Asked the user with a card for: ' + missing.join(', ') + '. Wait for their answer; it includes the exact arguments to call suggest_runs again.',
       documentId: docId,
       page: input.page,
+      missing,
+      panelLabel,
+      candidates: candidates.slice(0, 6).map(c => ({ text: c.text, x: round1((c.point.x / W) * 100), y: round1((c.point.y / H) * 100) })),
+      panelNames: missing.includes('panel_label') ? panelNameCandidates(projectLines.concat(page.textItems.map(item => item.str))) : [],
+      recommendedWiring: specMethod,
     };
   }
 
@@ -236,11 +369,12 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const code = governingNec(location?.state);
   const settings: RunSettings = {
     ...DEFAULT_RUN_SETTINGS,
+    ...(specMethod ? { wiringMethod: specMethod } : {}),
     ...Object.fromEntries(Object.entries(input.settings || {}).filter(([, v]) => v !== undefined)),
     necEdition: input.settings?.necEdition ?? code.edition,
   } as RunSettings;
 
-  const plan = planRuns({ page, zones, panel, panelLabel: input.panel.label, circuits, settings, ftPerPt, scaleSource });
+  const plan = planRuns({ page, zones, panel, panelLabel: panelLabel || 'Panel', circuits, settings, ftPerPt, scaleSource });
   const markups = buildRunMarkups(plan, circuits, settings, geometry, input.page);
   const homeRuns = plan.runs.filter(r => r.kind === 'homerun');
   const codeLine = `${code.summary}${location ? ` Project: ${location.text}.` : ''}`;

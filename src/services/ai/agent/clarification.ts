@@ -1,5 +1,5 @@
 import { useAIChatStore } from '@/store/aiChatStore';
-import type { AssistantFocus, ClarificationOption, ClarificationRequest } from '@/types/assistant';
+import type { AssistantFocus, ClarificationField, ClarificationOption, ClarificationRequest } from '@/types/assistant';
 import { openAssistantFocus } from '@/lib/openCitation';
 import type { AgentTurnResult } from './types';
 import { resolveClarificationOptions, inferClarificationStepKey } from './clarificationTemplates';
@@ -18,6 +18,8 @@ export interface EmitClarificationOptions {
   allowMultiSelect?: boolean;
   allowFreeform?: boolean;
   focus?: AssistantFocus;
+  fields?: ClarificationField[];
+  resume?: ClarificationRequest['resume'];
 }
 
 /** Persist a clarification record, attach a question block, and park the run. */
@@ -27,11 +29,11 @@ export function emitClarificationQuestion(options: EmitClarificationOptions): Cl
     || options.questions?.[0]
     || 'What would you like me to do next?';
   const stepKey = inferClarificationStepKey(primaryQuestion, options.stepKey);
-  const resolvedOptions = resolveClarificationOptions(
-    primaryQuestion,
-    options.options,
-    stepKey,
-  );
+  const hasFields = !!options.fields?.length;
+  // Structured cards carry their own per-field choices; don't add template buttons.
+  const resolvedOptions = hasFields
+    ? []
+    : resolveClarificationOptions(primaryQuestion, options.options, stepKey);
 
   const clarification: ClarificationRequest = {
     id: generateClarificationId(),
@@ -40,13 +42,15 @@ export function emitClarificationQuestion(options: EmitClarificationOptions): Cl
     stepKey,
     question: primaryQuestion,
     description: options.description
-      || (options.questions && options.questions.length > 1
+      || (!hasFields && options.questions && options.questions.length > 1
         ? options.questions.slice(1).join(' ')
         : undefined),
     options: resolvedOptions,
     allowMultiSelect: options.allowMultiSelect,
     allowFreeform: options.allowFreeform ?? true,
     ...(options.focus ? { focus: options.focus } : {}),
+    ...(hasFields ? { fields: options.fields } : {}),
+    ...(options.resume ? { resume: options.resume } : {}),
     status: 'pending',
     createdAt: new Date().toISOString(),
   };

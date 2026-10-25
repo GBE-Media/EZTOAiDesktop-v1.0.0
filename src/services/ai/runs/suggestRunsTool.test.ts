@@ -24,7 +24,8 @@ vi.mock('../agent/pageAnalysisCache', () => ({
 
 import { useCanvasStore } from '@/store/canvasStore';
 import { getAssistantTool } from '../tools/registry';
-import { createSuggestRunsTool, prepareRunPlan } from './suggestRunsTool';
+import { createSuggestRunsTool, panelNameCandidates, prepareRunPlan, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
+import { applyFieldAnswers } from '../agent/askUser';
 import { createPageGeometry, docToRender } from '../placement/coords';
 import type { PolygonMarkup } from '@/types/markup';
 
@@ -64,13 +65,43 @@ beforeEach(() => {
 
 describe('suggest_runs tool', () => {
   it('asks for the panel location when the label is not on the sheet', async () => {
-    const result = await prepareRunPlan({ page: 4, panel: { label: 'ZZQ-9' }, circuits: circuitsFromTags() } as never);
-    expect('needs' in result && result.needs).toBe('panel');
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'ZZQ-9' }, circuits: circuitsFromTags(), settings: { wiringMethod: 'EMT' } } as never);
+    expect('needs' in result && result.needs).toBe('input');
+    expect((result as RunInputNeeded).missing).toEqual(['panel_location']);
+  });
+
+  it('pauses with one card for panel + wiring method, and the answers rebuild the exact call', async () => {
+    const tool = createSuggestRunsTool();
+    const circuits = circuitsFromTags();
+    const out = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval: vi.fn() } as never, { page: 4, circuits } as never);
+    expect(out.status).toBe('completed');
+    const ask = out.askUser!;
+    expect(ask.fields.map(f => f.id)).toEqual(['panel_label', 'panel_location', 'wiring_method']);
+    const point = ask.fields.find(f => f.id === 'panel_location')!;
+    expect(point.kind).toBe('point');
+    expect(point.page).toBe(4);
+    expect(ask.fields.find(f => f.id === 'wiring_method')!.options!.map(o => o.value)).toEqual(['EMT', 'MC', 'PVC40', 'RMC']);
+    const args = applyFieldAnswers(ask.resume!.args, ask.resume!.apply, {
+      panel_label: { value: 'LP' },
+      panel_location: { point: { documentId: DOC, page: 4, xPct: 83, yPct: 52 } },
+      wiring_method: { value: 'MC', label: 'MC cable' },
+    });
+    expect(args).toMatchObject({ page: 4, documentId: DOC, panel: { label: 'LP', x: 83, y: 52 }, settings: { wiringMethod: 'MC' } });
+    const addApproval = vi.fn();
+    const again = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval } as never, args as never);
+    expect(again.status).toBe('approval-required');
+    expect(again.askUser).toBeUndefined();
+  });
+
+  it('reads panel names and the wiring method from the specs', () => {
+    expect(panelNameCandidates(['PANEL LP-1 SCHEDULE', 'PANEL: LP-1', 'PANELBOARD H1', 'PANEL SCHEDULE'])).toEqual(['LP-1', 'H1']);
+    expect(specWiringMethod(['3.1 WIRING METHODS: BRANCH CIRCUITS SHALL BE TYPE MC CABLE', 'NOTES'])).toBe('MC');
+    expect(specWiringMethod(['NO RELEVANT TEXT'])).toBeUndefined();
   });
 
   it('produces doc-coordinate run markups on a rotated sheet that land on the devices', async () => {
     const circuits = circuitsFromTags();
-    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits } as never);
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' } } as never);
     if ('needs' in result) throw new Error(result.message);
     const runs = result.markups.map(r => r.markup).filter(m => m.type === 'polyline') as PolygonMarkup[];
     const homeRuns = runs.filter(m => m.aiRun?.kind === 'homerun');
@@ -100,7 +131,7 @@ describe('suggest_runs tool', () => {
     const addApproval = vi.fn();
     const out = await tool.execute(
       { runId: 'r1', messageId: 'm1', addApproval } as never,
-      { page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits: circuitsFromTags() } as never,
+      { page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits: circuitsFromTags(), settings: { wiringMethod: 'EMT' } } as never,
     );
     expect(out.status).toBe('approval-required');
     expect(addApproval).toHaveBeenCalledTimes(1);

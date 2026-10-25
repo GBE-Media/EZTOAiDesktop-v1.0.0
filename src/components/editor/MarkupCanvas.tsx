@@ -37,6 +37,9 @@ import {
   computeLengthMeasurement,
 } from '@/lib/measurementValues';
 import { pageCalibrationToRenderPixelsPerUnit } from '@/services/ai/placement/pageCalibration';
+import { useDrawingPickStore } from '@/store/drawingPickStore';
+import { docToRender, getRenderPageSize } from '@/services/ai/placement/coords';
+import { visionDisplayPctToDoc } from '@/services/ai/placement/visionDisplayPctToDoc';
 
 const EMPTY_MARKUPS: CanvasMarkup[] = [];
 
@@ -208,7 +211,10 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const currentPage = currentDocData?.currentPage || 1;
   const markupsByPage = currentDocData?.markupsByPage;
   const markups = (markupsByPage && markupsByPage[currentPage]) || EMPTY_MARKUPS;
-  const isPanMode = activeTool === 'pan';
+  const pickRequest = useDrawingPickStore(state => state.request);
+  const pickPins = useDrawingPickStore(state => state.pins);
+  const isPicking = !!pickRequest && (!pickRequest.documentId || pickRequest.documentId === activeDocId);
+  const isPanMode = activeTool === 'pan' && !isPicking;
   // Prefer per-page PageCalibration; fall back to legacy document-wide scale.
   const { scale: measureScale, unit: measureUnit } = getScaleForPage(currentPage);
 
@@ -327,6 +333,31 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       });
     }
     
+    // Points the user picked for an AI question card.
+    const pinsHere = Object.values(pickPins).filter(pin => pin.page === currentPage && (!pin.documentId || pin.documentId === activeDocId));
+    if (pinsHere.length) {
+      const pinGeometry = pickGeometry(currentPage);
+      const s = 100 / Math.max(zoom, 10);
+      pinsHere.forEach(pin => {
+        const p = visionDisplayPctToDoc({ x: pin.xPct, y: pin.yPct }, pinGeometry);
+        ctx.save();
+        ctx.fillStyle = 'rgba(139, 92, 246, 0.25)';
+        ctx.strokeStyle = '#8b5cf6';
+        ctx.lineWidth = 2 * s;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 14 * s, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#8b5cf6';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3.5 * s, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = `${Math.round(12 * s)}px Arial`;
+        ctx.fillText(pin.label.replace(/^Click\s+/i, '').replace(/\s+on the drawing$/i, ''), p.x + 18 * s, p.y + 4 * s);
+        ctx.restore();
+      });
+    }
+
     // Draw preview markup while drawing
     if (drawing.isDrawing && drawing.currentPoints.length > 0) {
       drawPreview(ctx, activeTool, drawing.currentPoints, defaultStyle);
@@ -472,7 +503,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       }
       
     }
-  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit, aiPreview, aiPreviewHoverId, showPageZones, activeDocId, currentPage]);
+  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit, aiPreview, aiPreviewHoverId, showPageZones, activeDocId, currentPage, pickPins]);
 
   useEffect(() => {
     draw();
@@ -1165,6 +1196,15 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     ctx.restore();
   };
 
+  useEffect(() => {
+    if (!isPicking) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') useDrawingPickStore.getState().cancel();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isPicking]);
+
   // Get mouse position in PDF coordinate space (independent of zoom/pan/rotation)
   const getMousePosition = (e: MouseEvent<HTMLCanvasElement>): Point => {
     const canvas = canvasRef.current;
@@ -1193,6 +1233,17 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       y: localY + height / 2,
     };
   };
+
+  // Page geometry for display-percent <-> doc conversion (falls back to the canvas size, unrotated).
+  function pickGeometry(pageNumber: number) {
+    const cached = useCanvasStore.getState().getPageGeometry(pageNumber);
+    return pageGeometryFromUnrotated({
+      pageNumber,
+      docWidth: cached?.docWidth || width,
+      docHeight: cached?.docHeight || height,
+      rotationDeg: cached?.rotationDeg ?? 0,
+    });
+  }
 
   const handleContextMenu = (e: MouseEvent<HTMLCanvasElement>) => {
     if (isPanMode) return;
@@ -1452,6 +1503,21 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       setCountMenu(null);
     }
     const rawPoint = getMousePosition(e);
+    if (isPicking) {
+      // Answering an AI question: "click the panel on the drawing".
+      const geometry = pickGeometry(currentPage);
+      const identity = { ...geometry, renderScale: 1 };
+      const display = docToRender(rawPoint, identity);
+      const size = getRenderPageSize(identity);
+      const clamp = (v: number) => Math.max(0, Math.min(100, v));
+      useDrawingPickStore.getState().complete({
+        documentId: activeDocId || undefined,
+        page: currentPage,
+        xPct: Math.round(clamp((display.x / size.width) * 100) * 10) / 10,
+        yPct: Math.round(clamp((display.y / size.height) * 100) * 10) / 10,
+      });
+      return;
+    }
     // Only apply snapping when "Snap to Objects" is enabled
     // Freehand always bypasses snapping for fluid strokes
     const point = (activeTool === 'freehand' || !snapToObjects) 
@@ -2233,6 +2299,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
 
   // Determine cursor based on active tool and hover state
   const getCursor = () => {
+    if (isPicking) return 'crosshair';
     // If actively resizing, show resize cursor
     if (resizing) {
       return getResizeCursor(resizing.handle);
@@ -2277,6 +2344,24 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           setEraserHoveredId(null);
         }}
       />
+
+      {isPicking && pickRequest && createPortal(
+        <div className="pointer-events-none fixed left-1/2 top-16 z-[9999] -translate-x-1/2">
+          <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-violet-500/50 bg-popover/95 px-4 py-2 text-sm shadow-xl backdrop-blur">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-violet-500" />
+            <span className="text-foreground">{pickRequest.label}</span>
+            <span className="text-xs text-muted-foreground">Esc to cancel</span>
+            <button
+              type="button"
+              className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => useDrawingPickStore.getState().cancel()}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
 
       {countMenu && createPortal(
         <div

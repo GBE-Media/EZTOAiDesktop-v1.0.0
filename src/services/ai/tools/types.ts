@@ -57,6 +57,8 @@ export interface AssistantToolResult {
   stubReason?: string;
   suggestedUserMessage?: string;
   citations?: import('@/types/assistant').EvidenceCitation[];
+  /** Pause the run and show a structured question card (answers resume the same run). */
+  askUser?: import('../agent/askUser').AskUserRequest;
 }
 
 export interface AssistantToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

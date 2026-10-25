@@ -192,6 +192,8 @@ export type AgentModelDecision =
       options?: Array<{ id: string; label: string; value: string; focus?: import('@/types/assistant').AssistantFocus }>;
       /** Where on the drawings/specs the question is about. */
       focus?: import('@/types/assistant').AssistantFocus;
+      /** Several questions in one card (choice / point on drawing / text). */
+      fields?: import('@/types/assistant').ClarificationField[];
     };
 
 export interface AgentTraceEvent {
