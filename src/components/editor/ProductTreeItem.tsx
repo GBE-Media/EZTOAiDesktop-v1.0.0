@@ -61,6 +61,18 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
   const measurementCount = activeDocument && node.type !== 'folder'
     ? (node.measurements || []).filter((m) => m.documentId === activeDocument).length
     : 0;
+  // Length / area products show their total (e.g. "912 ft"), not how many runs were measured,
+  // so the badge matches the takeoff table the AI reports.
+  const measurementBadge = (() => {
+    if (!measurementCount || !activeDocument) return '';
+    const rows = (node.measurements || []).filter((m) => m.documentId === activeDocument);
+    const quantity = rows.filter((m) => m.type === 'length' || m.type === 'area');
+    if (!quantity.length) return String(measurementCount);
+    const total = quantity.reduce((sum, m) => sum + (Number(m.value) || 0), 0);
+    const unit = quantity[0].unit || (quantity[0].type === 'area' ? 'sf' : 'ft');
+    const shown = total >= 100 ? Math.round(total).toLocaleString() : (Math.round(total * 10) / 10).toString();
+    return `${shown} ${unit}`;
+  })();
 
   // Color of this product's markers on the print (count types are color-coded).
   const markerColor = useCanvasStore((state) => {
@@ -301,7 +313,7 @@ export function ProductTreeItem({ node, depth, onEdit, onNewFolder, onNewProduct
             {/* Measurement count badge */}
             {measurementCount > 0 && (
               <span className="px-1.5 py-0.5 text-[10px] bg-muted rounded-full text-muted-foreground">
-                {measurementCount}
+                {measurementBadge}
               </span>
             )}
 

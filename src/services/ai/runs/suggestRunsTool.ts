@@ -7,7 +7,7 @@ import { resolveDocumentRef } from '../documentRef';
 import { ensurePageZones, extractZoneInputs, type PageZone, type ZonePageInput } from '../detection/pageZones';
 import { allIndexedPages } from '../projectIndex/store';
 import { pageGeometryFromUnrotated } from '../placement/visionDisplayPctToDoc';
-import { normalizeRotationDeg, renderToDoc } from '../placement/coords';
+import { docToRender, getRenderPageSize, normalizeRotationDeg, renderToDoc } from '../placement/coords';
 import type { PageGeometry } from '../placement/types';
 import { detectProjectLocation, governingNec, NEC_ADOPTION_CHECKED } from './jurisdiction';
 import {
@@ -69,6 +69,7 @@ export const suggestRunsSchema = z.object({
     height: z.number().min(0).max(100),
     label: z.string().optional(),
   })).optional().describe('Extra keep-clear areas in page display percent (from the user).'),
+  keepClearConfirmed: z.boolean().optional().describe('keepClear is the full list the user confirmed on the card (the AI-suggested boxes they kept + their own): skip auto-detected areas.'),
   circuits: z.array(circuitSchema).optional().describe('Circuits with their devices. Omit to group devices automatically.'),
   autoCircuits: z.object({
     itemIds: z.array(z.string()).optional().describe('Devices to circuit (defaults to all counted items on the page).'),
@@ -85,6 +86,7 @@ export const suggestRunsSchema = z.object({
     vdTargetPct: z.number().positive().max(10).optional(),
     maxCircuitsPerConduit: z.number().int().min(1).max(9).optional(),
     verticalFt: z.number().min(0).max(100).optional(),
+    floorToFloorFt: z.number().min(6).max(40).optional().describe('Floor-to-floor height for risers between floors (default 12 ft).'),
     necEdition: z.number().int().optional().describe('Override the code edition (otherwise from the project address).'),
   }).optional(),
   description: z.string().optional(),
@@ -171,6 +173,8 @@ export interface RunInputNeeded {
   recommendedWiring?: WiringMethodValue;
   obstacleMentions?: number;
   obstaclesFound?: number;
+  /** AI-drafted keep-clear boxes (page display percent) the user confirms / edits on the card. */
+  suggestedAreas?: Array<{ x: number; y: number; width: number; height: number; label: string; approximate?: boolean }>;
 }
 
 type WiringMethodValue = 'EMT' | 'MC' | 'PVC40' | 'RMC';
@@ -276,16 +280,22 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
     });
   }
   if (needed.missing.includes('keep_clear')) {
+    const suggested = needed.suggestedAreas || [];
     fields.push({
       id: 'keep_clear',
       kind: 'area',
-      prompt: needed.obstaclesFound
-        ? `I found ${needed.obstaclesFound} keep-clear area${needed.obstaclesFound === 1 ? '' : 's'} (highlighted). Mark any others — elevators, stairs, shafts`
+      prompt: suggested.length
+        ? `I drafted ${suggested.length} keep-clear area${suggested.length === 1 ? '' : 's'} from the room labels (${[...new Set(suggested.map(a => a.label))].slice(0, 4).join(', ')}). Remove any that are wrong and drag boxes for any I missed`
         : 'Mark areas to keep runs out of — elevators, stairs, shafts',
       documentId: needed.documentId,
       page: needed.page,
       pickLabel: 'Drag a box around each area to keep clear',
       optional: true,
+      ...(suggested.length ? {
+        suggestedAreas: suggested.map(a => ({
+          documentId: needed.documentId, page: needed.page, xPct: a.x, yPct: a.y, wPct: a.width, hPct: a.height, label: a.label,
+        })),
+      } : {}),
     });
   }
   const page = needed.page;
@@ -307,7 +317,7 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
         documentId: needed.documentId,
         page,
         ...(needed.panelArgs.length ? { panels: needed.panelArgs } : {}),
-        ...(needed.missing.includes('keep_clear') ? { keepClear: [] } : {}),
+        ...(needed.missing.includes('keep_clear') ? { keepClear: [], keepClearConfirmed: true } : {}),
       },
       apply,
     },
@@ -350,6 +360,72 @@ export function specWiringMethod(lines: string[]): WiringMethodValue | undefined
   return ranked[0][0];
 }
 
+/** A home run that changes floors: riser point on the circuits' floor, stacked over the panel. */
+export type PanelRiser = {
+  point: Pt;
+  panelPoint: Pt;
+  direction: 'up' | 'down';
+  ft: number;
+  levels: number;
+  fromLevel?: string;
+  toLevel?: string;
+};
+
+const ORDINALS: Record<string, number> = {
+  FIRST: 1, SECOND: 2, THIRD: 3, FOURTH: 4, FIFTH: 5, SIXTH: 6, SEVENTH: 7, EIGHTH: 8, NINTH: 9, TENTH: 10,
+  GROUND: 1, MAIN: 1, BASEMENT: 0, LOWER: 0, CELLAR: 0,
+};
+
+/** Floor number from a plan view title ("SECOND FLOOR LIGHTING PLAN", "LEVEL 3", "2ND FLOOR"). */
+export function floorLevel(label: string): { n: number; name: string } | null {
+  const t = label.toUpperCase();
+  const word = t.match(/\b(FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|SEVENTH|EIGHTH|NINTH|TENTH|GROUND|MAIN|BASEMENT|LOWER|CELLAR)\b(?:\s+(?:FLOOR|LEVEL))?/);
+  if (word && (/(FLOOR|LEVEL)/.test(t) || ['BASEMENT', 'CELLAR', 'GROUND'].includes(word[1]))) {
+    const n = ORDINALS[word[1]];
+    return { n, name: n === 0 ? 'Basement' : `Level ${n}` };
+  }
+  const num = t.match(/\b(?:LEVEL|FLOOR|LVL)\s*(\d{1,2})\b/) || t.match(/\b(\d{1,2})(?:ST|ND|RD|TH)\s+(?:FLOOR|LEVEL)\b/);
+  if (num) {
+    const n = Number(num[1]);
+    return { n, name: `Level ${n}` };
+  }
+  return null;
+}
+
+/**
+ * Plan views of a stacked building share a footprint: the panel's spot in its own view, mapped
+ * to the same relative spot in the other floor's view, is where the riser goes.
+ */
+export function riserBetween(
+  panelBox: Box,
+  circuitBox: Box,
+  panelPoint: Pt,
+  panelLevel: { n: number; name: string } | null,
+  circuitLevel: { n: number; name: string } | null,
+  floorToFloorFt: number,
+): Omit<PanelRiser, 'panelPoint'> {
+  const rx = panelBox.width > 0 ? (panelPoint.x - panelBox.x) / panelBox.width : 0.5;
+  const ry = panelBox.height > 0 ? (panelPoint.y - panelBox.y) / panelBox.height : 0.5;
+  const clamp = (v: number) => Math.min(0.98, Math.max(0.02, v));
+  const point = { x: circuitBox.x + clamp(rx) * circuitBox.width, y: circuitBox.y + clamp(ry) * circuitBox.height };
+  const levels = panelLevel && circuitLevel ? Math.max(1, Math.abs(circuitLevel.n - panelLevel.n)) : 1;
+  // Circuits above their panel go down to it; below it, up.
+  const direction: 'up' | 'down' = panelLevel && circuitLevel && circuitLevel.n < panelLevel.n ? 'up' : 'down';
+  return {
+    point,
+    direction,
+    levels,
+    ft: Math.round(levels * floorToFloorFt * 10) / 10,
+    ...(circuitLevel ? { fromLevel: circuitLevel.name } : {}),
+    ...(panelLevel ? { toLevel: panelLevel.name } : {}),
+  };
+}
+
+/** Text for the continuation: "↓ to Panel B (Level 1)". */
+export function riserText(panel: string, riser: Pick<PanelRiser, 'direction' | 'toLevel'>): string {
+  return `${riser.direction === 'up' ? '↑' : '↓'} to Panel ${panel}${riser.toLevel ? ` (${riser.toLevel})` : ' (other floor)'}`;
+}
+
 export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared> {
   const resolved = resolveDocumentRef(input.documentId);
   if ('error' in resolved) return { needs: 'document', message: resolved.error };
@@ -388,7 +464,31 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const analysisItems = analysis?.analysis?.items || [];
   const legendCodes = analysis?.analysis?.legendTypeCodes;
   const itemsById = new Map(analysisItems.map(item => [item.id, item]));
+  // Runs tie to the count markers actually on the print (same frame the user sees), so a
+  // string lands on its fixtures and follows them when one is moved.
+  const identityGeometry: PageGeometry = { ...geometry, renderScale: 1 };
+  const renderSize = getRenderPageSize(identityGeometry);
+  const sx = renderSize.width > 0 ? W / renderSize.width : 1;
+  const sy = renderSize.height > 0 ? H / renderSize.height : 1;
+  const markerByItem = new Map<string, { id: string; pt: Pt }>();
+  for (const m of canvas.getMarkupsByPage(docId)[input.page] || []) {
+    if (m.type !== 'count-marker') continue;
+    const linked = (m as { aiLinkedItemId?: string }).aiLinkedItemId;
+    const x = (m as { x?: number }).x;
+    const y = (m as { y?: number }).y;
+    if (!linked || typeof x !== 'number' || typeof y !== 'number') continue;
+    const r = docToRender({ x, y }, identityGeometry);
+    const prev = markerByItem.get(linked);
+    // Prefer the real count over a review marker for the same item.
+    if (!prev || !(m as { reviewMarker?: boolean }).reviewMarker) markerByItem.set(linked, { id: m.id, pt: { x: r.x * sx, y: r.y * sy } });
+  }
+  const anchorByPoint = new Map<string, string>();
   const devicePoint = (id: string): Pt | null => {
+    const marker = markerByItem.get(id);
+    if (marker) {
+      anchorByPoint.set(pointKey(marker.pt), marker.id);
+      return marker.pt;
+    }
     const item = itemsById.get(id);
     if (!item || item.locationMissing || !item.location) return null;
     return toDisplay(item.location);
@@ -455,9 +555,11 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
 
   // The same tag on two plan views (e.g. first + second floor) is two runs, never one chain
   // across the sheet.
-  const viewBoxes = zones.filter(z => z.kind === 'plan' && z.source === 'view').map(z => ({
+  const viewZones = zones.filter(z => z.kind === 'plan' && z.source === 'view');
+  const viewBoxes = viewZones.map(z => ({
     x: (z.bounds.x / 100) * W, y: (z.bounds.y / 100) * H, width: (z.bounds.width / 100) * W, height: (z.bounds.height / 100) * H,
   }));
+  const viewLevels = viewZones.map(z => floorLevel(z.label || ''));
   const viewOf = (p: Pt) => viewBoxes.findIndex(b => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height);
   if (viewBoxes.length > 1) {
     circuits = circuits.flatMap(c => {
@@ -483,7 +585,7 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const normLabel = (t?: string) => (t || '').toUpperCase().replace(/^PANEL\s*/, '').replace(/[^A-Z0-9]/g, '');
   const givenPanels = [...(input.panels || []), ...(input.panel ? [{ ...input.panel, label: input.panel.label || '' }] : [])];
   const tagPanels = panelsFromCircuits(circuits);
-  type PanelPlan = { label: string; point: Pt | null; offSheet: boolean; candidates: Array<{ text: string; point: Pt }>; circuits: PlannedCircuit[] };
+  type PanelPlan = { label: string; point: Pt | null; offSheet: boolean; candidates: Array<{ text: string; point: Pt }>; circuits: PlannedCircuit[]; riser?: PanelRiser };
   const resolvePanel = (label: string, given?: { x?: number; y?: number; offSheet?: boolean }): Omit<PanelPlan, 'circuits'> => {
     if (given?.offSheet) return { label, point: null, offSheet: true, candidates: [] };
     if (typeof given?.x === 'number' && typeof given?.y === 'number') return { label, point: toDisplay({ x: given.x, y: given.y }), offSheet: false, candidates: [] };
@@ -522,8 +624,9 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   if (!usedTags && needLocation.length && !panelPlans[0].label) missing.push('panel_label');
   if (!input.settings?.wiringMethod && !specMethod) missing.push('wiring_method');
   // The sheet names elevators / stairs / shafts we couldn't outline: let the user mark them.
-  const troubleWithObstacles = routing.obstacleMentions > routing.obstacles.filter(o => !o.approximate).length;
-  if (input.keepClear === undefined && troubleWithObstacles) missing.push('keep_clear');
+  // Hybrid: the AI drafts boxes from the room labels and the user confirms / adjusts them on the
+  // card (and can add more) before anything is routed around them.
+  if (input.keepClear === undefined && (routing.obstacles.length || routing.obstacleMentions)) missing.push('keep_clear');
   // Circuiting needs a load per fixture; never stop the run over it — ask on the same card.
   const hasLoad = input.autoCircuits?.vaPerDevice != null
     || (input.circuits?.length && input.circuits.every(c => c.loadVA != null || c.vaPerDevice != null || c.loadAmps != null));
@@ -552,6 +655,14 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
       recommendedWiring: specMethod,
       obstacleMentions: routing.obstacleMentions,
       obstaclesFound: routing.obstacles.length,
+      suggestedAreas: routing.obstacles.map(o => ({
+        x: round1((o.box.x / W) * 100),
+        y: round1((o.box.y / H) * 100),
+        width: round1((o.box.width / W) * 100),
+        height: round1((o.box.height / H) * 100),
+        label: o.label,
+        ...(o.approximate ? { approximate: true } : {}),
+      })),
     };
   }
 
@@ -593,12 +704,15 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     necEdition: input.settings?.necEdition ?? code.edition,
   } as RunSettings;
 
-  // Circuits on a different plan view than their panel (another floor) home-run to the edge of
-  // their own plan, tagged for the panel.
+  // Circuits on a different plan view than their panel (another floor of a multi-story
+  // building): the home run goes to a riser on its own floor — stacked over the panel — then
+  // up/down to the panel, with a continuation symbol on both floors.
+  const floorToFloorFt = input.settings?.floorToFloorFt ?? 12;
   if (viewBoxes.length > 1) {
     panelPlans = panelPlans.flatMap(pp => {
       if (!pp.point || pp.offSheet) return [pp];
-      const panelView = viewOf(pp.point);
+      const panelPoint = pp.point;
+      const panelView = viewOf(panelPoint);
       if (panelView < 0) return [pp];
       const majority = (c: PlannedCircuit) => {
         const counts = new Map<number, number>();
@@ -606,17 +720,30 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
         return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? -1;
       };
       const here = pp.circuits.filter(c => { const v = majority(c); return v === panelView || v < 0; });
-      const away = pp.circuits.filter(c => !here.includes(c));
-      return away.length
-        ? [{ ...pp, circuits: here }, { label: pp.label, point: null, offSheet: true, candidates: [], circuits: away }]
-        : [pp];
+      const awayByView = new Map<number, PlannedCircuit[]>();
+      for (const c of pp.circuits) {
+        if (here.includes(c)) continue;
+        const v = majority(c);
+        awayByView.set(v, [...(awayByView.get(v) || []), c]);
+      }
+      if (!awayByView.size) return [pp];
+      const out: PanelPlan[] = [{ ...pp, circuits: here }];
+      for (const [v, away] of awayByView) {
+        const riser = riserBetween(viewBoxes[panelView], viewBoxes[v], panelPoint, viewLevels[panelView], viewLevels[v], floorToFloorFt);
+        out.push({
+          label: pp.label, point: riser.point, offSheet: false, candidates: [], circuits: away,
+          riser: { ...riser, panelPoint },
+        });
+      }
+      return out;
     }).filter(pp => pp.circuits.length);
   }
 
   const plan = planAllPanels({
     page, zones, panelPlans, settings, ftPerPt, scaleSource, extraObstacles: userKeepClear, allowed: routing.allowed,
+    keepClearConfirmed: !!input.keepClearConfirmed && input.keepClear !== undefined,
   });
-  const markups = buildRunMarkups(plan, circuits, settings, geometry, input.page);
+  const markups = buildRunMarkups(plan, circuits, settings, geometry, input.page, anchorByPoint);
   const materials = materialTotals(plan.runs.map(run => ({ assembly: run.assembly, lengthFt: run.lengthFt })));
   const homeRuns = plan.runs.filter(r => r.kind === 'homerun');
   const codeLine = `${code.summary}${location ? ` Project: ${location.text}.` : ''}`;
@@ -678,19 +805,20 @@ type PlannedRunWithMaterials = PlannedRun & { assembly: RunAssembly | null; pane
 type MultiPanelPlan = Omit<RunPlan, 'runs'> & {
   loadCenterFt: Record<string, number>;
   runs: PlannedRunWithMaterials[];
-  panels: Array<{ label: string; point: Pt; offSheet: boolean }>;
+  panels: Array<{ label: string; point: Pt; offSheet: boolean; riser?: PanelRiser }>;
 };
 
 /** One planRuns pass per panel; home runs numbered across panels. */
 function planAllPanels(options: {
   page: ZonePageInput;
   zones: PageZone[];
-  panelPlans: Array<{ label: string; point: Pt | null; offSheet: boolean; circuits: PlannedCircuit[] }>;
+  panelPlans: Array<{ label: string; point: Pt | null; offSheet: boolean; circuits: PlannedCircuit[]; riser?: PanelRiser }>;
   settings: RunSettings;
   ftPerPt: number;
   scaleSource: string;
   extraObstacles: Obstacle[];
   allowed: Box[];
+  keepClearConfirmed?: boolean;
 }): MultiPanelPlan {
   const runs: PlannedRunWithMaterials[] = [];
   const obstacles: Obstacle[] = [];
@@ -714,7 +842,9 @@ function planAllPanels(options: {
       ftPerPt: options.ftPerPt,
       scaleSource: options.scaleSource,
       extraObstacles: options.extraObstacles,
+      keepClearConfirmed: options.keepClearConfirmed,
       panelOffSheet: pp.offSheet || !pp.point,
+      ...(pp.riser ? { riser: { ft: pp.riser.ft, text: riserText(label, pp.riser) } } : {}),
     });
     const renumber = new Map<string, string>();
     for (const run of plan.runs) {
@@ -746,7 +876,7 @@ function planAllPanels(options: {
     warnings.push(...plan.warnings.map(w => w.replace(/^HR\d+/, m => renumber.get(m) || m)));
     plan.codeRefs.forEach(ref => codeRefs.add(ref));
     Object.assign(loadCenterFt, plan.loadCenterFt || {});
-    panels.push({ label, point, offSheet: pp.offSheet || !pp.point });
+    panels.push({ label, point, offSheet: pp.offSheet || !pp.point, ...(pp.riser ? { riser: pp.riser } : {}) });
   }
   return {
     runs,
@@ -766,6 +896,7 @@ function buildRunMarkups(
   settings: RunSettings,
   geometry: PageGeometry,
   pageNumber: number,
+  anchorByPoint: Map<string, string> = new Map(),
 ): Array<{ page: number; markup: CanvasMarkup }> {
   const identity: PageGeometry = { ...geometry, renderScale: 1 };
   const toDoc = (p: Pt) => renderToDoc(p, identity);
@@ -809,8 +940,47 @@ function buildRunMarkups(
     out.push({ page: pageNumber, markup: rect });
   }
 
+  // Floor-to-floor continuations: a riser symbol where the home runs leave this floor, and a
+  // matching one at the panel on the other floor.
+  const riserSize = docMax * 0.007;
+  const riserMarkup = (at: Pt, text: string, riser: PanelRiser, panel: string, role: 'leave' | 'arrive'): RectangleMarkup => {
+    const c = toDoc(at);
+    const direction = role === 'leave' ? riser.direction : riser.direction === 'up' ? 'down' : 'up';
+    return {
+      ...base,
+      id: `run_riser_${crypto.randomUUID()}`,
+      type: 'ellipse',
+      x: c.x - riserSize / 2,
+      y: c.y - riserSize / 2,
+      width: riserSize,
+      height: riserSize,
+      style: style(RUN_COLOR, 'rgba(255, 255, 255, 0.9)', Math.max(1.2, docMax * 0.0008), 100),
+      label: text,
+      aiNote: role === 'leave'
+        ? `Home runs rise/drop here to panel ${panel}${riser.toLevel ? ` on ${riser.toLevel}` : ''}: +${Math.round(riser.ft)} ft vertical per run (${riser.levels} floor${riser.levels > 1 ? 's' : ''}).`
+        : `Home runs from ${riser.fromLevel || 'the other floor'} arrive at panel ${panel} here.`,
+      aiRun: {
+        runId: `riser-${panel}-${role}`,
+        kind: 'riser',
+        ftPerPt: plan.ftPerPt,
+        lengthFt: 0,
+        panel,
+        riser: { direction, fromLevel: riser.fromLevel, toLevel: riser.toLevel, panel },
+        summary: text,
+      },
+    };
+  };
   for (const panel of plan.panels) {
-    if (panel.offSheet) continue;
+    if (!panel.riser) continue;
+    const r = panel.riser;
+    out.push({ page: pageNumber, markup: riserMarkup(r.point, riserText(panel.label, r), r, panel.label, 'leave') });
+    const offset = { x: r.panelPoint.x + riserSize * 1.6, y: r.panelPoint.y - riserSize * 1.6 };
+    const from = `${r.direction === 'up' ? '↓' : '↑'} from ${r.fromLevel || 'other floor'}`;
+    out.push({ page: pageNumber, markup: riserMarkup(offset, from, r, panel.label, 'arrive') });
+  }
+
+  for (const panel of plan.panels) {
+    if (panel.offSheet || panel.riser) continue;
     const c = toDoc(panel.point);
     const size = Math.max(geometry.docWidth, geometry.docHeight) * 0.006;
     const rect: RectangleMarkup = {
@@ -869,6 +1039,8 @@ function buildRunMarkups(
         lengthFt: run.lengthFt,
         panel: run.panelLabel,
         ...(curve ? { curve: true, footageFactor } : {}),
+        ...(anchorsFor(run, anchorByPoint) ? { anchors: anchorsFor(run, anchorByPoint) } : {}),
+        ...(run.riserFt ? { riserFt: run.riserFt } : {}),
         ...(isHome && offSheet ? { offSheet: true } : {}),
         ...(run.assembly ? { assembly: { key: run.assembly.key, name: run.assembly.name, materials: run.assembly.materials } } : {}),
         circuits: isHome ? runCircuits : undefined,
@@ -886,6 +1058,18 @@ function buildRunMarkups(
     out.push({ page: pageNumber, markup });
   }
   return out;
+}
+
+/** Stable key for a display point (anchors map fixtures → their count marker). */
+export function pointKey(p: Pt): string {
+  return `${Math.round(p.x * 10)}:${Math.round(p.y * 10)}`;
+}
+
+function anchorsFor(run: PlannedRun, anchorByPoint: Map<string, string>): { start?: string; end?: string } | undefined {
+  const start = run.fromPt ? anchorByPoint.get(pointKey(run.fromPt)) : undefined;
+  const end = run.kind === 'branch' && run.toPt ? anchorByPoint.get(pointKey(run.toPt)) : undefined;
+  if (!start && !end) return undefined;
+  return { ...(start ? { start } : {}), ...(end ? { end } : {}) };
 }
 
 function style(strokeColor: string, fillColor: string, strokeWidth: number, opacity: number): MarkupStyle {

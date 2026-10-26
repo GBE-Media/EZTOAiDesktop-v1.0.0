@@ -1,4 +1,5 @@
 import type { CanvasMarkup } from '@/types/markup';
+import { runProductFeet } from '@/services/ai/runs/runMaterials';
 import type { LinkedMeasurement } from '@/types/product';
 
 /**
@@ -47,7 +48,7 @@ export function buildMeasurementFromMarkup(
       documentId,
       page: markup.page,
       type: 'length',
-      value: Math.round((markup.aiRun.lengthFt || 0) * 10) / 10,
+      value: runProductFeet(markup.aiRun.assembly, markup.aiRun.lengthFt || 0),
       unit: 'ft',
     };
   }

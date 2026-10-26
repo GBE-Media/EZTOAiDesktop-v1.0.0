@@ -163,6 +163,7 @@ export function applyFieldAnswers(
         y: round1(area.yPct),
         width: round1(area.wPct),
         height: round1(area.hPct),
+        ...(area.label ? { label: area.label } : {}),
       })));
       continue;
     }

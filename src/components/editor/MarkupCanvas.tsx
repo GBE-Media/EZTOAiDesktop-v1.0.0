@@ -27,7 +27,8 @@ import {
   getWordsFromTextItems,
 } from '@/lib/pdfLoader';
 import type { 
-  CanvasMarkup, 
+  CanvasMarkup,
+  AiRunMeta,
   Point, 
   RectangleMarkup, 
   LineMarkup, 
@@ -39,6 +40,8 @@ import type {
 } from '@/types/markup';
 import { TextEditOverlay } from './TextEditOverlay';
 import { isRunMarkup, recomputeRunMarkup } from '@/services/ai/runs/overlay';
+import { runProductFeet } from '@/services/ai/runs/runMaterials';
+import { followAnchoredRuns } from '@/services/ai/runs/anchors';
 import { countMarkerCaption, resolveMarkupDrawAppearance } from './markupDrawAppearance';
 import { getCachedPageZones } from '@/services/ai/detection/pageZones';
 import { pageGeometryFromUnrotated, visionDisplayPctRectToDoc } from '@/services/ai/placement/visionDisplayPctToDoc';
@@ -415,11 +418,11 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
 
     // Areas the user dragged for an AI question card (and the one being dragged).
     const areaGeometry = pickGeometry(currentPage);
-    const areasHere = Object.values(pickAreas).flat().filter(a => a.page === currentPage && (!a.documentId || a.documentId === activeDocId));
+    const areasHere = Object.values(pickAreas).flatMap(list => list.map((a, i) => ({ ...a, n: i + 1 }))).filter(a => a.page === currentPage && (!a.documentId || a.documentId === activeDocId));
     const areaRects = areasHere.map(a => {
       const p1 = visionDisplayPctToDoc({ x: a.xPct, y: a.yPct }, areaGeometry);
       const p2 = visionDisplayPctToDoc({ x: a.xPct + a.wPct, y: a.yPct + a.hPct }, areaGeometry);
-      return { x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), w: Math.abs(p2.x - p1.x), h: Math.abs(p2.y - p1.y) };
+      return { x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), w: Math.abs(p2.x - p1.x), h: Math.abs(p2.y - p1.y), n: a.n as number | undefined, label: a.label };
     });
     if (areaDrag) {
       areaRects.push({
@@ -427,6 +430,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         y: Math.min(areaDrag.start.y, areaDrag.current.y),
         w: Math.abs(areaDrag.current.x - areaDrag.start.x),
         h: Math.abs(areaDrag.current.y - areaDrag.start.y),
+        n: undefined,
+        label: undefined,
       });
     }
     if (areaRects.length) {
@@ -439,6 +444,18 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         ctx.setLineDash([6 * s, 4 * s]);
         ctx.fillRect(r.x, r.y, r.w, r.h);
         ctx.strokeRect(r.x, r.y, r.w, r.h);
+        if (r.n) {
+          // Number matches the chip on the question card (remove a wrong one there).
+          ctx.setLineDash([]);
+          ctx.font = `600 ${11 * s}px Inter, sans-serif`;
+          const text = r.label ? `${r.n} ${r.label}` : String(r.n);
+          const tw = ctx.measureText(text).width + 8 * s;
+          ctx.fillStyle = '#b45309';
+          ctx.fillRect(r.x, r.y - 16 * s, tw, 16 * s);
+          ctx.fillStyle = '#ffffff';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(text, r.x + 4 * s, r.y - 8 * s);
+        }
       });
       ctx.restore();
     }
@@ -722,6 +739,30 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           ctx.fill();
         }
         ctx.stroke();
+        if (m.aiRun?.kind === 'riser' && !isEraserHovered) {
+          // Riser / floor continuation: arrow inside the circle (up or down) + paper-unit tag.
+          const cx = m.x + m.width / 2;
+          const cy = m.y + m.height / 2;
+          const r = Math.min(m.width, m.height) / 2;
+          const dir = m.aiRun.riser?.direction === 'up' ? -1 : 1;
+          ctx.save();
+          ctx.globalAlpha = 1;
+          ctx.strokeStyle = m.style.strokeColor;
+          ctx.fillStyle = m.style.strokeColor;
+          ctx.lineWidth = Math.max(1, m.style.strokeWidth);
+          ctx.beginPath();
+          ctx.moveTo(cx, cy - dir * r * 0.6);
+          ctx.lineTo(cx, cy + dir * r * 0.6);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(cx, cy + dir * r * 0.75);
+          ctx.lineTo(cx - r * 0.35, cy + dir * r * 0.25);
+          ctx.lineTo(cx + r * 0.35, cy + dir * r * 0.25);
+          ctx.closePath();
+          ctx.fill();
+          ctx.restore();
+          if (m.label) drawPaperTag(ctx, m.label, { x: m.x + m.width * 1.15, y: m.y }, '#1e3a8a', Math.max(6, m.style.strokeWidth * 4.5));
+        }
         break;
       }
       
@@ -1621,7 +1662,20 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     if (next) {
       updateMarkup(currentPage, id, { label: next.label, aiNote: next.aiNote, aiRun: next.aiRun } as Partial<CanvasMarkup>);
       // Keep the linked product's footage in step with the edited run.
-      if (next.aiRun?.lengthFt != null) useProductStore.getState().updateMeasurementValueByMarkupId(id, next.aiRun.lengthFt);
+      if (next.aiRun?.lengthFt != null) useProductStore.getState().updateMeasurementValueByMarkupId(id, runProductFeet(next.aiRun.assembly, next.aiRun.lengthFt));
+    }
+  };
+
+  const followMovedFixtures = (ids: string[]) => {
+    if (!ids.length) return;
+    const canvasState = useCanvasStore.getState();
+    const pageMarkups = canvasState.getMarkupsByPage(canvasState.activeDocId || undefined)[currentPage] || [];
+    for (const row of followAnchoredRuns(pageMarkups, ids)) {
+      updateMarkup(currentPage, row.id, row.updates);
+      const latest = (row.updates as Partial<CanvasMarkup> & { aiRun?: AiRunMeta }).aiRun;
+      if (row.lengthFt != null) {
+        useProductStore.getState().updateMeasurementValueByMarkupId(row.id, runProductFeet(latest?.assembly, row.lengthFt));
+      }
     }
   };
 
@@ -2268,6 +2322,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       setIsDragging(false);
       endEditorInteraction();
       setDragStart(null);
+      // Suggested runs tied to a moved fixture follow it.
+      followMovedFixtures(selectedMarkupIds);
       return;
     }
     
@@ -2621,14 +2677,31 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-violet-500/50 bg-popover/95 px-4 py-2 text-sm shadow-xl backdrop-blur">
             <span className="h-2 w-2 animate-pulse rounded-full bg-violet-500" />
             <span className="text-foreground">{pickRequest.label}</span>
-            <span className="text-xs text-muted-foreground">Esc to cancel</span>
-            <button
-              type="button"
-              className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
-              onClick={() => useDrawingPickStore.getState().cancel()}
-            >
-              Cancel
-            </button>
+            {pickRequest.mode === 'area' ? (
+              <>
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {(pickAreas[pickRequest.key] || []).length} marked · drag another box
+                </span>
+                <button
+                  type="button"
+                  className="rounded-full border border-border px-2 py-0.5 text-xs text-foreground hover:bg-accent"
+                  onClick={() => useDrawingPickStore.getState().cancel()}
+                >
+                  Done
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="text-xs text-muted-foreground">Esc to cancel</span>
+                <button
+                  type="button"
+                  className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => useDrawingPickStore.getState().cancel()}
+                >
+                  Cancel
+                </button>
+              </>
+            )}
           </div>
         </div>,
         document.body

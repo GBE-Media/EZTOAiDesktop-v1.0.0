@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { getCountedItemIds } from '../agent/pageAnalysisCache';
 
 /**
  * Zod schemas for assistant mutation tools.
@@ -136,12 +137,17 @@ export const placeMarkupsSchema = z.preprocess(
       analysisId: z.string().min(1),
     }).optional(),
     includeReviewMarkers: z.boolean().optional(),
+    /** Place every item from the count (with analysisRef + page) — no need to list itemIds. */
+    allCounted: z.boolean().optional(),
+    /** Only the listed (review) items — don't add the confirmed counts. */
+    reviewOnly: z.boolean().optional(),
   }).superRefine((value, ctx) => {
     const hasRows = Boolean(
       value.markups?.length
       || value.pointers?.length
       || value.callouts?.length
-      || value.itemIds?.length,
+      || value.itemIds?.length
+      || value.allCounted,
     );
     if (!hasRows) {
       ctx.addIssue({
@@ -149,7 +155,7 @@ export const placeMarkupsSchema = z.preprocess(
         message: 'place_markups requires markups, pointers, callouts, or itemIds',
       });
     }
-    if (value.itemIds?.length) {
+    if (value.itemIds?.length || value.allCounted) {
       if (value.page == null) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -300,14 +306,34 @@ export const applyMaterialCountAdjustmentsSchema = z.object({
   )).min(1),
 });
 
+/**
+ * Counted items to place. Large counts are trimmed before the model sees them, so it often only
+ * has the (short) unresolved list: unless the user asked for review markers only, placing from a
+ * count always includes every confirmed item of that count.
+ */
+export function expandCountedItemIds(input: z.infer<typeof placeMarkupsSchema>): string[] {
+  const listed = input.itemIds || [];
+  const counted = getCountedItemIds(input.analysisRef?.analysisId);
+  if (!counted) return listed;
+  if (input.allCounted) {
+    return [...new Set([...counted.matching, ...(input.includeReviewMarkers ? counted.unresolved : []), ...listed])];
+  }
+  if (!listed.length || input.reviewOnly) return listed;
+  const unresolved = new Set(counted.unresolved);
+  const onlyReview = listed.every(id => unresolved.has(id));
+  if (onlyReview && input.includeReviewMarkers) return [...new Set([...counted.matching, ...listed])];
+  return listed;
+}
+
 /** Extract the approval.payload value forwarded to canvas adapters. */
 export function approvalPayloadFromPlaceMarkups(
   input: z.infer<typeof placeMarkupsSchema>,
 ): unknown {
   const documentId = input.documentId ?? input.analysisRef?.docId;
-  if (input.itemIds?.length) {
+  const itemIds = expandCountedItemIds(input);
+  if (itemIds.length) {
     return {
-      itemIds: input.itemIds,
+      itemIds,
       page: input.page,
       analysisRef: input.analysisRef,
       includeReviewMarkers: input.includeReviewMarkers,

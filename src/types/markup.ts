@@ -76,7 +76,7 @@ export interface AiRunCircuit {
 
 export interface AiRunMeta {
   runId: string;
-  kind: 'homerun' | 'branch' | 'keepout' | 'panel';
+  kind: 'homerun' | 'branch' | 'keepout' | 'panel' | 'riser';
   /** Panel this run belongs to (from the engineer's circuit tags or the user). */
   panel?: string;
   /** Home run continues to a panel on another sheet. */
@@ -87,6 +87,15 @@ export interface AiRunMeta {
    */
   curve?: boolean;
   footageFactor?: number;
+  /**
+   * Count markers this run is tied to (start / end fixture). Moving the fixture moves the end
+   * of the string with it.
+   */
+  anchors?: { start?: string; end?: string };
+  /** Vertical footage added for a floor-to-floor riser (multi-story home runs). */
+  riserFt?: number;
+  /** Riser / continuation: which way the run leaves this floor and where it goes. */
+  riser?: { direction: 'up' | 'down'; fromLevel?: string; toLevel?: string; panel?: string };
   /** What each foot of the run is made of (linked to a product on placement). */
   assembly?: { key: string; name: string; materials: Array<{ name: string; unit: 'ft'; perFt: number }> };
   /** Feet per document point used for lengths. */

@@ -25,6 +25,11 @@ const OBSTACLE_PATTERNS: Array<{ kind: Obstacle['kind']; re: RegExp }> = [
   { kind: 'opening', re: /\b(OPEN\s+TO\s+BELOW|OPEN\s+BELOW|ATRIUM|SKYLIGHT)\b/i },
 ];
 
+/** "T.O. ELEV 112'-0\"", "ELEV. +10'", "FF ELEV" — a height callout, not an elevator. */
+export function isElevationMark(text: string): boolean {
+  return /\d\s*['′]|[+-]\s*\d|\b(T\.?\s?O\.?|B\.?\s?O\.?|F\.?\s?F\.?|FIN(ISH)?\.?\s*FLR|TOP\s+OF)\b/i.test(text);
+}
+
 /** Grid raster of wall/vector segments. */
 export class SegmentRaster {
   readonly cell: number;
@@ -95,6 +100,8 @@ export function detectObstacles(input: ZonePageInput, within?: Box[], excluded?:
     if (text.length > 30) continue; // labels, not notes
     const hit = OBSTACLE_PATTERNS.find(p => p.re.test(text));
     if (!hit) continue;
+    // Elevation marks ("T.O. ELEV 112'-0\"", "ELEV +10'") aren't elevators.
+    if (hit.kind === 'elevator' && isElevationMark(text)) continue;
     const center = { x: item.x + item.width / 2, y: item.y + item.height / 2 };
     if (within?.length && !within.some(box => pointIn(center, box))) continue;
     if (excluded?.some(box => pointIn(center, box))) continue;
@@ -104,7 +111,8 @@ export function detectObstacles(input: ZonePageInput, within?: Box[], excluded?:
     const maxSide = Math.max(W, H) * 0.08;
     if (room && (room.width > maxSide || room.height > maxSide)) room = null;
     const fh = item.fontHeight || item.height || 8;
-    const fallbackSize = Math.max(item.width * 2.2, fh * 14);
+    // No closed room around the label: a modest draft box on the label (the user confirms it).
+    const fallbackSize = Math.max(item.width * 1.6, fh * 8);
     const box = room || {
       x: center.x - fallbackSize / 2,
       y: center.y - fallbackSize / 2,

@@ -62,7 +62,7 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
       const list = pickedAreas[`${keyPrefix}${field.id}`];
       setAnswers(prev => {
         const current = prev[field.id]?.areas;
-        if ((current?.length || 0) === (list?.length || 0)) return prev;
+        if (current === list || (!current?.length && !list?.length)) return prev;
         const next = { ...prev };
         if (list?.length) next[field.id] = { areas: list };
         else delete next[field.id];
@@ -71,10 +71,21 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
     }
   }, [fields, keyPrefix, pickedAreas]);
 
+  // AI-drafted keep-clear boxes: pre-marked on the drawing; the user keeps, removes or adds.
+  useEffect(() => {
+    if (!isPending) return;
+    for (const field of fields) {
+      if (field.kind === 'area' && field.suggestedAreas?.length) {
+        useDrawingPickStore.getState().seedAreas(`${keyPrefix}${field.id}`, field.suggestedAreas);
+      }
+    }
+  }, [fields, keyPrefix, isPending]);
+
   useEffect(() => () => {
-    // Leaving the card mid-pick: stop pick mode.
+    // Leaving the card mid-pick: stop point picks. Area mode stays on (the pill on the drawing
+    // has Done) so a re-render of the chat never cuts off marking more boxes.
     const state = useDrawingPickStore.getState();
-    if (state.request?.key.startsWith(keyPrefix)) state.cancel();
+    if (state.request?.key.startsWith(keyPrefix) && state.request.mode !== 'area') state.cancel();
   }, [keyPrefix]);
 
   if (!isPending) {
@@ -219,34 +230,54 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
             )}
 
             {field.kind === 'area' && (
-              <div className="flex flex-wrap items-center gap-1.5 pl-5">
-                {picking ? (
-                  <>
-                    <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-[11px] text-foreground">
-                      <SquareDashed className="h-3 w-3 animate-pulse text-amber-500" />
-                      Drag a box on the drawing{answer?.areas?.length ? ` · ${answer.areas.length} marked` : ''}
-                    </span>
-                    <button type="button" className={chip(false)} onClick={() => useDrawingPickStore.getState().cancel()}>
-                      <Check className="mr-1 inline h-3 w-3 align-[-2px]" />Done
-                    </button>
-                  </>
-                ) : answer?.areas?.length ? (
-                  <>
-                    <span className="inline-flex items-center gap-1 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[11px] text-foreground">
-                      <SquareDashed className="h-3 w-3 text-emerald-500" />
-                      {answer.areas.length} area{answer.areas.length === 1 ? '' : 's'} marked
-                    </span>
-                    <button type="button" className={chip(false)} onClick={() => startPick(field, 'area')}>Add another</button>
-                    <button type="button" className={chip(false)} onClick={() => useDrawingPickStore.getState().clearAreas(pickKey)}>
-                      <X className="mr-1 inline h-3 w-3 align-[-2px]" />Clear
-                    </button>
-                  </>
-                ) : (
-                  <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" disabled={submitting} onClick={() => startPick(field, 'area')}>
-                    <SquareDashed className="h-3.5 w-3.5" />
-                    Mark on drawing
-                  </Button>
+              <div className="space-y-1.5 pl-5">
+                {!!answer?.areas?.length && (
+                  <div className="flex flex-wrap gap-1">
+                    {answer.areas.map((area, i) => (
+                      <span
+                        key={`${i}-${area.xPct}-${area.yPct}`}
+                        className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 py-0.5 pl-2 pr-1 text-[11px] text-foreground"
+                      >
+                        <span className="tabular-nums text-muted-foreground">{i + 1}</span>
+                        {area.label || 'Keep clear'}
+                        <button
+                          type="button"
+                          aria-label={`Remove area ${i + 1}`}
+                          disabled={submitting}
+                          className="rounded p-0.5 text-muted-foreground hover:bg-amber-500/20 hover:text-foreground"
+                          onClick={() => useDrawingPickStore.getState().removeArea(pickKey, i)}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
                 )}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {picking ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-[11px] text-foreground">
+                        <SquareDashed className="h-3 w-3 animate-pulse text-amber-500" />
+                        Drag a box on the drawing — as many as you need
+                      </span>
+                      <button type="button" className={chip(false)} onClick={() => useDrawingPickStore.getState().cancel()}>
+                        <Check className="mr-1 inline h-3 w-3 align-[-2px]" />Done
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" disabled={submitting} onClick={() => startPick(field, 'area')}>
+                        <SquareDashed className="h-3.5 w-3.5" />
+                        {answer?.areas?.length ? 'Add areas' : 'Mark on drawing'}
+                      </Button>
+                      {!!answer?.areas?.length && (
+                        <button type="button" className={chip(false)} disabled={submitting} onClick={() => useDrawingPickStore.getState().clearAreas(pickKey)}>
+                          <X className="mr-1 inline h-3 w-3 align-[-2px]" />Clear all
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             )}
 

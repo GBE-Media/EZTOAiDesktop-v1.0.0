@@ -73,7 +73,35 @@ export function runAssembly(run: PlannedRun, settings: RunSettings, circuitSizin
   return { key: `run:${name}`, name, materials };
 }
 
+/**
+ * MC runs that carry a single cable type are taken off as that cable (feet of cable), so
+ * "2× MC Cable 12/2+G" over 100 ft is 200 ft of the "MC Cable 12/2+G" product — the same
+ * number the material table reports.
+ */
+export function singleCable(assembly: Pick<RunAssembly, 'materials'> | null | undefined): { name: string; perFt: number } | null {
+  if (!assembly || assembly.materials.length !== 1) return null;
+  const only = assembly.materials[0];
+  return /^MC Cable /.test(only.name) ? { name: only.name, perFt: only.perFt } : null;
+}
+
+/** Feet of product a run contributes (cable feet for single-cable MC runs). */
+export function runProductFeet(assembly: Pick<RunAssembly, 'materials'> | null | undefined, lengthFt: number): number {
+  const cable = singleCable(assembly);
+  return Math.round(lengthFt * (cable ? cable.perFt : 1) * 10) / 10;
+}
+
 export function assemblyProductSpec(assembly: RunAssembly, kind: 'homerun' | 'branch'): TakeoffProductSpec {
+  const cable = singleCable(assembly);
+  if (cable) {
+    return {
+      key: `run:${cable.name}`,
+      name: cable.name,
+      folder: 'MC Cable',
+      unit: 'ft',
+      description: `${cable.name}, feet of cable (home runs count each cable in the bundle)`,
+      components: [{ name: cable.name, quantity: 1, unit: 'ft', componentType: 'product' as const, sortOrder: 0 }],
+    };
+  }
   return {
     key: assembly.key,
     name: assembly.name,
