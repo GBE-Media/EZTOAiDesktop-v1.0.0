@@ -22,7 +22,7 @@ import {
   type RunPlan,
   type RunSettings,
 } from './planRuns';
-import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, parseCircuitTag, suggestPanels } from './circuitTags';
+import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, panelsTaggedOnSheet, parseCircuitTag, suggestPanels } from './circuitTags';
 import { materialTotals, runAssembly, type RunAssembly } from './runMaterials';
 import { getLatestFullPageAnalysis, itemIsUnresolvedForCounts } from '../agent/pageAnalysisCache';
 import { formatSize } from './necTables';
@@ -170,6 +170,8 @@ export interface RunInputNeeded {
   panelArgs: Array<{ label: string; x?: number; y?: number; offSheet?: boolean }>;
   candidates: Array<{ text: string; x: number; y: number }>;
   panelNames: string[];
+  /** Where the panel options came from (circuit tags on the sheet, panel schedules). */
+  panelHint?: string;
   recommendedWiring?: WiringMethodValue;
   obstacleMentions?: number;
   obstaclesFound?: number;
@@ -200,9 +202,13 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
     fields.push({
       id: 'panel_label',
       kind: needed.panelNames.length ? 'choice' : 'text',
-      prompt: 'Which panel do these home runs go to?',
+      prompt: needed.panelHint ? `Which panel do these home runs go to? ${needed.panelHint}` : 'Which panel do these home runs go to?',
       ...(needed.panelNames.length
-        ? { options: needed.panelNames.map(name => ({ id: `panel_${name}`, label: `Panel ${name}`, value: name })) }
+        ? {
+          options: needed.panelNames.map(name => ({ id: `panel_${name}`, label: `Panel ${name}`, value: name })),
+          recommended: needed.panelNames[0],
+          placeholder: 'Or type the panel name',
+        }
         : { placeholder: 'e.g. LP-1' }),
     });
     apply.panel_label = 'panel.label';
@@ -532,7 +538,9 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const modelCircuitsAreTags = circuits.length > 1 && circuits.every(c => !!c.panel);
   const lumped = circuits.length <= 1 || circuits.some(c => c.devices.length > 24);
   let usedTags = false;
-  if (tagged && tagged.circuits.length && tagged.coverage >= 0.3 && (!circuits.length || lumped || !modelCircuitsAreTags)) {
+  // Partial tagging still counts: engineers often tag one fixture per group.
+  const tagsUsable = !!tagged && tagged.circuits.length > 0 && (tagged.coverage >= 0.3 || (tagged.circuits.length >= 2 && tagged.coverage >= 0.12));
+  if (tagged && tagsUsable && (!circuits.length || lumped || !modelCircuitsAreTags)) {
     const extra = tagged.untagged.length
       ? autoCircuit(tagged.untagged.map(d => d.point), page, { ...loadDefaults, breakerAmps: 20, useCircuitTags: false })
       : [];
@@ -585,6 +593,12 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const normLabel = (t?: string) => (t || '').toUpperCase().replace(/^PANEL\s*/, '').replace(/[^A-Z0-9]/g, '');
   const givenPanels = [...(input.panels || []), ...(input.panel ? [{ ...input.panel, label: input.panel.label || '' }] : [])];
   const tagPanels = panelsFromCircuits(circuits);
+  // Circuits that name their panel (engineer tags read from the sheet, or circuits like "B-4"
+  // the model passed) get one set of home runs per panel — never a "which panel?" question.
+  const namedPanels = [...(input.panels || []), ...(input.panel ? [input.panel] : [])].map(p => normLabel(p.label)).filter(Boolean);
+  // An explicit panel the tags don't mention (the user's choice) wins over the circuit names.
+  const perPanel = tagPanels.length > 0
+    && (usedTags || !namedPanels.length || namedPanels.some(n => tagPanels.some(t => normLabel(t.panel) === n)));
   type PanelPlan = { label: string; point: Pt | null; offSheet: boolean; candidates: Array<{ text: string; point: Pt }>; circuits: PlannedCircuit[]; riser?: PanelRiser };
   const resolvePanel = (label: string, given?: { x?: number; y?: number; offSheet?: boolean }): Omit<PanelPlan, 'circuits'> => {
     if (given?.offSheet) return { label, point: null, offSheet: true, candidates: [] };
@@ -593,7 +607,7 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     return { label, point: candidates.length === 1 ? candidates[0].point : null, offSheet: false, candidates };
   };
   let panelPlans: PanelPlan[];
-  if (usedTags && tagPanels.length) {
+  if (perPanel) {
     const top = tagPanels.slice(0, 6);
     panelPlans = top.map(row => {
       const given = givenPanels.find(p => normLabel(p.label) === normLabel(row.panel))
@@ -621,7 +635,19 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const missing: RunInputNeeded['missing'] = [];
   const needLocation = panelPlans.filter(p => !p.point && !p.offSheet);
   if (needLocation.length) missing.push('panel_location');
-  if (!usedTags && needLocation.length && !panelPlans[0].label) missing.push('panel_label');
+  if (!perPanel && needLocation.length && !panelPlans[0].label) missing.push('panel_label');
+  // Which panel: the circuit tags printed on this sheet first, then the panel schedules.
+  const sheetTagPanels = panelsTaggedOnSheet(page.textItems, scheduleNames);
+  const panelSuggestions = suggestPanels(
+    [...new Set([...panelsFromCircuits(circuits).map(r => r.panel), ...sheetTagPanels.map(r => r.panel)])],
+    scheduleNames,
+  );
+  const panelHint = [
+    sheetTagPanels.length
+      ? `Circuit tags on this sheet: ${sheetTagPanels.slice(0, 3).map(r => `${r.examples.join(', ')}${r.tags > r.examples.length ? '…' : ''} (panel ${r.panel})`).join('; ')}.`
+      : 'No panel-circuit tags printed next to these fixtures.',
+    scheduleNames.length ? `Panel schedules list ${scheduleNames.slice(0, 6).join(', ')}.` : 'No panel schedule found in the indexed sheets.',
+  ].join(' ');
   if (!input.settings?.wiringMethod && !specMethod) missing.push('wiring_method');
   // The sheet names elevators / stairs / shafts we couldn't outline: let the user mark them.
   // Hybrid: the AI drafts boxes from the room labels and the user confirms / adjusts them on the
@@ -640,18 +666,17 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
       page: input.page,
       missing,
       panelLabel: panelPlans[0].label || undefined,
-      panels: usedTags
+      panels: perPanel
         ? panelPlans.flatMap((p, index) => (!p.point && !p.offSheet
           ? [{ label: p.label, index, circuits: p.circuits.map(c => c.id), candidates: p.candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })), scheduled: scheduleNames.includes(p.label) }]
           : []))
         : [],
-      panelArgs: usedTags
+      panelArgs: perPanel
         ? panelPlans.map(p => ({ label: p.label, ...(p.point ? toPct(p.point) : {}), ...(p.offSheet ? { offSheet: true } : {}) }))
         : [],
-      candidates: usedTags ? [] : panelPlans[0].candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })),
-      panelNames: missing.includes('panel_label')
-        ? suggestPanels(panelsFromCircuits(circuits).map(r => r.panel), scheduleNames).map(r => r.name)
-        : [],
+      candidates: perPanel ? [] : panelPlans[0].candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })),
+      panelNames: missing.includes('panel_label') ? panelSuggestions.map(r => r.name) : [],
+      panelHint: missing.includes('panel_label') ? panelHint : undefined,
       recommendedWiring: specMethod,
       obstacleMentions: routing.obstacleMentions,
       obstaclesFound: routing.obstacles.length,

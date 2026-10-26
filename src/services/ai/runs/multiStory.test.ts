@@ -64,3 +64,22 @@ describe('keep-clear detection', () => {
     expect(isElevationMark('ELEVATOR')).toBe(false);
   });
 });
+
+describe('panel from circuit tags and schedules', async () => {
+  const { readCircuitTags, panelNamesFromSchedules, panelsTaggedOnSheet } = await import('./circuitTags');
+  it('joins tags split into pieces by the PDF text layer', () => {
+    const items = [
+      { str: 'B', x: 100, y: 50, width: 6, height: 8 },
+      { str: '-', x: 106.5, y: 50, width: 3, height: 8 },
+      { str: '4', x: 110, y: 50, width: 6, height: 8 },
+      { str: 'B-', x: 300, y: 80, width: 9, height: 8 },
+      { str: '6', x: 309.5, y: 80, width: 5, height: 8 },
+      { str: 'A B-8', x: 500, y: 90, width: 22, height: 8 },
+    ];
+    expect(readCircuitTags(items).map(t => t.id).sort()).toEqual(['B-4', 'B-6', 'B-8']);
+    expect(panelsTaggedOnSheet(items)[0]).toMatchObject({ panel: 'B', tags: 3 });
+  });
+  it('does not read spec words as panel names', () => {
+    expect(panelNamesFromSchedules(['PANEL LABEL SHALL BE ENGRAVED', 'PANEL DOOR IN DOOR', 'PANEL: B', 'PANELBOARD H1', 'PNL LP-1'])).toEqual(['B', 'H1', 'LP-1']);
+  });
+});
