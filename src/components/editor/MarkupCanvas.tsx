@@ -151,6 +151,29 @@ const getTextBoundingBox = (items: TextItemWithBounds[]) => {
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 };
 
+
+/** Points along a run arc (quadratic through `mid`) for hit-testing. */
+function sampleArc(a: Point, mid: Point, b: Point, steps = 16): Point[] {
+  const c = { x: 2 * mid.x - (a.x + b.x) / 2, y: 2 * mid.y - (a.y + b.y) / 2 };
+  const out: Point[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const u = 1 - t;
+    out.push({ x: u * u * a.x + 2 * u * t * c.x + t * t * b.x, y: u * u * a.y + 2 * u * t * c.y + t * t * b.y });
+  }
+  return out;
+}
+
+function pointInPolygon(p: Point, poly: Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i];
+    const b = poly[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y || 1e-9) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
 export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -1602,53 +1625,51 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const findMarkupAtPoint = (point: Point): CanvasMarkup | null => {
     // Tolerance adjusted for zoom - smaller tolerance at higher zoom
     const tolerance = 10 / (zoom / 100);
-    
-    // Search in reverse order (top to bottom)
+
+    // 1) Count markers first: small targets that often sit under a run or a keep-clear box.
     for (let i = markups.length - 1; i >= 0; i--) {
       const markup = markups[i];
-      
-      if (markup.type === 'count-marker') {
-        const m = markup as CountMarkerMarkup;
-        const radius = 15 / (zoom / 100); // Adjust radius for zoom
-        const dist = Math.sqrt(Math.pow(point.x - m.x, 2) + Math.pow(point.y - m.y, 2));
-        if (dist <= radius) return markup;
-        continue;
-      }
-      
-      if ('x' in markup && 'width' in markup) {
-        const m = markup as RectangleMarkup;
-        if (
-          point.x >= m.x && point.x <= m.x + m.width &&
-          point.y >= m.y && point.y <= m.y + m.height
-        ) {
-          return markup;
-        }
-      }
-      
+      if (markup.type !== 'count-marker') continue;
+      const m = markup as CountMarkerMarkup;
+      const radius = 15 / (zoom / 100); // Adjust radius for zoom
+      if (Math.hypot(point.x - m.x, point.y - m.y) <= radius) return markup;
+    }
+
+    // 2) Lines and polylines by distance to the drawn path (not their bounding box — a long
+    //    home run's box covers half the sheet and made everything under it unclickable).
+    for (let i = markups.length - 1; i >= 0; i--) {
+      const markup = markups[i];
       if ('startX' in markup) {
         const m = markup as LineMarkup;
-        const dist = distanceToLine(point, { x: m.startX, y: m.startY }, { x: m.endX, y: m.endY });
-        if (dist < tolerance) return markup;
+        if (distanceToLine(point, { x: m.startX, y: m.startY }, { x: m.endX, y: m.endY }) < tolerance) return markup;
+        continue;
       }
-      
-      if ('points' in markup && (markup as any).type !== 'count-marker') {
-        const m = markup as PolygonMarkup;
-        // Check bounding box for polygon-type markups
-        if (m.points.length > 0) {
-          const xs = m.points.map(p => p.x);
-          const ys = m.points.map(p => p.y);
-          const minX = Math.min(...xs);
-          const maxX = Math.max(...xs);
-          const minY = Math.min(...ys);
-          const maxY = Math.max(...ys);
-          const padding = 5 / (zoom / 100);
-          if (point.x >= minX - padding && point.x <= maxX + padding && point.y >= minY - padding && point.y <= maxY + padding) {
-            return markup;
-          }
-        }
+      if (!('points' in markup)) continue;
+      const m = markup as PolygonMarkup;
+      if (m.points.length < 2) continue;
+      const path = m.aiRun?.curve && m.points.length === 3 ? sampleArc(m.points[0], m.points[1], m.points[2]) : m.points;
+      const closed = markup.type === 'polygon' || markup.type === 'cloud' || markup.type === 'measurement-area';
+      const edges = closed ? [...path, path[0]] : path;
+      for (let k = 0; k + 1 < edges.length; k++) {
+        if (distanceToLine(point, edges[k], edges[k + 1]) < tolerance) return markup;
       }
     }
-    
+
+    // 3) Boxes (rectangles, text, keep-clear areas) and the inside of closed shapes.
+    for (let i = markups.length - 1; i >= 0; i--) {
+      const markup = markups[i];
+      if (markup.type === 'count-marker') continue;
+      if ('x' in markup && 'width' in markup) {
+        const m = markup as RectangleMarkup;
+        if (point.x >= m.x && point.x <= m.x + m.width && point.y >= m.y && point.y <= m.y + m.height) return markup;
+        continue;
+      }
+      if ('points' in markup && (markup.type === 'polygon' || markup.type === 'cloud' || markup.type === 'measurement-area')) {
+        const m = markup as PolygonMarkup;
+        if (m.points.length > 2 && pointInPolygon(point, m.points)) return markup;
+      }
+    }
+
     return null;
   };
 
@@ -2581,6 +2602,9 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   };
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    // Typing in the chat / a field: keys aren't drawing shortcuts.
+    const target = e.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
     // Complete polygon/polyline/cloud on Enter
     if (e.key === 'Enter' && drawing.isDrawing && 
         (activeTool === 'polyline' || activeTool === 'polygon' || activeTool === 'cloud')) {
@@ -2603,11 +2627,18 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       if (drawing.isDrawing) {
         cancelDrawing();
       }
+      const hadSelection = selectedMarkupIds.length > 0;
       clearSelection();
       
       // If nothing was in progress (user was idle), revert to select tool
       if (!wasInProgress) {
         useEditorStore.getState().setActiveTool('select');
+        // Nothing else to cancel: Esc lets go of the selected product.
+        if (!hadSelection) {
+          const products = useProductStore.getState();
+          if (products.activeProductId) products.setActiveProduct(null);
+          if (products.selectedNodeId) products.setSelectedNode(null);
+        }
       }
     }
     

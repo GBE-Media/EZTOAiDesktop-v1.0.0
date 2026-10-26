@@ -1,6 +1,7 @@
 import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { useEditorStore } from '@/store/editorStore';
 import { useCanvasStore } from '@/store/canvasStore';
+import { useDrawingPickStore } from '@/store/drawingPickStore';
 import { useCanvasLayersStore } from '@/store/canvasLayersStore';
 import { useFileOpen } from '@/hooks/useFileOpen';
 import { cancelCanvasRender, isRenderingCancelled, prefetchPageOperators, renderPage } from '@/lib/pdfLoader';
@@ -670,6 +671,10 @@ export function Canvas() {
       beginNavigating();
       return;
     }
+    // Answering an AI question on the drawing (click a point / drag keep-clear boxes): the left
+    // button belongs to the markup layer. Pan tool, space-pan and AI region select would capture
+    // the pointer and swallow the drag (only the first box ever registered). Middle-click pans.
+    if (useDrawingPickStore.getState().request && e.button === 0) return;
     if (handleCalibrationPointerDown(e)) return;
     if (handleSelectionPointerDown(e)) return;
     handlePanPointerDown(e);

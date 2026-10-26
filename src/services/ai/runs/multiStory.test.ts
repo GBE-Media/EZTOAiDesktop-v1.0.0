@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { floorLevel, riserBetween, riserText } from './suggestRunsTool';
+import { floorLevel, floorViewsFromTitles, mapBetweenViews, riserBetween, riserGroups, riserText } from './suggestRunsTool';
 import { moveRunStart, rebendArc } from './anchors';
 import { assemblyProductSpec, runProductFeet } from './runMaterials';
 import { isElevationMark } from './spatial';
@@ -81,5 +81,32 @@ describe('panel from circuit tags and schedules', async () => {
   });
   it('does not read spec words as panel names', () => {
     expect(panelNamesFromSchedules(['PANEL LABEL SHALL BE ENGRAVED', 'PANEL DOOR IN DOOR', 'PANEL: B', 'PANELBOARD H1', 'PNL LP-1'])).toEqual(['B', 'H1', 'LP-1']);
+  });
+});
+
+describe('floor plan views from their titles', () => {
+  it('splits a stacked first / second floor sheet at the titles', () => {
+    const area = { x: 0, y: 0, width: 3000, height: 2000 };
+    const items = [
+      { str: '2', x: 1200, y: 900, width: 20, height: 24 },
+      { str: 'SECOND FLOOR', x: 1240, y: 900, width: 200, height: 24 },
+      { str: 'ELECTRICAL PLAN', x: 1450, y: 900, width: 240, height: 24 },
+      { str: '1 FIRST FLOOR ELECTRICAL PLAN', x: 1200, y: 1900, width: 460, height: 24 },
+      { str: 'SEE FIRST FLOOR PLAN FOR CONTINUATION', x: 100, y: 500, width: 500, height: 10 },
+    ];
+    const views = floorViewsFromTitles(items, area);
+    expect(views.map(v => v.level.n)).toEqual([2, 1]);
+    expect(views[0].box.y).toBe(0);
+    expect(views[0].box.y + views[0].box.height).toBeCloseTo(972);
+    expect(views[1].box.y).toBeCloseTo(972);
+    expect(views[1].box.y + views[1].box.height).toBe(2000);
+  });
+
+  it('breaks a spread-out floor into up to 3 risers', () => {
+    const view = { x: 0, y: 0, width: 1000, height: 300 };
+    const c = (x: number) => ({ devices: [{ x, y: 100 }, { x: x + 20, y: 120 }] });
+    expect(riserGroups([c(50), c(90), c(480), c(900), c(940)], view).map(g => g.length)).toEqual([2, 1, 2]);
+    expect(riserGroups([c(50), c(150), c(250)], view)).toHaveLength(1);
+    expect(mapBetweenViews({ x: 100, y: 50 }, { x: 0, y: 0, width: 1000, height: 300 }, { x: 0, y: 400, width: 1000, height: 300 })).toEqual({ x: 100, y: 450 });
   });
 });

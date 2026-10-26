@@ -366,10 +366,74 @@ export function specWiringMethod(lines: string[]): WiringMethodValue | undefined
   return ranked[0][0];
 }
 
+type TitleText = { str: string; x: number; y: number; width: number; height: number };
+
+/**
+ * Floor plan views from their printed titles ("SECOND FLOOR ELECTRICAL PLAN" under the upper
+ * plan, "FIRST FLOOR ELECTRICAL PLAN" under the lower one). Titles sit under / at the lower
+ * left of their view, so each view runs from the previous title to its own.
+ */
+export function floorViewsFromTitles(textItems: TitleText[], area: Box): Array<{ box: Box; level: { n: number; name: string }; title: string }> {
+  // Rebuild lines: PDF text often splits a title into words.
+  const sorted = textItems.filter(t => t.str.trim() && t.height > 0).sort((a, b) => a.y - b.y || a.x - b.x);
+  const lines: TitleText[] = [];
+  for (const item of sorted) {
+    const last = lines[lines.length - 1];
+    if (last && Math.abs(item.y - last.y) < last.height * 0.5 && item.x - (last.x + last.width) < last.height * 2 && item.x >= last.x) {
+      last.str = `${last.str} ${item.str.trim()}`;
+      last.width = item.x + item.width - last.x;
+      last.height = Math.max(last.height, item.height);
+    } else {
+      lines.push({ ...item, str: item.str.trim() });
+    }
+  }
+  const byLevel = new Map<number, { line: TitleText; level: { n: number; name: string } }>();
+  for (const line of lines) {
+    const text = line.str.toUpperCase().replace(/\s+/g, ' ');
+    if (text.length > 60 || !/\bPLAN\b/.test(text) || /\b(SEE|REFER|ON|TO)\b/.test(text)) continue;
+    // The title starts with the level ("2 SECOND FLOOR ..." view number allowed).
+    if (!/^(\d{1,2}\s+)?(FIRST|SECOND|THIRD|FOURTH|FIFTH|SIXTH|SEVENTH|EIGHTH|NINTH|TENTH|GROUND|BASEMENT|LOWER|MAIN|LEVEL|\d{1,2}(ST|ND|RD|TH))\b/.test(text)) continue;
+    const level = floorLevel(text);
+    if (!level) continue;
+    const cx = line.x + line.width / 2;
+    const cy = line.y + line.height / 2;
+    if (cx < area.x || cx > area.x + area.width || cy < area.y || cy > area.y + area.height) continue;
+    const prev = byLevel.get(level.n);
+    if (!prev || line.height > prev.line.height) byLevel.set(level.n, { line, level });
+  }
+  const titles = [...byLevel.values()];
+  if (titles.length < 2) return [];
+  const ys = titles.map(t => t.line.y);
+  const xs = titles.map(t => t.line.x);
+  const stacked = Math.max(...ys) - Math.min(...ys) > area.height * 0.2;
+  const out: Array<{ box: Box; level: { n: number; name: string }; title: string }> = [];
+  if (stacked) {
+    titles.sort((a, b) => a.line.y - b.line.y);
+    let top = area.y;
+    titles.forEach((t, i) => {
+      const bottom = i === titles.length - 1 ? area.y + area.height : t.line.y + t.line.height * 3;
+      out.push({ box: { x: area.x, y: top, width: area.width, height: Math.max(1, bottom - top) }, level: t.level, title: t.line.str });
+      top = bottom;
+    });
+  } else if (Math.max(...xs) - Math.min(...xs) > area.width * 0.2) {
+    titles.sort((a, b) => a.line.x - b.line.x);
+    titles.forEach((t, i) => {
+      const left = i === 0 ? area.x : t.line.x - t.line.height * 2;
+      const right = i === titles.length - 1 ? area.x + area.width : titles[i + 1].line.x - titles[i + 1].line.height * 2;
+      out.push({ box: { x: left, y: area.y, width: Math.max(1, right - left), height: area.height }, level: t.level, title: t.line.str });
+    });
+  }
+  return out;
+}
+
 /** A home run that changes floors: riser point on the circuits' floor, stacked over the panel. */
 export type PanelRiser = {
   point: Pt;
   panelPoint: Pt;
+  /** Where the run resumes on the panel's floor (when not stacked over the panel). */
+  arrival?: Pt;
+  /** Run on the panel's floor from the arrival point back to the panel. */
+  horizontalFt?: number;
   direction: 'up' | 'down';
   ft: number;
   levels: number;
@@ -425,6 +489,36 @@ export function riserBetween(
     ...(circuitLevel ? { fromLevel: circuitLevel.name } : {}),
     ...(panelLevel ? { toLevel: panelLevel.name } : {}),
   };
+}
+
+/** Same relative spot in another view (stacked floor plans share a footprint). */
+export function mapBetweenViews(p: Pt, from: Box, to: Box): Pt {
+  const rx = from.width > 0 ? (p.x - from.x) / from.width : 0.5;
+  const ry = from.height > 0 ? (p.y - from.y) / from.height : 0.5;
+  return { x: to.x + rx * to.width, y: to.y + ry * to.height };
+}
+
+/** Split one floor's circuits into 1–3 riser groups by where they sit along the floor. */
+export function riserGroups<T extends { devices: Pt[] }>(circuits: T[], view: Box): T[][] {
+  if (circuits.length < 2) return [circuits];
+  const horizontal = view.width >= view.height;
+  const pos = (c: T) => {
+    const xs = c.devices.map(d => (horizontal ? d.x : d.y));
+    return xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+  };
+  const sorted = [...circuits].sort((a, b) => pos(a) - pos(b));
+  const span = horizontal ? view.width : view.height;
+  const gaps = sorted.slice(1).map((c, i) => ({ i: i + 1, gap: pos(c) - pos(sorted[i]) }))
+    .filter(g => g.gap > span * 0.25)
+    .sort((a, b) => b.gap - a.gap)
+    .slice(0, 2)
+    .sort((a, b) => a.i - b.i);
+  if (!gaps.length) return [circuits];
+  const out: T[][] = [];
+  let start = 0;
+  for (const g of gaps) { out.push(sorted.slice(start, g.i)); start = g.i; }
+  out.push(sorted.slice(start));
+  return out.filter(g => g.length);
 }
 
 /** Text for the continuation: "↓ to Panel B (Level 1)". */
@@ -564,10 +658,21 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   // The same tag on two plan views (e.g. first + second floor) is two runs, never one chain
   // across the sheet.
   const viewZones = zones.filter(z => z.kind === 'plan' && z.source === 'view');
-  const viewBoxes = viewZones.map(z => ({
+  let viewBoxes: Box[] = viewZones.map(z => ({
     x: (z.bounds.x / 100) * W, y: (z.bounds.y / 100) * H, width: (z.bounds.width / 100) * W, height: (z.bounds.height / 100) * H,
   }));
-  const viewLevels = viewZones.map(z => floorLevel(z.label || ''));
+  let viewLevels = viewZones.map(z => floorLevel(z.label || ''));
+  // Zoning missed the split (e.g. grid lines join the first and second floor plans into one
+  // drawing): the floor-plan titles printed under each view still divide the sheet.
+  if (viewBoxes.length <= 1) {
+    const titleBlock = zones.find(z => z.kind === 'title_block');
+    const area = viewBoxes[0] || { x: 0, y: 0, width: titleBlock && titleBlock.bounds.x > 50 ? (titleBlock.bounds.x / 100) * W : W, height: H };
+    const fromTitles = floorViewsFromTitles(page.textItems, area);
+    if (fromTitles.length > 1) {
+      viewBoxes = fromTitles.map(v => v.box);
+      viewLevels = fromTitles.map(v => v.level);
+    }
+  }
   const viewOf = (p: Pt) => viewBoxes.findIndex(b => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height);
   if (viewBoxes.length > 1) {
     circuits = circuits.flatMap(c => {
@@ -754,11 +859,22 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
       if (!awayByView.size) return [pp];
       const out: PanelPlan[] = [{ ...pp, circuits: here }];
       for (const [v, away] of awayByView) {
-        const riser = riserBetween(viewBoxes[panelView], viewBoxes[v], panelPoint, viewLevels[panelView], viewLevels[v], floorToFloorFt);
-        out.push({
-          label: pp.label, point: riser.point, offSheet: false, candidates: [], circuits: away,
-          riser: { ...riser, panelPoint },
-        });
+        const stacked = riserBetween(viewBoxes[panelView], viewBoxes[v], panelPoint, viewLevels[panelView], viewLevels[v], floorToFloorFt);
+        // A floor whose circuits are spread out (wings at both ends) breaks at up to 3 risers,
+        // each resumed on the panel's floor and run back to the panel.
+        const groups = riserGroups(away, viewBoxes[v]);
+        for (const group of groups) {
+          let riser: PanelRiser = { ...stacked, panelPoint };
+          if (groups.length > 1) {
+            const devices = group.flatMap(c => c.devices);
+            const nearest = devices.reduce((best, d) => (Math.hypot(d.x - stacked.point.x, d.y - stacked.point.y) < Math.hypot(best.x - stacked.point.x, best.y - stacked.point.y) ? d : best), devices[0]);
+            const point = { x: nearest.x + Math.sign(stacked.point.x - nearest.x) * viewBoxes[v].width * 0.01, y: nearest.y };
+            const arrival = mapBetweenViews(point, viewBoxes[v], viewBoxes[panelView]);
+            const horizontalFt = Math.round((Math.abs(arrival.x - panelPoint.x) + Math.abs(arrival.y - panelPoint.y)) * ftPerPt * 10) / 10;
+            riser = { ...stacked, point, panelPoint, arrival, horizontalFt, ft: Math.round((stacked.ft + horizontalFt) * 10) / 10 };
+          }
+          out.push({ label: pp.label, point: riser.point, offSheet: false, candidates: [], circuits: group, riser });
+        }
       }
       return out;
     }).filter(pp => pp.circuits.length);
@@ -999,8 +1115,8 @@ function buildRunMarkups(
     if (!panel.riser) continue;
     const r = panel.riser;
     out.push({ page: pageNumber, markup: riserMarkup(r.point, riserText(panel.label, r), r, panel.label, 'leave') });
-    const offset = { x: r.panelPoint.x + riserSize * 1.6, y: r.panelPoint.y - riserSize * 1.6 };
-    const from = `${r.direction === 'up' ? '↓' : '↑'} from ${r.fromLevel || 'other floor'}`;
+    const offset = r.arrival || { x: r.panelPoint.x + riserSize * 1.6, y: r.panelPoint.y - riserSize * 1.6 };
+    const from = `${r.direction === 'up' ? '↓' : '↑'} from ${r.fromLevel || 'other floor'}${r.horizontalFt ? ` · ${Math.round(r.horizontalFt)} ft to Panel ${panel.label}` : ''}`;
     out.push({ page: pageNumber, markup: riserMarkup(offset, from, r, panel.label, 'arrive') });
   }
 
