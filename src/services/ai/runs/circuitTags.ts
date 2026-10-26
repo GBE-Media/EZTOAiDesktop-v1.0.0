@@ -27,6 +27,64 @@ export function parseCircuitTag(text: string): CircuitTag | null {
   return { panel, circuit, id: `${panel}-${circuit}` };
 }
 
+type TextLike = { str: string; x: number; y: number; width: number; height: number };
+
+/**
+ * Circuit tags printed on the sheet, with their centre. PDF text often splits a tag into
+ * pieces ("B", "-", "4" or "B-" + "4"), so neighbouring pieces on one line are joined too.
+ */
+export function readCircuitTags(
+  textItems: TextLike[],
+  knownPanels?: string[],
+): Array<CircuitTag & { x: number; y: number }> {
+  const out: Array<CircuitTag & { x: number; y: number }> = [];
+  const allowed = (tag: CircuitTag | null): tag is CircuitTag => !!tag && (!NOT_PANELS.has(tag.panel) || !!knownPanels?.includes(tag.panel));
+  const used = new Set<number>();
+  textItems.forEach((item, i) => {
+    const tag = parseCircuitTag(item.str);
+    if (!allowed(tag)) return;
+    used.add(i);
+    out.push({ ...tag, x: item.x + item.width / 2, y: item.y + item.height / 2 });
+  });
+  // Short fragments only (a tag is at most ~10 characters).
+  const pieces = textItems
+    .map((item, i) => ({ item, i }))
+    .filter(({ item, i }) => !used.has(i) && item.str.trim() && item.str.trim().length <= 8 && item.height > 0)
+    .sort((a, b) => a.item.y - b.item.y || a.item.x - b.item.x);
+  for (let a = 0; a < pieces.length; a += 1) {
+    const first = pieces[a].item;
+    let text = first.str.trim();
+    let right = first.x + first.width;
+    const h = first.height;
+    for (let b = a + 1; b < pieces.length && b <= a + 3; b += 1) {
+      const next = pieces[b].item;
+      if (Math.abs(next.y - first.y) > h * 0.5) break;
+      const gap = next.x - right;
+      if (gap < -h * 0.3 || gap > h * 0.8) break;
+      text += next.str.trim();
+      right = next.x + next.width;
+      const tag = parseCircuitTag(text);
+      if (allowed(tag)) {
+        out.push({ ...tag, x: (first.x + right) / 2, y: first.y + h / 2 });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** Panels named by the circuit tags anywhere on the sheet, most-tagged first. */
+export function panelsTaggedOnSheet(textItems: TextLike[], knownPanels?: string[]): Array<{ panel: string; tags: number; examples: string[] }> {
+  const rows = new Map<string, { panel: string; tags: number; examples: string[] }>();
+  for (const tag of readCircuitTags(textItems, knownPanels)) {
+    const row = rows.get(tag.panel) || { panel: tag.panel, tags: 0, examples: [] };
+    row.tags += 1;
+    if (row.examples.length < 4 && !row.examples.includes(tag.id)) row.examples.push(tag.id);
+    rows.set(tag.panel, row);
+  }
+  return [...rows.values()].filter(r => r.tags >= 2).sort((a, b) => b.tags - a.tags);
+}
+
 export interface TaggedDevice {
   point: Pt;
   itemId?: string;
@@ -51,11 +109,7 @@ export function circuitsFromTags(
 ): { circuits: Array<PlannedCircuit & { panel: string; itemIds: string[] }>; coverage: number; untagged: TaggedDevice[] } {
   const size = Math.max(page.pageWidth, page.pageHeight);
   const radius = size * 0.02;
-  const tags = page.textItems.flatMap(item => {
-    const tag = parseCircuitTag(item.str);
-    if (!tag || (NOT_PANELS.has(tag.panel) && !options.knownPanels?.includes(tag.panel))) return [];
-    return [{ ...tag, x: item.x + item.width / 2, y: item.y + item.height / 2 }];
-  });
+  const tags = readCircuitTags(page.textItems, options.knownPanels);
   const byId = new Map<string, { tag: CircuitTag; devices: TaggedDevice[] }>();
   const untagged: TaggedDevice[] = [];
   for (const device of devices) {
@@ -126,14 +180,19 @@ export function panelsFromCircuits(circuits: Array<{ panel?: string; devices: Pt
  * Panel names from panel schedules ("PANEL: LP-1", "PANELBOARD B", "PANEL 'A'"), most-cited first.
  * Requires a word boundary after PANEL so "PANELS"/"PANELBOARDS" do not yield "S".
  */
+const NOT_PANEL_WORDS = new Set(['DOOR', 'LID', 'BOX', 'CAN', 'TUB', 'TOP', 'KEY', 'LOCK', 'TRIM', 'COVER', 'SIZE', 'BUS', 'BUSS', 'AMP', 'AMPS', 'ARE', 'NOT', 'ONE', 'TWO', 'ANY', 'USE', 'PER', 'VIA', 'ITS', 'SET', 'FUSE', 'LUGS', 'LUG']);
+
 export function panelNamesFromSchedules(lines: string[]): string[] {
   const counts = new Map<string, number>();
-  const re = /\bPANEL(?:BOARD)?(?![A-Z])\s*(?:[:#]|NAME\s*:?|DESIGNATION\s*:?|MARK\s*:?)?\s*["'“]?([A-Z]{1,4}[0-9]{0,2}[A-Z]?(?:-[A-Z0-9]{1,3})?)(?![A-Z0-9])/g;
+  const re = /\b(?:PANEL(?:BOARD)?|PNL)(?![A-Z])\s*(?:[:#]|NAME\s*:?|DESIGNATION\s*:?|MARK\s*:?)?\s*["'“]?([A-Z]{1,4}[0-9]{0,2}[A-Z]?(?:-[A-Z0-9]{1,3})?)(?![A-Z0-9])/g;
   const stop = new Set(['SCHEDULE', 'SCHED', 'BOARD', 'BOARDS', 'TO', 'IN', 'ON', 'AND', 'OR', 'THE', 'FED', 'FROM', 'MAIN', 'SEE', 'NEW', 'TYPE', 'MOUNTED', 'LOCATION', 'NAME', 'IS', 'AS', 'AT', 'BY', 'OF', 'FOR', 'WITH', 'ALL', 'EACH', 'SHALL', 'BE', 'A', 'AN', 'NO', 'EX', 'EXIST', 'TOTAL', 'LOAD', 'LOADS']);
   for (const line of lines) {
     for (const m of line.toUpperCase().matchAll(re)) {
       const name = m[1];
       if (stop.has(name)) continue;
+      // Panel names are short codes ("A", "LP", "LP-1", "H1A"); plain words ("LABEL", "DOOR",
+      // "COVER") are spec text about panels, not panel names.
+      if (/^[A-Z]{4,}$/.test(name) || NOT_PANEL_WORDS.has(name)) continue;
       counts.set(name, (counts.get(name) || 0) + 1);
     }
   }

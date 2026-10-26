@@ -78,17 +78,14 @@ describe('suggest_runs tool', () => {
     const out = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval: vi.fn() } as never, { page: 4, circuits } as never);
     expect(out.status).toBe('completed');
     const ask = out.askUser!;
-    expect(ask.fields.map(f => f.id)).toEqual(['panel_label', 'panel_location', 'wiring_method']);
-    const point = ask.fields.find(f => f.id === 'panel_location')!;
-    expect(point.kind).toBe('point');
-    expect(point.page).toBe(4);
+    // Circuits named LP-n: the panel comes from the tags (and is found on the sheet) — only the
+    // wiring method is asked.
+    expect(ask.fields.map(f => f.id)).toEqual(['wiring_method']);
     expect(ask.fields.find(f => f.id === 'wiring_method')!.options!.map(o => o.value)).toEqual(['EMT', 'MC', 'PVC40', 'RMC']);
     const args = applyFieldAnswers(ask.resume!.args, ask.resume!.apply, {
-      panel_label: { value: 'LP' },
-      panel_location: { point: { documentId: DOC, page: 4, xPct: 83, yPct: 52 } },
       wiring_method: { value: 'MC', label: 'MC cable' },
     });
-    expect(args).toMatchObject({ page: 4, documentId: DOC, panel: { label: 'LP', x: 83, y: 52 }, settings: { wiringMethod: 'MC' } });
+    expect(args).toMatchObject({ page: 4, documentId: DOC, settings: { wiringMethod: 'MC' } });
     const addApproval = vi.fn();
     const again = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval } as never, args as never);
     expect(again.status).toBe('approval-required');
