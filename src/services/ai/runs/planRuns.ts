@@ -110,7 +110,28 @@ export type PlanRunsInput = {
   riser?: { ft: number; text: string };
   /** The user confirmed the keep-clear areas (extraObstacles): don't add auto-detected ones. */
   keepClearConfirmed?: boolean;
+  /**
+   * The sheet's floor-plan views (first / second floor…). Routing stays inside the view(s) that
+   * hold this panel's devices — never across the white space to another floor.
+   */
+  floorViews?: Box[];
 };
+
+/** Plan view holding a point; points in the white space / just outside go to the nearest view. */
+export function viewIndexOf(p: Pt, views: Box[]): number {
+  if (!views.length) return -1;
+  const inside = views.findIndex(b => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height);
+  if (inside >= 0) return inside;
+  let best = 0;
+  let bestD = Infinity;
+  views.forEach((b, i) => {
+    const dx = Math.max(b.x - p.x, 0, p.x - (b.x + b.width));
+    const dy = Math.max(b.y - p.y, 0, p.y - (b.y + b.height));
+    const d = Math.hypot(dx, dy);
+    if (d < bestD) { bestD = d; best = i; }
+  });
+  return best;
+}
 
 const NON_ROUTABLE = new Set(['schedule', 'legend', 'notes', 'title_block', 'key_plan', 'revisions', 'detail', 'diagram']);
 
@@ -165,7 +186,13 @@ export function planRuns(input: PlanRunsInput): RunPlan {
   // Route only inside the plan view that holds the devices (or the whole sheet if none).
   const allDevices = input.circuits.flatMap(c => c.devices);
   const context = planRoutingContext(page, zones, allDevices, [input.panel]);
-  const { allowed, blocked } = context;
+  const { blocked } = context;
+  let allowed = context.allowed;
+  if (input.floorViews && input.floorViews.length > 1) {
+    const used = new Set([input.panel, ...allDevices].map(p => viewIndexOf(p, input.floorViews as Box[])));
+    const pad = Math.max(W, H) * 0.006;
+    allowed = [...used].map(i => expand((input.floorViews as Box[])[i], pad));
+  }
   const obstacles = [...(input.keepClearConfirmed ? [] : context.obstacles), ...(input.extraObstacles || [])];
   // Devices or the panel inside an obstacle footprint must not be walled in.
   const obstacleBoxes = obstacles.map(o => o.box).filter(box => !pointIn(input.panel, box) && !allDevices.some(d => pointIn(d, box)));

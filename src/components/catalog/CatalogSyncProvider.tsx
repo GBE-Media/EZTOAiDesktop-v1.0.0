@@ -104,10 +104,19 @@ export function CatalogSyncProvider({ children }: { children: ReactNode }) {
     }
   }, [handleConflict, hydrate, session?.access_token, user]);
 
+  // Auth fires a new `user` object on every token refresh / window refocus. Only a real account
+  // change may wipe the product tree; otherwise the AI takeoff counts (product measurements) vanish
+  // at random moments, e.g. while the user switches pages.
+  const userId = user?.id ?? null;
+  const runRefreshRef = useRef(runRefresh);
+  runRefreshRef.current = runRefresh;
+  const loadedUserIdRef = useRef<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     const initialize = async () => {
-      if (!user) {
+      if (!userId) {
+        loadedUserIdRef.current = null;
         useCatalogStore.getState().clearMemory();
         useProductStore.getState().clearStore();
         setLastSyncAt(null);
@@ -116,15 +125,19 @@ export function CatalogSyncProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      setIsLoading(true);
+      const sameUser = loadedUserIdRef.current === userId;
+      setIsLoading(!sameUser);
       setError(null);
       try {
-        useProductStore.getState().clearStore();
-        await hydrate(user.id);
+        if (!sameUser) {
+          useProductStore.getState().clearStore();
+          loadedUserIdRef.current = userId;
+        }
+        await hydrate(userId);
         if (cancelled) return;
-        setLastSyncAt(await getLastSyncAt(user.id));
-        setPendingCount(await getPendingMutationCount(user.id));
-        await runRefresh();
+        setLastSyncAt(await getLastSyncAt(userId));
+        setPendingCount(await getPendingMutationCount(userId));
+        await runRefreshRef.current();
       } finally {
         if (!cancelled) setIsLoading(false);
       }
@@ -133,7 +146,7 @@ export function CatalogSyncProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [hydrate, runRefresh, user]);
+  }, [hydrate, userId]);
 
   useEffect(() => {
     const handleOnline = () => {

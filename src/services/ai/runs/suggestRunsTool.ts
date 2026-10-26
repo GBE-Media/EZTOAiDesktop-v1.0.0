@@ -21,6 +21,7 @@ import {
   type PlannedRun,
   type RunPlan,
   type RunSettings,
+  viewIndexOf,
 } from './planRuns';
 import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, panelsTaggedOnSheet, parseCircuitTag, suggestPanels } from './circuitTags';
 import { materialTotals, runAssembly, type RunAssembly } from './runMaterials';
@@ -62,6 +63,7 @@ export const suggestRunsSchema = z.object({
     y: z.number().min(0).max(100).optional(),
     offSheet: z.boolean().optional(),
   })).optional().describe('Several panels (circuit tags like "B-4" → panel B). Omit — the tool reads the tags and asks for locations.'),
+  panelLabels: z.array(z.string()).optional().describe('Panels the user picked on the card for these home runs (several allowed). Circuits are split between them by the circuit tags / nearest tagged fixtures.'),
   keepClear: z.array(z.object({
     x: z.number().min(0).max(100),
     y: z.number().min(0).max(100),
@@ -170,6 +172,10 @@ export interface RunInputNeeded {
   panelArgs: Array<{ label: string; x?: number; y?: number; offSheet?: boolean }>;
   candidates: Array<{ text: string; x: number; y: number }>;
   panelNames: string[];
+  /** Several panels serve this sheet: the card lets the user pick all that apply. */
+  panelMulti?: boolean;
+  /** Pre-selected panels for the multi-select (the ones tagged on the sheet). */
+  panelRecommended?: string[];
   /** Where the panel options came from (circuit tags on the sheet, panel schedules). */
   panelHint?: string;
   recommendedWiring?: WiringMethodValue;
@@ -198,7 +204,24 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
   const fields: ClarificationField[] = [];
   const apply: Record<string, string> = { wiring_method: 'settings.wiringMethod', keep_clear: 'keepClear' };
   const label = needed.panelLabel;
-  if (needed.missing.includes('panel_label')) {
+  const multiPanel = needed.missing.includes('panel_label') && !!needed.panelMulti && needed.panelNames.length > 1;
+  if (multiPanel) {
+    // Several panels are tagged / scheduled: pick every panel these home runs go to. The circuits
+    // are split between them by the tags; each panel's location is asked next.
+    const recommended = (needed.panelRecommended || []).filter(name => needed.panelNames.includes(name));
+    fields.push({
+      id: 'panel_label',
+      kind: 'choice',
+      multi: true,
+      prompt: needed.panelHint
+        ? `Which panels do these home runs go to? Pick all that apply. ${needed.panelHint}`
+        : 'Which panels do these home runs go to? Pick all that apply.',
+      options: needed.panelNames.map(name => ({ id: `panel_${name}`, label: `Panel ${name}`, value: name })),
+      recommended: (recommended.length ? recommended : needed.panelNames).join(','),
+      placeholder: 'Or type panel names, e.g. A, B, C',
+    });
+    apply.panel_label = 'panelLabels#list';
+  } else if (needed.missing.includes('panel_label')) {
     fields.push({
       id: 'panel_label',
       kind: needed.panelNames.length ? 'choice' : 'text',
@@ -236,7 +259,7 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
         ],
       });
     }
-  } else if (needed.missing.includes('panel_location')) {
+  } else if (needed.missing.includes('panel_location') && !multiPanel) {
     apply.panel_location = 'panel';
     fields.push({
       id: 'panel_location',
@@ -622,9 +645,17 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     return point ? [{ point, itemId: id }] : [];
   });
   const extraPoints = (input.circuits || []).flatMap(c => (c.points || []).map(p => ({ point: toDisplay(p as Pt) })));
-  const projectLines = allIndexedPages().flatMap(row => (row.lines || []).map(line => line.text));
+  // Indexed pages keep only their title lines in `lines` (memory); the full page text (panel
+  // schedules, spec sections) lives in `text`.
+  const projectLines = allIndexedPages().flatMap(row => [
+    ...(row.lines || []).map(line => line.text),
+    ...(row.text ? row.text.split('\n') : []),
+  ]);
   const scheduleNames = panelNamesFromSchedules(projectLines);
   const specMethod = specWiringMethod(projectLines);
+  const normPanel = (t?: string) => (t || '').toUpperCase().replace(/^PANEL(?:BOARD)?\s*/, '').replace(/[^A-Z0-9-]/g, '');
+  // Panels the user picked on the multi-select card.
+  const chosenPanels = [...new Set((input.panelLabels || []).map(normPanel).filter(Boolean))];
   const useTags = input.autoCircuits?.useCircuitTags !== false;
   const tagged = useTags
     ? circuitsFromTags([...poolDevices, ...extraPoints], page, { ...loadDefaults, knownPanels: scheduleNames })
@@ -633,7 +664,10 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const lumped = circuits.length <= 1 || circuits.some(c => c.devices.length > 24);
   let usedTags = false;
   // Partial tagging still counts: engineers often tag one fixture per group.
-  const tagsUsable = !!tagged && tagged.circuits.length > 0 && (tagged.coverage >= 0.3 || (tagged.circuits.length >= 2 && tagged.coverage >= 0.12));
+  // The user picked several panels: the tags are the only way to split the circuits, whatever
+  // their coverage (untagged fixtures follow the nearest tagged ones).
+  const tagsUsable = !!tagged && tagged.circuits.length > 0
+    && (tagged.coverage >= 0.3 || (tagged.circuits.length >= 2 && tagged.coverage >= 0.12) || chosenPanels.length > 1);
   if (tagged && tagsUsable && (!circuits.length || lumped || !modelCircuitsAreTags)) {
     const extra = tagged.untagged.length
       ? autoCircuit(tagged.untagged.map(d => d.point), page, { ...loadDefaults, breakerAmps: 20, useCircuitTags: false })
@@ -664,16 +698,21 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   let viewLevels = viewZones.map(z => floorLevel(z.label || ''));
   // Zoning missed the split (e.g. grid lines join the first and second floor plans into one
   // drawing): the floor-plan titles printed under each view still divide the sheet.
-  if (viewBoxes.length <= 1) {
+  // Also when zoning found several views but can't tell the floors apart (unlabelled views, or one
+  // view spanning both floors): the floor titles win whenever they name 2+ different floors.
+  const distinctLevels = (levels: Array<{ n: number } | null>) => new Set(levels.flatMap(l => (l ? [l.n] : []))).size;
+  if (viewBoxes.length <= 1 || distinctLevels(viewLevels) < 2) {
     const titleBlock = zones.find(z => z.kind === 'title_block');
-    const area = viewBoxes[0] || { x: 0, y: 0, width: titleBlock && titleBlock.bounds.x > 50 ? (titleBlock.bounds.x / 100) * W : W, height: H };
+    const sheetArea = { x: 0, y: 0, width: titleBlock && titleBlock.bounds.x > 50 ? (titleBlock.bounds.x / 100) * W : W, height: H };
+    const area = viewBoxes.length === 1 ? viewBoxes[0] : sheetArea;
     const fromTitles = floorViewsFromTitles(page.textItems, area);
-    if (fromTitles.length > 1) {
+    if (fromTitles.length > 1 && (viewBoxes.length <= 1 || distinctLevels(fromTitles.map(v => v.level)) >= 2)) {
       viewBoxes = fromTitles.map(v => v.box);
       viewLevels = fromTitles.map(v => v.level);
     }
   }
-  const viewOf = (p: Pt) => viewBoxes.findIndex(b => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height);
+  // Fixtures / a panel in the white space or just outside a view belong to the nearest view.
+  const viewOf = (p: Pt) => viewIndexOf(p, viewBoxes);
   if (viewBoxes.length > 1) {
     circuits = circuits.flatMap(c => {
       const byView = new Map<number, Pt[]>();
@@ -694,13 +733,38 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     });
   }
 
+  // The user picked the panels: every circuit goes to one of them — its own tag when it names a
+  // chosen panel, else the chosen panel whose tagged circuits sit nearest.
+  if (chosenPanels.length > 1) {
+    const owners = circuits.filter(c => c.panel && chosenPanels.includes(normPanel(c.panel)));
+    circuits = circuits.map(c => {
+      if (c.panel && chosenPanels.includes(normPanel(c.panel))) return { ...c, panel: normPanel(c.panel) };
+      let best: { panel: string; d: number } | null = null;
+      for (const owner of owners) {
+        for (const a of owner.devices) {
+          for (const b of c.devices) {
+            const d = Math.hypot(a.x - b.x, a.y - b.y) + (viewBoxes.length > 1 && viewOf(a) !== viewOf(b) ? W + H : 0);
+            if (!best || d < best.d) best = { panel: normPanel(owner.panel), d };
+          }
+        }
+      }
+      return { ...c, panel: best?.panel || chosenPanels[0] };
+    });
+  }
+
   // Panels: from the circuit tags (confirmed against the panel schedules) or the one given.
-  const normLabel = (t?: string) => (t || '').toUpperCase().replace(/^PANEL\s*/, '').replace(/[^A-Z0-9]/g, '');
-  const givenPanels = [...(input.panels || []), ...(input.panel ? [{ ...input.panel, label: input.panel.label || '' }] : [])];
+  const normLabel = (t?: string) => (t || '').toUpperCase().replace(/^PANEL(?:BOARD)?\s*/, '').replace(/[^A-Z0-9]/g, '');
+  const givenPanels = [
+    ...(input.panels || []),
+    ...(input.panel ? [{ ...input.panel, label: input.panel.label || '' }] : []),
+    // One panel picked on the multi-select = "all home runs to this panel".
+    ...(chosenPanels.length === 1 && !input.panel?.label ? [{ label: chosenPanels[0] }] : []),
+    ...(chosenPanels.length > 1 ? chosenPanels.filter(name => !(input.panels || []).some(p => normLabel(p.label) === normLabel(name))).map(label => ({ label })) : []),
+  ] as Array<{ label: string; x?: number; y?: number; offSheet?: boolean }>;
   const tagPanels = panelsFromCircuits(circuits);
   // Circuits that name their panel (engineer tags read from the sheet, or circuits like "B-4"
   // the model passed) get one set of home runs per panel — never a "which panel?" question.
-  const namedPanels = [...(input.panels || []), ...(input.panel ? [input.panel] : [])].map(p => normLabel(p.label)).filter(Boolean);
+  const namedPanels = givenPanels.map(p => normLabel(p.label)).filter(Boolean);
   // An explicit panel the tags don't mention (the user's choice) wins over the circuit names.
   const perPanel = tagPanels.length > 0
     && (usedTags || !namedPanels.length || namedPanels.some(n => tagPanels.some(t => normLabel(t.panel) === n)));
@@ -713,15 +777,29 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   };
   let panelPlans: PanelPlan[];
   if (perPanel) {
-    const top = tagPanels.slice(0, 6);
+    const top = (chosenPanels.length > 1 ? tagPanels.filter(t => chosenPanels.includes(normPanel(t.panel))) : tagPanels).slice(0, 6);
     panelPlans = top.map(row => {
       const given = givenPanels.find(p => normLabel(p.label) === normLabel(row.panel))
         || (top.length === 1 && givenPanels.length === 1 && !givenPanels[0].label ? givenPanels[0] : undefined);
       return { ...resolvePanel(row.panel, given), circuits: circuits.filter(c => c.panel === row.panel) };
     });
-    // Untagged / overflow circuits ride with the busiest panel.
+    // Untagged / overflow circuits ride with the panel whose circuits sit nearest (same floor
+    // first), not all with the busiest panel.
     const assigned = new Set(panelPlans.flatMap(p => p.circuits.map(c => c.id)));
-    panelPlans[0].circuits.push(...circuits.filter(c => !assigned.has(c.id)));
+    for (const c of circuits.filter(c => !assigned.has(c.id))) {
+      let best: { plan: PanelPlan; d: number } | null = null;
+      for (const plan of panelPlans) {
+        for (const other of plan.circuits) {
+          for (const a of other.devices) {
+            for (const b of c.devices) {
+              const d = Math.hypot(a.x - b.x, a.y - b.y) + (viewBoxes.length > 1 && viewOf(a) !== viewOf(b) ? W + H : 0);
+              if (!best || d < best.d) best = { plan, d };
+            }
+          }
+        }
+      }
+      (best?.plan || panelPlans[0]).circuits.push(c);
+    }
   } else {
     const given = givenPanels[0];
     const label = given?.label?.trim() || '';
@@ -781,6 +859,10 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
         : [],
       candidates: perPanel ? [] : panelPlans[0].candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })),
       panelNames: missing.includes('panel_label') ? panelSuggestions.map(r => r.name) : [],
+      // More than one panel is tagged on the sheet or listed in the schedules: multi-select.
+      panelMulti: missing.includes('panel_label') && panelSuggestions.length > 1
+        && (sheetTagPanels.length > 1 || panelsFromCircuits(circuits).length > 1),
+      panelRecommended: [...new Set([...panelsFromCircuits(circuits).map(r => r.panel), ...sheetTagPanels.map(r => r.panel)])],
       panelHint: missing.includes('panel_label') ? panelHint : undefined,
       recommendedWiring: specMethod,
       obstacleMentions: routing.obstacleMentions,
@@ -883,6 +965,7 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const plan = planAllPanels({
     page, zones, panelPlans, settings, ftPerPt, scaleSource, extraObstacles: userKeepClear, allowed: routing.allowed,
     keepClearConfirmed: !!input.keepClearConfirmed && input.keepClear !== undefined,
+    floorViews: viewBoxes.length > 1 ? viewBoxes : undefined,
   });
   const markups = buildRunMarkups(plan, circuits, settings, geometry, input.page, anchorByPoint);
   const materials = materialTotals(plan.runs.map(run => ({ assembly: run.assembly, lengthFt: run.lengthFt })));
@@ -960,6 +1043,7 @@ function planAllPanels(options: {
   extraObstacles: Obstacle[];
   allowed: Box[];
   keepClearConfirmed?: boolean;
+  floorViews?: Box[];
 }): MultiPanelPlan {
   const runs: PlannedRunWithMaterials[] = [];
   const obstacles: Obstacle[] = [];
@@ -984,6 +1068,7 @@ function planAllPanels(options: {
       scaleSource: options.scaleSource,
       extraObstacles: options.extraObstacles,
       keepClearConfirmed: options.keepClearConfirmed,
+      floorViews: options.floorViews,
       panelOffSheet: pp.offSheet || !pp.point,
       ...(pp.riser ? { riser: { ft: pp.riser.ft, text: riserText(label, pp.riser) } } : {}),
     });

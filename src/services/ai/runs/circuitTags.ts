@@ -184,12 +184,16 @@ const NOT_PANEL_WORDS = new Set(['DOOR', 'LID', 'BOX', 'CAN', 'TUB', 'TOP', 'KEY
 
 export function panelNamesFromSchedules(lines: string[]): string[] {
   const counts = new Map<string, number>();
-  const re = /\b(?:PANEL(?:BOARD)?|PNL)(?![A-Z])\s*(?:[:#]|NAME\s*:?|DESIGNATION\s*:?|MARK\s*:?)?\s*["'“]?([A-Z]{1,4}[0-9]{0,2}[A-Z]?(?:-[A-Z0-9]{1,3})?)(?![A-Z0-9])/g;
+  const re = /\b(?:PANEL(?:BOARD)?|PNL)(?![A-Z])\s*(?:[:#]|NAME\s*:?|DESIGNATION\s*:?|MARK\s*:?)?\s*(["'“‘]?)([A-Z]{1,4}[0-9]{0,2}[A-Z]?(?:-[A-Z0-9]{1,3})?)(?![A-Z0-9])/g;
   const stop = new Set(['SCHEDULE', 'SCHED', 'BOARD', 'BOARDS', 'TO', 'IN', 'ON', 'AND', 'OR', 'THE', 'FED', 'FROM', 'MAIN', 'SEE', 'NEW', 'TYPE', 'MOUNTED', 'LOCATION', 'NAME', 'IS', 'AS', 'AT', 'BY', 'OF', 'FOR', 'WITH', 'ALL', 'EACH', 'SHALL', 'BE', 'A', 'AN', 'NO', 'EX', 'EXIST', 'TOTAL', 'LOAD', 'LOADS']);
   for (const line of lines) {
     for (const m of line.toUpperCase().matchAll(re)) {
-      const name = m[1];
-      if (stop.has(name)) continue;
+      const name = m[2];
+      // "PANELBOARD 'A'" / a schedule header "PANELBOARD A" (nothing after it) is panel A, not
+      // the article in "panel a minimum of…".
+      const rest = line.toUpperCase().slice((m.index ?? 0) + m[0].length);
+      const headerLike = !!m[1] || /^\s*(?:["'”’]|$|[-–(,:])/.test(rest);
+      if (stop.has(name) && !(name.length === 1 && headerLike)) continue;
       // Panel names are short codes ("A", "LP", "LP-1", "H1A"); plain words ("LABEL", "DOOR",
       // "COVER") are spec text about panels, not panel names.
       if (/^[A-Z]{4,}$/.test(name) || NOT_PANEL_WORDS.has(name)) continue;

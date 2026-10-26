@@ -14,13 +14,20 @@ import type { ClarificationAnswerDetail } from './QuestionCard';
 function initialAnswers(fields: ClarificationField[]): Record<string, ClarificationFieldAnswer> {
   const out: Record<string, ClarificationFieldAnswer> = {};
   for (const field of fields) {
-    if (field.kind === 'choice' && field.recommended) {
+    if (field.kind === 'choice' && field.multi && field.recommended) {
+      const picked = (field.options || []).filter(o => multiValues(field.recommended).includes(o.value));
+      if (picked.length) out[field.id] = multiAnswer(picked);
+    } else if (field.kind === 'choice' && field.recommended) {
       const option = field.options?.find(o => o.value === field.recommended);
       if (option) out[field.id] = { value: option.value, label: option.label };
     }
   }
   return out;
 }
+
+const multiValues = (value: string | undefined) => (value || '').split(',').map(v => v.trim()).filter(Boolean);
+const multiAnswer = (options: Array<{ value: string; label: string }>): ClarificationFieldAnswer | undefined =>
+  options.length ? { value: options.map(o => o.value).join(','), label: options.map(o => o.label).join(', ') } : undefined;
 
 const chip = (selected: boolean) => cn(
   'rounded-md border px-2.5 py-1 text-[11px] transition-colors',
@@ -258,7 +265,7 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
                     <>
                       <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/50 bg-amber-500/10 px-2.5 py-1 text-[11px] text-foreground">
                         <SquareDashed className="h-3 w-3 animate-pulse text-amber-500" />
-                        Drag a box on the drawing — as many as you need
+                        Drag boxes on the drawing — as many as you need (click a box to remove it)
                       </span>
                       <button type="button" className={chip(false)} onClick={() => useDrawingPickStore.getState().cancel()}>
                         <Check className="mr-1 inline h-3 w-3 align-[-2px]" />Done
@@ -288,11 +295,26 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
                     key={option.id}
                     type="button"
                     disabled={submitting}
-                    className={chip(answer?.value === option.value)}
-                    onClick={() => setAnswer(field.id, { value: option.value, label: option.label })}
+                    aria-pressed={field.multi ? multiValues(answer?.value).includes(option.value) : undefined}
+                    className={chip(field.multi ? multiValues(answer?.value).includes(option.value) : answer?.value === option.value)}
+                    onClick={() => {
+                      if (!field.multi) {
+                        setAnswer(field.id, { value: option.value, label: option.label });
+                        return;
+                      }
+                      const current = multiValues(answer?.value);
+                      const next = current.includes(option.value)
+                        ? current.filter(v => v !== option.value)
+                        : [...current, option.value];
+                      const ordered = (field.options || []).filter(o => next.includes(o.value));
+                      setAnswer(field.id, multiAnswer(ordered));
+                    }}
                   >
+                    {field.multi && multiValues(answer?.value).includes(option.value) && (
+                      <Check className="mr-1 inline h-3 w-3 align-[-2px]" />
+                    )}
                     {option.label}
-                    {field.recommended === option.value && (
+                    {(field.multi ? multiValues(field.recommended).includes(option.value) : field.recommended === option.value) && (
                       <span className="ml-1 rounded bg-emerald-500/15 px-1 text-[9px] text-emerald-500">Recommended</span>
                     )}
                   </button>
