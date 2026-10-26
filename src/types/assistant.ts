@@ -152,8 +152,10 @@ export interface ClarificationField {
   /** choice: buttons · point: "Show me on the drawing" · text: typed answer. */
   kind: 'choice' | 'point' | 'text' | 'area';
   options?: Array<ClarificationOption & { point?: PickedPoint }>;
-  /** Value of the option the AI recommends (pre-selected). */
+  /** Value of the option the AI recommends (pre-selected). Multi-select: comma-joined values. */
   recommended?: string;
+  /** Choice fields: allow several options (answer value is comma-joined, e.g. "A,B,C"). */
+  multi?: boolean;
   /** Point fields: where to pick (defaults to the current page). */
   documentId?: string;
   page?: number;

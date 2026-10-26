@@ -79,6 +79,7 @@ export function sanitizeClarificationFields(raw: unknown): ClarificationField[] 
       kind: kind as ClarificationField['kind'],
       ...(options?.length ? { options } : {}),
       ...(str(obj.recommended) ? { recommended: str(obj.recommended) } : {}),
+      ...(kind === 'choice' && obj.multi === true ? { multi: true } : {}),
       ...(str(obj.documentId) ? { documentId: str(obj.documentId) } : {}),
       ...(page && page > 0 ? { page: Math.round(page) } : {}),
       ...(str(obj.pickLabel) ? { pickLabel: str(obj.pickLabel) } : {}),
@@ -152,6 +153,12 @@ export function applyFieldAnswers(
     // "path#num": the answer is a number (e.g. "40" or a typed "52 VA").
     const numeric = rawPath.endsWith('#num');
     const path = numeric ? rawPath.slice(0, -4) : rawPath;
+    // "path#list": a multi-select / typed list ("A, C") becomes a string array.
+    if (rawPath.endsWith('#list')) {
+      const list = str(answer.value).split(/[,;/]|\band\b/i).map(v => v.trim()).filter(Boolean);
+      if (list.length) setPath(merged, rawPath.slice(0, -5), [...new Set(list)]);
+      continue;
+    }
     if (numeric) {
       const n = parseFloat(str(answer.value).replace(/,/g, ''));
       if (Number.isFinite(n) && n > 0) setPath(merged, path, n);

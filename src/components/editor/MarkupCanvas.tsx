@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState, useCallback, MouseEvent } from 'react';
+import { useRef, useEffect, useState, useCallback, MouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { useCanvasStore } from '@/store/canvasStore';
 import { beginEditorInteraction, endEditorInteraction } from '@/store/editorInteractionBusy';
@@ -257,7 +257,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const pickPins = useDrawingPickStore(state => state.pins);
   const pickAreas = useDrawingPickStore(state => state.areas);
   /** Box being dragged for an "areas to keep clear" question (doc points). */
-  const [areaDrag, setAreaDrag] = useState<{ start: Point; current: Point } | null>(null);
+  const [areaDrag, setAreaDrag] = useState<{ start: Point; current: Point; key: string } | null>(null);
   const isPicking = !!pickRequest && (!pickRequest.documentId || pickRequest.documentId === activeDocId);
   const isPanMode = activeTool === 'pan' && !isPicking;
   // Prefer per-page PageCalibration; fall back to legacy document-wide scale.
@@ -1815,10 +1815,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       setCountMenu(null);
     }
     const rawPoint = getMousePosition(e);
-    if (isPicking && pickRequest?.mode === 'area') {
-      setAreaDrag({ start: rawPoint, current: rawPoint });
-      return;
-    }
+    // Keep-clear boxes are drawn with pointer capture (handleAreaPointer*), not mouse events.
+    if (isPicking && pickRequest?.mode === 'area') return;
     if (isPicking) {
       // Answering an AI question: "click the panel on the drawing".
       const geometry = pickGeometry(currentPage);
@@ -2057,10 +2055,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
 
   const handleMouseMove = (e: MouseEvent<HTMLCanvasElement>) => {
     const rawPoint = getMousePosition(e);
-    if (areaDrag) {
-      setAreaDrag({ start: areaDrag.start, current: rawPoint });
-      return;
-    }
+    if (areaDrag) return;
     // Only apply snapping when "Snap to Objects" is enabled
     // Freehand always bypasses snapping for fluid strokes
     const point = (activeTool === 'freehand' || !snapToObjects) 
@@ -2303,33 +2298,70 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     finishDrawing();
   }, [drawing, activeTool, defaultStyle, measureScale, measureUnit, currentPage, addMarkup, finishDrawing]);
 
-  const handleMouseUp = async (e: MouseEvent<HTMLCanvasElement>) => {
-    if (areaDrag) {
-      const end = getMousePosition(e);
-      setAreaDrag(null);
-      const geometry = pickGeometry(currentPage);
-      const identity = { ...geometry, renderScale: 1 };
-      const size = getRenderPageSize(identity);
-      const clamp = (v: number) => Math.max(0, Math.min(100, v));
-      const a = docToRender(areaDrag.start, identity);
-      const b = docToRender(end, identity);
-      const x1 = clamp((Math.min(a.x, b.x) / size.width) * 100);
-      const y1 = clamp((Math.min(a.y, b.y) / size.height) * 100);
-      const x2 = clamp((Math.max(a.x, b.x) / size.width) * 100);
-      const y2 = clamp((Math.max(a.y, b.y) / size.height) * 100);
-      const r1 = (v: number) => Math.round(v * 10) / 10;
-      if (x2 - x1 >= 0.3 && y2 - y1 >= 0.3) {
-        useDrawingPickStore.getState().addArea({
-          documentId: activeDocId || undefined,
-          page: currentPage,
-          xPct: r1(x1),
-          yPct: r1(y1),
-          wPct: r1(x2 - x1),
-          hPct: r1(y2 - y1),
-        });
-      }
+  // Keep-clear boxes: pointer capture so every drag finishes (even when released over the chat
+  // panel or the pick pill) and each box is appended to the session that started it. A click
+  // without a drag on an existing box removes that box.
+  const areaPct = (start: Point, end: Point) => {
+    const geometry = pickGeometry(currentPage);
+    const identity = { ...geometry, renderScale: 1 };
+    const size = getRenderPageSize(identity);
+    const clamp = (v: number) => Math.max(0, Math.min(100, v));
+    const a = docToRender(start, identity);
+    const b = docToRender(end, identity);
+    const x1 = clamp((Math.min(a.x, b.x) / size.width) * 100);
+    const y1 = clamp((Math.min(a.y, b.y) / size.height) * 100);
+    const x2 = clamp((Math.max(a.x, b.x) / size.width) * 100);
+    const y2 = clamp((Math.max(a.y, b.y) / size.height) * 100);
+    return { x1, y1, x2, y2 };
+  };
+  const handleAreaPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!isPicking || pickRequest?.mode !== 'area' || e.button !== 0) return;
+    e.stopPropagation();
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* capture is best effort */ }
+    const point = getMousePosition(e as unknown as MouseEvent<HTMLCanvasElement>);
+    setAreaDrag({ start: point, current: point, key: pickRequest.key });
+  };
+  const handleAreaPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!areaDrag) return;
+    const point = getMousePosition(e as unknown as MouseEvent<HTMLCanvasElement>);
+    setAreaDrag(drag => (drag ? { ...drag, current: point } : drag));
+  };
+  const handleAreaPointerUp = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (!areaDrag) return;
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    const drag = areaDrag;
+    setAreaDrag(null);
+    if (e.type === 'pointercancel') return;
+    const end = getMousePosition(e as unknown as MouseEvent<HTMLCanvasElement>);
+    const { x1, y1, x2, y2 } = areaPct(drag.start, end);
+    const r1 = (v: number) => Math.round(v * 10) / 10;
+    const store = useDrawingPickStore.getState();
+    if (x2 - x1 >= 0.3 && y2 - y1 >= 0.3) {
+      store.addArea({
+        documentId: activeDocId || undefined,
+        page: currentPage,
+        xPct: r1(x1),
+        yPct: r1(y1),
+        wPct: r1(x2 - x1),
+        hPct: r1(y2 - y1),
+      }, drag.key);
       return;
     }
+    // A click: toggle off the box under the cursor (last drawn wins).
+    const list = store.areas[drag.key] || [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const area = list[i];
+      if (area.page !== undefined && area.page !== currentPage) continue;
+      if (area.documentId && activeDocId && area.documentId !== activeDocId) continue;
+      if (x1 >= area.xPct && x1 <= area.xPct + area.wPct && y1 >= area.yPct && y1 <= area.yPct + area.hPct) {
+        store.removeArea(drag.key, i);
+        return;
+      }
+    }
+  };
+
+  const handleMouseUp = async (e: MouseEvent<HTMLCanvasElement>) => {
+    if (areaDrag || (isPicking && pickRequest?.mode === 'area')) return;
     // End resizing
     if (resizing) {
       const editedId = resizing.originalMarkup.id;
@@ -2693,6 +2725,10 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
           cursor: getCursor(),
           pointerEvents: isPanMode ? 'none' : 'auto',
         }}
+        onPointerDown={handleAreaPointerDown}
+        onPointerMove={handleAreaPointerMove}
+        onPointerUp={handleAreaPointerUp}
+        onPointerCancel={handleAreaPointerUp}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
@@ -2711,7 +2747,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
             {pickRequest.mode === 'area' ? (
               <>
                 <span className="text-xs tabular-nums text-muted-foreground">
-                  {(pickAreas[pickRequest.key] || []).length} marked · drag another box
+                  {(pickAreas[pickRequest.key] || []).length} marked · drag another box · click a box to remove it
                 </span>
                 <button
                   type="button"

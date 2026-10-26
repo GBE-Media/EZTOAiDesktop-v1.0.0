@@ -120,6 +120,21 @@ describe('suggest_runs tool', () => {
     }
   });
 
+  it('splits circuits between the panels the user picked on the multi-select', async () => {
+    const tagged = circuitsFromTags();
+    const lumped = [{ id: 'C1', itemIds: tagged.flatMap(c => c.itemIds), vaPerDevice: 100 }];
+    const result = await prepareRunPlan({ page: 4, circuits: lumped, panelLabels: ['LP', 'ZQ'], settings: { wiringMethod: 'EMT' } } as never);
+    // Every circuit lands on a chosen panel (ZQ has no tags here, so all follow LP's tags).
+    if ('needs' in result) {
+      const needed = result as RunInputNeeded;
+      expect(needed.missing).not.toContain('panel_label');
+      expect(needed.panels.flatMap(p => p.circuits).length).toBeGreaterThanOrEqual(tagged.length);
+      expect(needed.panels.every(p => ['LP', 'ZQ'].includes(p.label))).toBe(true);
+    } else {
+      expect(result.markups.some(r => r.markup.aiRun?.kind === 'homerun')).toBe(true);
+    }
+  });
+
   it('reads panel names and the wiring method from the specs', () => {
     expect(panelNameCandidates(['PANEL LP-1 SCHEDULE', 'PANEL: LP-1', 'PANELBOARD H1', 'PANEL SCHEDULE'])).toEqual(['LP-1', 'H1']);
     expect(specWiringMethod(['3.1 WIRING METHODS: BRANCH CIRCUITS SHALL BE TYPE MC CABLE', 'NOTES'])).toBe('MC');

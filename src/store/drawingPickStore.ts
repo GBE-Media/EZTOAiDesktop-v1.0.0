@@ -21,7 +21,8 @@ interface DrawingPickState {
   start: (request: DrawingPickRequest) => void;
   complete: (point: PickedPoint) => void;
   /** Add a dragged box; area mode stays on so the user can mark several. */
-  addArea: (area: PickedArea) => void;
+  /** Append a box. `key` pins it to the box session that started the drag (request may have moved on). */
+  addArea: (area: PickedArea, key?: string) => void;
   clearAreas: (key: string) => void;
   /** Seed AI-drafted boxes once (no-op if the user already has areas for this key). */
   seedAreas: (key: string, areas: PickedArea[]) => void;
@@ -43,10 +44,10 @@ export const useDrawingPickStore = create<DrawingPickState>((set, get) => ({
       pins: { ...state.pins, [request.key]: { ...point, label: request.label } },
     }));
   },
-  addArea: area => {
-    const request = get().request;
-    if (!request) return;
-    set(state => ({ areas: { ...state.areas, [request.key]: [...(state.areas[request.key] || []), area] } }));
+  addArea: (area, explicitKey) => {
+    const key = explicitKey || get().request?.key;
+    if (!key) return;
+    set(state => ({ areas: { ...state.areas, [key]: [...(state.areas[key] || []), area] } }));
   },
   // Keep the key (empty list) so AI-drafted boxes aren't re-seeded after the user clears them.
   clearAreas: key => set(state => ({ areas: { ...state.areas, [key]: [] } })),
