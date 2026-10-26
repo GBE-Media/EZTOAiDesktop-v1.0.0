@@ -196,3 +196,60 @@ describe('suggest_runs tool', () => {
     expect(getAssistantTool('getRunSuggestions')).toBeUndefined();
   });
 });
+
+describe('runs follow the placed fixtures', () => {
+  it('ties branch strings to the count markers and moves them with the fixture', async () => {
+    const { renderToDoc } = await import('../placement/coords');
+    const { followAnchoredRuns } = await import('./anchors');
+    const circuits = circuitsFromTags();
+    const geometry = createPageGeometry({ pageNumber: 4, docWidth: H, docHeight: W, rotationDeg: 90, renderScale: 1 });
+    // Count markers sit a little off the analysis locations (as placed / nudged on the print).
+    const markers = analysisItems.map(item => {
+      const display = { x: (item.location.x / 100) * W + 6, y: (item.location.y / 100) * H + 4 };
+      const doc = renderToDoc(display, geometry);
+      return {
+        id: `cm_${item.id}`, type: 'count-marker', page: 4, x: doc.x, y: doc.y, number: 1, label: 'A',
+        aiLinkedItemId: item.id, style: { strokeColor: '#000', fillColor: '#000', strokeWidth: 1, opacity: 100 },
+        locked: false, author: 'AI', createdAt: '',
+      };
+    });
+    useCanvasStore.setState(state => ({
+      ...state,
+      pdfDocuments: { [DOC]: { ...state.pdfDocuments[DOC], markupsByPage: { 4: markers } } } as never,
+    }));
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, keepClear: [] } as never);
+    if ('needs' in result) throw new Error(result.message);
+    const branches = result.markups.map(r => r.markup).filter(m => m.type === 'polyline' && (m as PolygonMarkup).aiRun?.kind === 'branch') as PolygonMarkup[];
+    expect(branches.length).toBeGreaterThan(0);
+    const byId = new Map(markers.map(m => [m.id, m]));
+    for (const b of branches) {
+      const anchors = b.aiRun!.anchors!;
+      expect(anchors.start && anchors.end).toBeTruthy();
+      // The string's ends are exactly on its fixtures.
+      const s = byId.get(anchors.start!)!;
+      expect(Math.hypot(b.points[0].x - s.x, b.points[0].y - s.y)).toBeLessThan(0.5);
+      const e = byId.get(anchors.end!)!;
+      expect(Math.hypot(b.points[2].x - e.x, b.points[2].y - e.y)).toBeLessThan(0.5);
+    }
+    const homeRuns = result.markups.map(r => r.markup).filter(m => (m as PolygonMarkup).aiRun?.kind === 'homerun') as PolygonMarkup[];
+    expect(homeRuns.some(h => h.aiRun?.anchors?.start)).toBe(true);
+
+    // Move one fixture: its strings follow, footage updates.
+    const target = branches[0];
+    const movedId = target.aiRun!.anchors!.end!;
+    const moved = { ...byId.get(movedId)!, x: byId.get(movedId)!.x + 40, y: byId.get(movedId)!.y + 25 };
+    const page = [...markers.filter(m => m.id !== movedId), moved, ...result.markups.map(r => r.markup)];
+    const updates = followAnchoredRuns(page as never, [movedId]);
+    const mine = updates.find(u => u.id === target.id)!;
+    expect(mine).toBeTruthy();
+    const pts = (mine.updates as PolygonMarkup).points;
+    expect(Math.hypot(pts[2].x - moved.x, pts[2].y - moved.y)).toBeLessThan(0.01);
+    expect(pts[0]).toEqual(target.points[0]);
+    expect(mine.lengthFt).not.toBe(target.aiRun!.lengthFt);
+    // Runs not tied to that fixture are untouched.
+    expect(updates.every(u => {
+      const m = page.find(x => x.id === u.id) as PolygonMarkup;
+      return m.aiRun?.anchors?.start === movedId || m.aiRun?.anchors?.end === movedId;
+    })).toBe(true);
+  });
+});

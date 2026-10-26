@@ -20,6 +20,7 @@ import {
 import {
   OrthoRouter,
   detectObstacles,
+  isElevationMark,
   pathLength,
   pointIn,
   segmentHitsBox,
@@ -60,6 +61,11 @@ export type PlannedRun = {
   path: Pt[];
   /** Branch legs: [start, mid, end] of the Revit-style arc drawn between the two fixtures. */
   arc?: [Pt, Pt, Pt];
+  /** Fixture the run starts at / ends at (branch: both fixtures; home run: its first fixture). */
+  fromPt?: Pt;
+  toPt?: Pt;
+  /** Vertical riser footage included in lengthFt (panel on another floor). */
+  riserFt?: number;
   lengthFt: number;
   bendsDeg: number;
   wallCrossings: number;
@@ -97,6 +103,13 @@ export type PlanRunsInput = {
   extraObstacles?: Obstacle[];
   /** Home runs leave the sheet (panel is on another sheet): route to the plan-view edge. */
   panelOffSheet?: boolean;
+  /**
+   * The panel is on another floor: `panel` is the riser point on this floor and the home run
+   * gains `riser.ft` of vertical (floor-to-floor × levels).
+   */
+  riser?: { ft: number; text: string };
+  /** The user confirmed the keep-clear areas (extraObstacles): don't add auto-detected ones. */
+  keepClearConfirmed?: boolean;
 };
 
 const NON_ROUTABLE = new Set(['schedule', 'legend', 'notes', 'title_block', 'key_plan', 'revisions', 'detail', 'diagram']);
@@ -121,6 +134,7 @@ export function planRoutingContext(page: ZonePageInput, zones: PageZone[], devic
   const obstacleMentions = page.textItems.filter(item => {
     const text = item.str.trim();
     if (text.length > 30 || !/\b(ELEV(ATOR)?|STAIRS?|STAIRWELL|SHAFT|CHASE)\b/i.test(text)) return false;
+    if (/\bELEV/i.test(text) && !/STAIR|SHAFT|CHASE/i.test(text) && isElevationMark(text)) return false;
     const c = { x: item.x + item.width / 2, y: item.y + item.height / 2 };
     return (!allowed.length || allowed.some(box => pointIn(c, box))) && !blocked.some(box => pointIn(c, box));
   }).length;
@@ -152,7 +166,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
   const allDevices = input.circuits.flatMap(c => c.devices);
   const context = planRoutingContext(page, zones, allDevices, [input.panel]);
   const { allowed, blocked } = context;
-  const obstacles = [...context.obstacles, ...(input.extraObstacles || [])];
+  const obstacles = [...(input.keepClearConfirmed ? [] : context.obstacles), ...(input.extraObstacles || [])];
   // Devices or the panel inside an obstacle footprint must not be walled in.
   const obstacleBoxes = obstacles.map(o => o.box).filter(box => !pointIn(input.panel, box) && !allDevices.some(d => pointIn(d, box)));
   const router = new OrthoRouter({ width: W, height: H, segments: page.segments, obstacles: obstacleBoxes, allowed, blocked });
@@ -186,6 +200,8 @@ export function planRuns(input: PlanRunsInput): RunPlan {
         circuitIds: [circuit.id],
         path: leg.path,
         arc: [a, mid, b],
+        fromPt: a,
+        toPt: b,
         lengthFt: round1(len * input.ftPerPt),
         bendsDeg: totalBendDegrees(leg.path),
         wallCrossings: leg.wallCrossings,
@@ -222,7 +238,8 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     const startLeg = legs.reduce((best, leg) => dist(leg.homeDevice, input.panel) < dist(best.homeDevice, input.panel) ? leg : best, legs[0]);
     const route = router.route(startLeg.homeDevice, input.panel);
     router.markUsed(route.path);
-    const homeFt = pathLength(route.path) * input.ftPerPt;
+    const riserFt = input.riser?.ft || 0;
+    const homeFt = pathLength(route.path) * input.ftPerPt + riserFt;
     const bends = totalBendDegrees(route.path);
     const runWarnings: string[] = [];
     if (!route.ok) runWarnings.push('No clear path found — straight-line fallback; adjust by hand.');
@@ -263,6 +280,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     const note = [
       `Home run ${index + 1} → ${input.panelLabel}: ${circuitsLabel}`,
       label,
+      ...(input.riser ? [`Riser ${input.riser.text}: +${Math.round(riserFt)} ft vertical included`] : []),
       `≈${Math.round(homeFt)} ft home run (${Math.round(vdLengthFt)} ft to the load centre incl. ${settings.verticalFt} ft vertical) · VD ${worstVd.toFixed(1)}%`,
       ...sizing.flatMap(s => s.notes),
       ...runWarnings,
@@ -275,7 +293,9 @@ export function planRuns(input: PlanRunsInput): RunPlan {
       lengthFt: round1(homeFt),
       bendsDeg: bends,
       wallCrossings: route.wallCrossings,
-      label: `HR${index + 1} ${shortCircuitList(group.map(c => c.label || c.id))}: ${label}`,
+      label: `HR${index + 1} ${shortCircuitList(group.map(c => c.label || c.id))}: ${label}${input.riser ? ` ${input.riser.text}` : ''}`,
+      fromPt: { ...startLeg.homeDevice },
+      ...(riserFt ? { riserFt: round1(riserFt) } : {}),
       note,
       conduit,
       sizing,

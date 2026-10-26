@@ -37,9 +37,9 @@ export function arcLength(a: { x: number; y: number }, mid: { x: number; y: numb
 }
 
 /** Footage (ft) of a run markup's drawn geometry. */
-export function runLengthFt(points: Array<{ x: number; y: number }>, meta: Pick<AiRunMeta, 'ftPerPt' | 'curve' | 'footageFactor'>): number {
+export function runLengthFt(points: Array<{ x: number; y: number }>, meta: Pick<AiRunMeta, 'ftPerPt' | 'curve' | 'footageFactor' | 'riserFt'>): number {
   const pts = meta.curve && points.length === 3 ? arcLength(points[0], points[1], points[2]) : polylineLength(points);
-  return Math.round(pts * meta.ftPerPt * (meta.footageFactor || 1) * 10) / 10;
+  return Math.round((pts * meta.ftPerPt * (meta.footageFactor || 1) + (meta.riserFt || 0)) * 10) / 10;
 }
 
 export type RunRecompute = {
@@ -54,7 +54,7 @@ export function recomputeRunMarkup(markup: CanvasMarkup): RunRecompute | null {
   const meta = markup.aiRun;
   const lengthFt = runLengthFt(markup.points, meta);
   if (meta.kind !== 'homerun' || !meta.circuits?.length || !meta.settings) {
-    const label = meta.kind === 'keepout' || meta.kind === 'panel' ? markup.label || 'Keep clear' : markup.label || `Branch ≈${Math.round(lengthFt)} ft`;
+    const label = meta.kind === 'keepout' || meta.kind === 'panel' || meta.kind === 'riser' ? markup.label || 'Keep clear' : markup.label || `Branch ≈${Math.round(lengthFt)} ft`;
     return {
       label,
       aiNote: markup.aiNote || label,

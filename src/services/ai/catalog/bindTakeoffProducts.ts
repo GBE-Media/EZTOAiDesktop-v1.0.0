@@ -5,7 +5,7 @@
  */
 import type { CanvasMarkup } from '@/types/markup';
 import { takeoffColor } from '@/lib/takeoffColors';
-import { assemblyProductSpec } from '../runs/runMaterials';
+import { assemblyProductSpec, runProductFeet } from '../runs/runMaterials';
 import { ensureTakeoffProduct, fixtureProductSpec, type TakeoffProductSpec } from './takeoffProducts';
 
 export interface BoundProduct {
@@ -62,7 +62,7 @@ export function bindTakeoffProducts(rows: Array<{ page: number; markup: CanvasMa
       spec = countSpec(m.label || '');
     } else if (m.type === 'polyline' && m.aiRun?.assembly && (m.aiRun.kind === 'homerun' || m.aiRun.kind === 'branch')) {
       spec = assemblyProductSpec({ ...m.aiRun.assembly }, m.aiRun.kind);
-      ft = m.aiRun.lengthFt;
+      ft = runProductFeet(m.aiRun.assembly, m.aiRun.lengthFt || 0);
     }
     if (!spec) continue;
     try {

@@ -161,6 +161,8 @@ export interface ClarificationField {
   pickLabel?: string;
   optional?: boolean;
   placeholder?: string;
+  /** Area fields: AI-drafted boxes, pre-marked on the drawing for the user to keep, remove or add to. */
+  suggestedAreas?: PickedArea[];
 }
 
 /** A box dragged on the drawing (0–100 of the displayed page). */
@@ -171,6 +173,8 @@ export interface PickedArea {
   yPct: number;
   wPct: number;
   hPct: number;
+  /** What the box is (e.g. "STAIR 2"), when the AI drafted it. */
+  label?: string;
 }
 
 export interface ClarificationFieldAnswer {

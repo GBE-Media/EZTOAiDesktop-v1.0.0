@@ -23,6 +23,9 @@ interface DrawingPickState {
   /** Add a dragged box; area mode stays on so the user can mark several. */
   addArea: (area: PickedArea) => void;
   clearAreas: (key: string) => void;
+  /** Seed AI-drafted boxes once (no-op if the user already has areas for this key). */
+  seedAreas: (key: string, areas: PickedArea[]) => void;
+  removeArea: (key: string, index: number) => void;
   cancel: () => void;
   clearPins: (keyPrefix: string) => void;
 }
@@ -45,11 +48,12 @@ export const useDrawingPickStore = create<DrawingPickState>((set, get) => ({
     if (!request) return;
     set(state => ({ areas: { ...state.areas, [request.key]: [...(state.areas[request.key] || []), area] } }));
   },
-  clearAreas: key => set(state => {
-    const areas = { ...state.areas };
-    delete areas[key];
-    return { areas };
-  }),
+  // Keep the key (empty list) so AI-drafted boxes aren't re-seeded after the user clears them.
+  clearAreas: key => set(state => ({ areas: { ...state.areas, [key]: [] } })),
+  seedAreas: (key, seed) => set(state => (key in state.areas || !seed.length ? state : { areas: { ...state.areas, [key]: seed.map(a => ({ ...a })) } })),
+  removeArea: (key, index) => set(state => ({
+    areas: { ...state.areas, [key]: (state.areas[key] || []).filter((_, i) => i !== index) },
+  })),
   cancel: () => set({ request: null }),
   clearPins: keyPrefix => set(state => ({
     pins: Object.fromEntries(Object.entries(state.pins).filter(([key]) => !key.startsWith(keyPrefix))),
