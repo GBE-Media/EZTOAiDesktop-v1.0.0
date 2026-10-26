@@ -612,6 +612,16 @@ function packItemLists(options: {
   };
 }
 
+/**
+ * Every item id from the latest count of an analysis (before the result is windowed/trimmed for
+ * the model), so place_markups can place all counted items without the model listing them.
+ */
+const countedIdsByAnalysis = new Map<string, { matching: string[]; unresolved: string[] }>();
+
+export function getCountedItemIds(analysisId: string | undefined): { matching: string[]; unresolved: string[] } | null {
+  return analysisId ? countedIdsByAnalysis.get(analysisId) || null : null;
+}
+
 export function countItemsFromAnalysis(
   analysis: BlueprintAnalysisResult,
   query: string,
@@ -733,6 +743,12 @@ export function countItemsFromAnalysis(
     })
     .filter((row): row is typeof row & { loc: { x: number; y: number } } => !!row.loc)
     .map(({ item, loc }) => toCompactMatchingRow(item, loc));
+  if (options?.analysisRef?.analysisId) {
+    countedIdsByAnalysis.set(options.analysisRef.analysisId, {
+      matching: matchingRows.map(row => row.id),
+      unresolved: unresolved.filter(row => !!row.loc).map(row => row.item.id),
+    });
+  }
   const unresolvedRows: CompactUnresolvedItemRow[] = unresolved.map(({ item, loc, flag }) => ({
     id: item.id,
     code: item.legendTypeCode || item.type,

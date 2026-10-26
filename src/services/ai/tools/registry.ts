@@ -365,6 +365,7 @@ const coreTools: AssistantToolDefinition[] = [
       + 'ChatMarkupPointer {point, ref} is still accepted. '
       + 'For count markers: call count_page_items first, then place_markups with itemIds, page, '
       + 'and the analysisRef from that result (cached DocPoints; do not invent coordinates). '
+      + 'To place a whole count pass allCounted:true with page + analysisRef (no itemIds needed; add includeReviewMarkers to also mark the unresolved). '
       + 'Optional includeReviewMarkers places unresolved/low-confidence items as visually distinct '
       + 'unconfirmed markers (dashed, “?”, excluded from confirmed counts). '
       + 'Optional productId on count-marker/measurement rows binds the real catalog product '
