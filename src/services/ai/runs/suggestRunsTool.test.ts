@@ -13,6 +13,7 @@ vi.mock('../detection/pageZones', async importOriginal => {
   return {
     ...actual,
     extractZoneInputs: vi.fn(async () => fixture),
+    getZoneInputs: vi.fn(async () => fixture),
     ensurePageZones: vi.fn(async () => actual.zoneFromSignals(fixture)),
   };
 });
@@ -28,7 +29,7 @@ import { getAssistantTool } from '../tools/registry';
 import { runLengthFt } from './overlay';
 import { buildRunInputQuestion, createSuggestRunsTool, KEEPOUT_COLOR, RUN_COLOR, panelNameCandidates, prepareRunPlan, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
 import { applyFieldAnswers } from '../agent/askUser';
-import { createPageGeometry, docToRender } from '../placement/coords';
+import { createPageGeometry, docToRender, renderToDoc as renderToDocHelper } from '../placement/coords';
 import type { PolygonMarkup } from '@/types/markup';
 
 const DOC = 'doc_otsego';
@@ -284,5 +285,46 @@ describe('runs follow the placed fixtures', () => {
       const m = page.find(x => x.id === u.id) as PolygonMarkup;
       return m.aiRun?.anchors?.start === movedId || m.aiRun?.anchors?.end === movedId;
     })).toBe(true);
+  });
+
+  it('keeps keep-clear zones locked where the user put them across runs', async () => {
+    const circuits = circuitsFromTags();
+    const geometry = createPageGeometry({ pageNumber: 4, docWidth: H, docHeight: W, rotationDeg: 90, renderScale: 1 });
+    const zonePct = { x: 10, y: 10, width: 8, height: 6 };
+    const first = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [zonePct], keepClearConfirmed: true } as never);
+    if ('needs' in first) throw new Error(first.message);
+    const zone = first.markups.map(r => r.markup).find(m => m.aiRun?.kind === 'keepout')!;
+    expect(zone.locked).toBe(true);
+    expect(zone.aiRun?.userZone).toBe(true);
+    // Placed where the user drew it (display % → doc points, same frame as the canvas).
+    const corner = renderToDocHelper({ x: (zonePct.x / 100) * W, y: (zonePct.y / 100) * H }, geometry);
+    const z = zone as unknown as { x: number; y: number; width: number; height: number };
+    expect(Math.min(Math.abs(z.x - corner.x), Math.abs(z.x + z.width - corner.x))).toBeLessThan(0.5);
+
+    // On the page now. The next run reads it back, doesn't redraw it, and doesn't ask again —
+    // even when the model re-sends shifted coordinates.
+    useCanvasStore.setState(state => ({
+      ...state,
+      pdfDocuments: { [DOC]: { ...state.pdfDocuments[DOC], markupsByPage: { 4: [zone] } } } as never,
+    }));
+    const second = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [{ ...zonePct, x: 10.4 }] } as never);
+    if ('needs' in second) throw new Error(second.message);
+    expect(second.markups.some(r => r.markup.aiRun?.kind === 'keepout')).toBe(false);
+    const again = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
+    expect('needs' in again && (again as RunInputNeeded).missing?.includes('keep_clear')).toBe(false);
+  });
+
+  it('uses the card answers exactly, not the model\'s re-typed copy', async () => {
+    const { formatFieldAnswersForModel } = await import('../agent/askUser');
+    const { withPinnedAnswers } = await import('./suggestRunsTool');
+    formatFieldAnswersForModel({
+      fields: [{ id: 'keep_clear', kind: 'area', prompt: 'Mark keep-clear areas' }] as never,
+      resume: { toolId: 'suggest_runs', args: { documentId: DOC, page: 4, keepClearConfirmed: true }, apply: { keep_clear: 'keepClear' } },
+    }, { keep_clear: { areas: [{ xPct: 12.345, yPct: 40.5, wPct: 5, hPct: 4, page: 4 }] } } as never);
+    const out = withPinnedAnswers({ page: 4, documentId: DOC, keepClear: [{ x: 12, y: 41, width: 5, height: 4 }], settings: { wiringMethod: 'EMT' } });
+    expect((out.keepClear as Array<{ x: number }>)[0].x).toBeCloseTo(12.345, 2);
+    expect(out.settings).toEqual({ wiringMethod: 'EMT' });
+    // Used once: a later, unrelated call isn't overridden.
+    expect(withPinnedAnswers({ page: 4, keepClear: [] }).keepClear).toEqual([]);
   });
 });

@@ -166,17 +166,17 @@ export function applyFieldAnswers(
     }
     if (answer.areas) {
       setPath(merged, path, answer.areas.map(area => ({
-        x: round1(area.xPct),
-        y: round1(area.yPct),
-        width: round1(area.wPct),
-        height: round1(area.hPct),
+        x: round3(area.xPct),
+        y: round3(area.yPct),
+        width: round3(area.wPct),
+        height: round3(area.hPct),
         ...(area.label ? { label: area.label } : {}),
       })));
       continue;
     }
     if (answer.point) {
-      setPath(merged, `${path}.x`, round1(answer.point.xPct));
-      setPath(merged, `${path}.y`, round1(answer.point.yPct));
+      setPath(merged, `${path}.x`, round3(answer.point.xPct));
+      setPath(merged, `${path}.y`, round3(answer.point.yPct));
       continue;
     }
     const value = str(answer.value);
@@ -189,8 +189,26 @@ export function applyFieldAnswers(
   return merged;
 }
 
+/** Picks keep 0.001% of the page (~0.03 pt on a 36" sheet): exactly where the user clicked. */
+function round3(v: number): number {
+  return Math.round(v * 1000) / 1000;
+}
+
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+/**
+ * The exact arguments built from the user's last card answer, per tool. The model is asked to
+ * call the tool with them, but it re-types the JSON; tools overlay these so what the user drew
+ * / picked (keep-clear boxes, panel spots) is used to the decimal, never a re-typed copy.
+ */
+const pinnedResumes = new Map<string, Record<string, unknown>>();
+
+export function takePinnedResume(toolId: string): Record<string, unknown> | undefined {
+  const pinned = pinnedResumes.get(toolId);
+  pinnedResumes.delete(toolId);
+  return pinned;
 }
 
 /** Lines appended to the conversation when the user answers a structured card. */
@@ -217,6 +235,7 @@ export function formatFieldAnswersForModel(
   }
   if (clarification.resume) {
     const merged = applyFieldAnswers(clarification.resume.args, clarification.resume.apply, answers);
+    pinnedResumes.set(clarification.resume.toolId, merged);
     lines.push(`Now call ${clarification.resume.toolId} with exactly these arguments: ${JSON.stringify(merged)}`);
   }
   return lines;

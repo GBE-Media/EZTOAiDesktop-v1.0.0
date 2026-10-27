@@ -355,8 +355,18 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     warnings.push(...runWarnings.map(w => `HR${index + 1}: ${w}`));
   });
 
-  // Offset parallel conduits so they read as separate runs.
-  offsetParallelHomeRuns(runs.filter(r => r.kind === 'homerun'), Math.max(W, H) / 400);
+  // Offset parallel conduits so they read as separate runs — but never into a keep-clear zone.
+  const homeRuns = runs.filter(r => r.kind === 'homerun');
+  const before = new Map(homeRuns.map(r => [r, r.path.map(p => ({ ...p }))]));
+  offsetParallelHomeRuns(homeRuns, Math.max(W, H) / 400);
+  const crosses = (path: Pt[]) => obstacleBoxes.some(box => path.some((p, i) => i + 1 < path.length && segmentHitsBox(p, path[i + 1], shrink(box, 2))));
+  for (const run of homeRuns) {
+    const original = before.get(run)!;
+    if (crosses(run.path) && !crosses(original)) run.path = original;
+    // Footage always equals what's drawn (+ riser), so editing / re-running agrees to the foot.
+    const drawnFt = pathLength(run.path) * input.ftPerPt + (run.riserFt || 0);
+    if (Math.abs(drawnFt - run.lengthFt) > 0.05) run.lengthFt = round1(drawnFt);
+  }
 
   // Safety: no run may cross an obstacle footprint.
   for (const run of runs) {
