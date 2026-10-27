@@ -215,12 +215,13 @@ export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarku
     useEditorStore.getState().setActiveDocument(rows.docId);
   }
   // A new layout replaces the previous suggested runs on that page (no stacked duplicates).
-  // Keep-clear zones stay locked where the user put them.
+  // Keep-clear zones and user-placed panels stay locked where the user put them.
   const pages = [...new Set(markups.map(m => m.page))];
   for (const page of pages) {
     const state = useCanvasStore.getState();
     const old = (state.getMarkupsByPage(rows.docId)[page] || [])
-      .filter(m => m.aiRun && m.aiRun.kind !== 'keepout')
+      // The user's keep-clear zones and the panels they clicked stay exactly where they are.
+      .filter(m => m.aiRun && m.aiRun.kind !== 'keepout' && !m.aiRun.userPlaced)
       .map(m => m.id);
     if (old.length) state.deleteMarkups(page, old);
   }

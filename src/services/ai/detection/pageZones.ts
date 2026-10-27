@@ -182,9 +182,14 @@ async function extractSegments(page: PDFPageProxy, vt: Matrix): Promise<number[]
       if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) < 0.5) return;
       out.push(round1(a[0]), round1(a[1]), round1(b[0]), round1(b[1]));
     };
+    let cx = 0; let cy = 0; let sx = 0; let sy = 0;
+    let hasPoint = false;
     for (let i = 0; i < fns.length; i += 1) {
       const fn = fns[i];
       const arg = args[i] as unknown[];
+      // Painting / clipping ends the current path.
+      if (fn === OPS.stroke || fn === OPS.fill || fn === OPS.eoFill || fn === OPS.fillStroke || fn === OPS.eoFillStroke
+        || fn === OPS.closeStroke || fn === OPS.closeFillStroke || fn === OPS.closeEOFillStroke || fn === OPS.endPath) hasPoint = false;
       if (fn === OPS.save) stack.push(ctm);
       else if (fn === OPS.restore) ctm = stack.pop() || [1, 0, 0, 1, 0, 0];
       else if (fn === OPS.transform && Array.isArray(arg)) ctm = Util.transform(ctm, arg as number[]) as Matrix;
@@ -197,17 +202,18 @@ async function extractSegments(page: PDFPageProxy, vt: Matrix): Promise<number[]
         const subOps = arg[0] as number[];
         const coords = arg[1] as number[];
         let j = 0;
-        let cx = 0; let cy = 0; let sx = 0; let sy = 0;
+        // The current point carries over between path chunks; a line with no current point
+        // (never moved to) is skipped instead of being drawn from the page origin.
         for (const op of subOps) {
-          if (op === OPS.moveTo) { cx = coords[j]; cy = coords[j + 1]; sx = cx; sy = cy; j += 2; }
-          else if (op === OPS.lineTo) { push(cx, cy, coords[j], coords[j + 1]); cx = coords[j]; cy = coords[j + 1]; j += 2; }
-          else if (op === OPS.curveTo) { push(cx, cy, coords[j + 4], coords[j + 5]); cx = coords[j + 4]; cy = coords[j + 5]; j += 6; }
-          else if (op === OPS.curveTo2 || op === OPS.curveTo3) { push(cx, cy, coords[j + 2], coords[j + 3]); cx = coords[j + 2]; cy = coords[j + 3]; j += 4; }
+          if (op === OPS.moveTo) { cx = coords[j]; cy = coords[j + 1]; sx = cx; sy = cy; hasPoint = true; j += 2; }
+          else if (op === OPS.lineTo) { if (hasPoint) push(cx, cy, coords[j], coords[j + 1]); cx = coords[j]; cy = coords[j + 1]; if (!hasPoint) { sx = cx; sy = cy; } hasPoint = true; j += 2; }
+          else if (op === OPS.curveTo) { if (hasPoint) push(cx, cy, coords[j + 4], coords[j + 5]); cx = coords[j + 4]; cy = coords[j + 5]; hasPoint = true; j += 6; }
+          else if (op === OPS.curveTo2 || op === OPS.curveTo3) { if (hasPoint) push(cx, cy, coords[j + 2], coords[j + 3]); cx = coords[j + 2]; cy = coords[j + 3]; hasPoint = true; j += 4; }
           else if (op === OPS.rectangle) {
             const [x, y, w, h] = [coords[j], coords[j + 1], coords[j + 2], coords[j + 3]];
             push(x, y, x + w, y); push(x + w, y, x + w, y + h); push(x + w, y + h, x, y + h); push(x, y + h, x, y);
-            cx = x; cy = y; sx = x; sy = y; j += 4;
-          } else if (op === OPS.closePath) { push(cx, cy, sx, sy); cx = sx; cy = sy; }
+            cx = x; cy = y; sx = x; sy = y; hasPoint = true; j += 4;
+          } else if (op === OPS.closePath) { if (hasPoint) push(cx, cy, sx, sy); cx = sx; cy = sy; }
         }
       }
     }

@@ -6,6 +6,7 @@
  * All coordinates here are DISPLAY POINTS (pdf.js viewport at scale 1, /Rotate applied).
  */
 import type { ZonePageInput } from '../detection/pageZones';
+import type { Footprint } from './footprint';
 
 export type Pt = { x: number; y: number };
 export type Box = { x: number; y: number; width: number; height: number };
@@ -187,6 +188,8 @@ export type RouterOptions = {
   blocked?: Box[];
   /** Clearance around obstacles, points. */
   clearance?: number;
+  /** Building footprint: inside its masked views, cells outside the building are blocked. */
+  footprint?: Footprint | null;
 };
 
 /** Orthogonal A* router with bend and wall-penetration penalties. */
@@ -213,6 +216,17 @@ export class OrthoRouter {
       for (const box of options.allowed) this.fill(box, 0);
     }
     for (const box of options.blocked || []) this.fill(box, 1);
+    const fp = options.footprint;
+    if (fp && fp.gw === this.gw && fp.gh === this.gh) {
+      // White space around and between the buildings is never routed through.
+      for (const view of fp.maskedViews) {
+        const x1 = Math.max(0, Math.floor(view.x / this.cell));
+        const y1 = Math.max(0, Math.floor(view.y / this.cell));
+        const x2 = Math.min(this.gw - 1, Math.floor((view.x + view.width) / this.cell));
+        const y2 = Math.min(this.gh - 1, Math.floor((view.y + view.height) / this.cell));
+        for (let y = y1; y <= y2; y += 1) for (let x = x1; x <= x2; x += 1) if (!fp.inside[y * this.gw + x]) this.blocked[y * this.gw + x] = 1;
+      }
+    }
     const clearance = options.clearance ?? this.cell;
     for (const box of options.obstacles) {
       this.fill({ x: box.x - clearance, y: box.y - clearance, width: box.width + 2 * clearance, height: box.height + 2 * clearance }, 1);

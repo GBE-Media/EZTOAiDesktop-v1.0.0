@@ -79,6 +79,8 @@ export interface AiRunMeta {
   kind: 'homerun' | 'branch' | 'keepout' | 'panel' | 'riser';
   /** Keep-clear zone the user drew (vs. one the AI drafted and they kept). */
   userZone?: boolean;
+  /** Panel the user clicked on the drawing: locked there, never moved or replaced by a run. */
+  userPlaced?: boolean;
   /** Panel this run belongs to (from the engineer's circuit tags or the user). */
   panel?: string;
   /** Home run continues to a panel on another sheet. */
