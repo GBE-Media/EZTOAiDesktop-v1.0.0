@@ -39,6 +39,22 @@ export function decideRoutingPolicy(intake: IntakeResult): RoutingDecision & { n
     });
   }
 
+  // Vision model A/B test ("compare models", "would Gemini be better", "test gpt vs gemini").
+  if (/\b(compare|test|try|switch|a\/b|benchmark)\b[^.?!]*\b(models?|gemini|gpt|vision model)\b/i.test(normalizedMessage)
+    || /\b(gemini|gpt)\b[^.?!]*\b(better|vs\.?|versus|more accurate)\b/i.test(normalizedMessage)) {
+    return base({
+      path: 'invoke_primary',
+      taskType: 'read_context',
+      complexity: 'medium',
+      risk: 'low',
+      preferTools: true,
+      requireVerifier: false,
+      reason: 'Vision model comparison; run compare_vision_models on the current page',
+      suggestedTools: ['compare_vision_models', 'ask_user', 'set_vision_model'],
+      needsLlmRouter: false,
+    });
+  }
+
   // Suggested runs / home runs / conduit layout.
   if (/\b(home ?runs?|branch circuit\w*|conduit runs?|suggest\w* runs?|wire runs?|runs? (for|to) (the )?panel)\b/i.test(normalizedMessage)) {
     return base({

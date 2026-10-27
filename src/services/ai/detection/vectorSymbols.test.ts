@@ -54,6 +54,10 @@ describe('drawn-symbol check for counts', () => {
     const pts = out.items.map(i => [Math.round((i.location.x / 100) * W), Math.round((i.location.y / 100) * H)]);
     expect(pts.sort((a, b) => a[0] - b[0])).toEqual(fixtures);
     expect(out.shapeAgreement.A).toEqual({ matched: 5, total: 5 });
+    // How close the model itself got (used to compare vision models): a4 was ~11 pt off.
+    expect(out.checked).toBe(6);
+    expect(out.onSymbol).toBe(4);
+    expect(out.moves).toHaveLength(5);
   });
 
   it('never snaps a fixture onto a door or another shape', () => {

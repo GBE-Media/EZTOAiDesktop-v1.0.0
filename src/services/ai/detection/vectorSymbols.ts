@@ -105,6 +105,12 @@ export interface SymbolRefineResult {
   snapped: number;
   duplicates: number;
   added: number;
+  /** Detections with a location that were checked. */
+  checked?: number;
+  /** Detections the model placed within 9 pt of their symbol (before snapping). */
+  onSymbol?: number;
+  /** How far (pt) each snapped detection was from the drawn symbol. */
+  moves?: number[];
   /** Per type: how many detections share the type's drawn symbol. */
   shapeAgreement: Record<string, { matched: number; total: number }>;
 }
@@ -201,6 +207,8 @@ export function refineDetectionsWithSymbols(
 
   let snapped = 0;
   let duplicates = 0;
+  let onSymbol = 0;
+  const moves: number[] = [];
   const next: DetectedItem[] = [];
   items.forEach((item, idx) => {
     const comp = itemComp.get(idx);
@@ -210,6 +218,10 @@ export function refineDetectionsWithSymbols(
     }
     if (comp === undefined) { next.push(item); return; }
     const c = components[comp];
+    const p = pts[idx]!;
+    const off = Math.hypot(c.cx - p.x, c.cy - p.y);
+    moves.push(Math.round(off * 10) / 10);
+    if (off <= CLOSE_PT) onSymbol += 1;
     const x = Math.round((c.cx / pageWidth) * 100 * 1000) / 1000;
     const y = Math.round((c.cy / pageHeight) * 100 * 1000) / 1000;
     if (Math.abs(x - item.location.x) > 0.001 || Math.abs(y - item.location.y) > 0.001) snapped += 1;
@@ -283,5 +295,6 @@ export function refineDetectionsWithSymbols(
     if (found.length && found.length <= Math.max(3, (totals.get(code) || 0) * 0.6)) additions.push(...found);
   }
 
-  return { items: [...next, ...additions], snapped, duplicates, added: additions.length, shapeAgreement };
+  const checked = pts.filter(Boolean).length;
+  return { items: [...next, ...additions], snapped, duplicates, added: additions.length, checked, onSymbol, moves, shapeAgreement };
 }
