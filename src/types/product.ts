@@ -49,6 +49,14 @@ export interface LinkedMeasurement {
   createdAt: string;
   groupId?: string; // Groups measurements taken in the same session
   groupLabel?: string; // Optional label for the group
+  /**
+   * Conduit runs: the conductors pulled in it are separate products (feet of wire = run feet ×
+   * perFt). Linked together with this measurement; the drawing shows one run.
+   */
+  components?: Array<{ productId: string; perFt: number }>;
+  /** This row is a component (wire in a conduit run) of the markup's primary product. */
+  componentOf?: string;
+  perFt?: number;
 }
 
 export interface ProductsState {

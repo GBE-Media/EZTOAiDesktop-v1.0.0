@@ -23,7 +23,7 @@ import {
   type RunSettings,
   viewIndexOf,
 } from './planRuns';
-import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, panelsTaggedOnSheet, parseCircuitTag, suggestPanels } from './circuitTags';
+import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, panelsTaggedOnSheet, parseCircuitTag, readCircuitTags, suggestPanels } from './circuitTags';
 import { materialTotals, runAssembly, type RunAssembly } from './runMaterials';
 import { getLatestFullPageAnalysis, itemIsUnresolvedForCounts } from '../agent/pageAnalysisCache';
 import { formatSize } from './necTables';
@@ -63,6 +63,8 @@ export const suggestRunsSchema = z.object({
     y: z.number().min(0).max(100).optional(),
     offSheet: z.boolean().optional(),
   })).optional().describe('Several panels (circuit tags like "B-4" → panel B). Omit — the tool reads the tags and asks for locations.'),
+  scaleChoice: z.enum(['printed', 'calibration']).optional().describe('Set by the card when the page calibration and the printed plan scale disagree.'),
+  wiringMethodConfirmed: z.boolean().optional().describe('True only when the user picked the wiring method (on the card or explicitly in this chat). Until then the tool always asks, pre-selecting settings.wiringMethod / the spec method as the recommendation.'),
   panelLabels: z.array(z.string()).optional().describe('Panels the user picked on the card for these home runs (several allowed). Circuits are split between them by the circuit tags / nearest tagged fixtures.'),
   keepClear: z.array(z.object({
     x: z.number().min(0).max(100),
@@ -164,7 +166,9 @@ export interface RunInputNeeded {
   message: string;
   documentId: string;
   page: number;
-  missing: Array<'panel_location' | 'panel_label' | 'wiring_method' | 'keep_clear' | 'fixture_load'>;
+  missing: Array<'panel_location' | 'panel_label' | 'wiring_method' | 'keep_clear' | 'fixture_load' | 'scale'>;
+  /** Page calibration and the plan's printed scale disagree: which one sets the footage. */
+  scaleConflict?: { printed: string; calibration: string };
   panelLabel?: string;
   /** Panels from the engineer's circuit tags that still need a location. */
   panels: Array<{ label: string; index: number; circuits: string[]; candidates: Array<{ text: string; x: number; y: number }>; scheduled: boolean }>;
@@ -283,7 +287,7 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
     fields.push({
       id: 'wiring_method',
       kind: 'choice',
-      prompt: 'Which wiring method?',
+      prompt: 'What should the runs be installed in? (I pre-selected what the prints / specs point to)',
       options: (Object.keys(WIRING_LABELS) as WiringMethodValue[]).map(value => ({
         id: `wm_${value}`,
         label: WIRING_LABELS[value],
@@ -327,6 +331,19 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
       } : {}),
     });
   }
+  if (needed.missing.includes('scale') && needed.scaleConflict) {
+    fields.push({
+      id: 'scale',
+      kind: 'choice',
+      prompt: `This plan is printed at ${needed.scaleConflict.printed}, but the page is calibrated to ${needed.scaleConflict.calibration}. Which scale should the footage use?`,
+      options: [
+        { id: 'scale_printed', label: `Printed scale (${needed.scaleConflict.printed})`, value: 'printed' },
+        { id: 'scale_calibration', label: `My calibration (${needed.scaleConflict.calibration})`, value: 'calibration' },
+      ],
+      recommended: 'printed',
+    });
+    apply.scale = 'scaleChoice';
+  }
   const page = needed.page;
   const onlyWiring = fields.length === 1 && fields[0].id === 'wiring_method';
   const tagNote = needed.panels.length
@@ -336,7 +353,7 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
     question: onlyWiring
       ? `Which wiring method should I use for the runs on page ${page}?`
       : `A couple of details before I lay out the runs on page ${page}`,
-    description: `${tagNote}${needed.recommendedWiring ? `The specs point to ${WIRING_LABELS[needed.recommendedWiring]}; change it if this job differs.` : ''}`.trim() || undefined,
+    description: `${tagNote}${needed.recommendedWiring && needed.missing.includes('wiring_method') ? `The specs point to ${WIRING_LABELS[needed.recommendedWiring]}; change it if this job differs.` : ''}`.trim() || undefined,
     fields,
     focus: { documentId: needed.documentId, page },
     resume: {
@@ -347,10 +364,35 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
         page,
         ...(needed.panelArgs.length ? { panels: needed.panelArgs } : {}),
         ...(needed.missing.includes('keep_clear') ? { keepClear: [], keepClearConfirmed: true } : {}),
+        ...(needed.missing.includes('wiring_method') ? { wiringMethodConfirmed: true } : {}),
       },
       apply,
     },
   };
+}
+
+/** "1/8\" = 1'-0\"" style text for a feet-per-point scale (72 pt per inch). */
+export function scaleText(ftPerPt: number): string {
+  const inPerFt = 1 / ftPerPt / 72;
+  const known: Array<[number, string]> = [[1 / 32, '1/32'], [1 / 16, '1/16'], [3 / 32, '3/32'], [1 / 8, '1/8'], [3 / 16, '3/16'], [1 / 4, '1/4'], [3 / 8, '3/8'], [1 / 2, '1/2'], [3 / 4, '3/4'], [1, '1'], [1.5, '1-1/2'], [3, '3']];
+  const hit = known.find(([v]) => Math.abs(v - inPerFt) / v < 0.03);
+  return hit ? `${hit[1]}" = 1'-0"` : `1" = ${Math.round((1 / inPerFt) * 10) / 10}'`;
+}
+
+function runScales(docId: string, pageNumber: number, page: ZonePageInput, zones: PageZone[], devices: Pt[]) {
+  const canvas = useCanvasStore.getState();
+  const calibration = canvas.pageCalibrationsByDoc[docId]?.[pageNumber];
+  let cal: { ftPerPt: number; text: string } | null = null;
+  if (calibration?.pixelsPerUnit && calibration.unit) {
+    const unit = calibration.unit.toLowerCase();
+    const perUnitFt = unit.startsWith('ft') || unit === "'" ? 1 : unit.startsWith('in') ? 1 / 12 : unit === 'm' ? 3.28084 : null;
+    if (perUnitFt) {
+      const ftPerPt = perUnitFt / calibration.pixelsPerUnit;
+      cal = { ftPerPt, text: scaleText(ftPerPt) };
+    }
+  }
+  const view = findViewScale(page, zones, devices);
+  return { calibration: cal, printed: view ? { ftPerPt: view.ftPerPt, text: view.text } : null };
 }
 
 /** Panel names from panel schedules / plan text in the project ("PANEL LP-1", "PANELBOARD A"). */
@@ -379,9 +421,12 @@ export function specWiringMethod(lines: string[]): WiringMethodValue | undefined
   for (const raw of lines) {
     const line = raw.toUpperCase();
     if (!/WIRING METHOD|RACEWAY|BRANCH CIRCUIT|CONDUIT|CABLE/.test(line)) continue;
-    if (/\bEMT\b|ELECTRICAL METALLIC TUBING/.test(line)) score.EMT += 1;
-    if (/\bTYPE MC\b|\bMC CABLE\b|METAL[- ]CLAD CABLE/.test(line)) score.MC += 1;
-    if (/\bPVC\b|RIGID NONMETALLIC/.test(line)) score.PVC40 += 1;
+    // Indoor / concealed branch-circuit lines decide the method; weigh them more.
+    const weight = /INDOOR|CONCEALED|BRANCH CIRCUIT|INTERIOR/.test(line) ? 2 : 1;
+    if (/\bEMT\b|ELECTRICAL METALLIC TUBING/.test(line)) score.EMT += weight;
+    if (/\bTYPE MC\b|\bMC CABLE\b|METAL[- ]CLAD CABLE|\bAC,? (OR )?MC\b/.test(line)) score.MC += weight;
+    // PVC in specs is mostly underground / below slab / exterior — not the branch-circuit method.
+    if (/\bPVC\b|RIGID NONMETALLIC/.test(line) && !/UNDERGROUND|BELOW (GRADE|SLAB)|UNDER SLAB|IN SLAB|BURI|DUCT BANK|EXTERIOR|DIRECT BURIAL|CONCRETE ENCASED/.test(line)) score.PVC40 += weight;
     if (/\bRMC\b|RIGID METAL CONDUIT|RIGID STEEL/.test(line)) score.RMC += 1;
   }
   const ranked = (Object.entries(score) as Array<[WiringMethodValue, number]>).sort((a, b) => b[1] - a[1]);
@@ -736,7 +781,15 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   // The user picked the panels: every circuit goes to one of them — its own tag when it names a
   // chosen panel, else the chosen panel whose tagged circuits sit nearest.
   if (chosenPanels.length > 1) {
-    const owners = circuits.filter(c => c.panel && chosenPanels.includes(normPanel(c.panel)));
+    // Owners: the chosen panels' tagged circuits, plus every printed tag of a chosen panel (so a
+    // panel whose tags sit next to untagged fixtures still gets them).
+    const owners: Array<{ panel?: string; devices: Pt[] }> = [
+      ...circuits.filter(c => c.panel && chosenPanels.includes(normPanel(c.panel))),
+      ...chosenPanels.map(panel => ({
+        panel,
+        devices: readCircuitTags(page.textItems, scheduleNames).filter(t => normPanel(t.panel) === panel).map(t => ({ x: t.x, y: t.y })),
+      })).filter(o => o.devices.length),
+    ];
     circuits = circuits.map(c => {
       if (c.panel && chosenPanels.includes(normPanel(c.panel))) return { ...c, panel: normPanel(c.panel) };
       let best: { panel: string; d: number } | null = null;
@@ -777,7 +830,13 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   };
   let panelPlans: PanelPlan[];
   if (perPanel) {
-    const top = (chosenPanels.length > 1 ? tagPanels.filter(t => chosenPanels.includes(normPanel(t.panel))) : tagPanels).slice(0, 6);
+    // Every panel the user picked gets its location asked, even one no counted fixture is on.
+    const top = (chosenPanels.length > 1
+      ? [
+        ...tagPanels.filter(t => chosenPanels.includes(normPanel(t.panel))),
+        ...chosenPanels.filter(name => !tagPanels.some(t => normPanel(t.panel) === name)).map(panel => ({ panel, circuits: 0, devices: 0 })),
+      ]
+      : tagPanels).slice(0, 6);
     panelPlans = top.map(row => {
       const given = givenPanels.find(p => normLabel(p.label) === normLabel(row.panel))
         || (top.length === 1 && givenPanels.length === 1 && !givenPanels[0].label ? givenPanels[0] : undefined);
@@ -831,7 +890,9 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
       : 'No panel-circuit tags printed next to these fixtures.',
     scheduleNames.length ? `Panel schedules list ${scheduleNames.slice(0, 6).join(', ')}.` : 'No panel schedule found in the indexed sheets.',
   ].join(' ');
-  if (!input.settings?.wiringMethod && !specMethod) missing.push('wiring_method');
+  // The wiring method is always the estimator's call: ask every time (recommending what the
+  // prints / specs / model suggest) until they've picked it.
+  if (!input.wiringMethodConfirmed) missing.push('wiring_method');
   // The sheet names elevators / stairs / shafts we couldn't outline: let the user mark them.
   // Hybrid: the AI drafts boxes from the room labels and the user confirms / adjusts them on the
   // card (and can add more) before anything is routed around them.
@@ -840,6 +901,14 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const hasLoad = input.autoCircuits?.vaPerDevice != null
     || (input.circuits?.length && input.circuits.every(c => c.loadVA != null || c.vaPerDevice != null || c.loadAmps != null));
   if (!hasLoad) missing.push('fixture_load');
+  // Footage must not depend on which scale happened to win: when the page calibration and the
+  // plan's printed scale disagree by more than 5%, the estimator picks.
+  const scales = runScales(docId, input.page, page, zones, circuits.flatMap(c => c.devices));
+  const scaleConflict = scales.calibration && scales.printed
+    && Math.abs(scales.calibration.ftPerPt - scales.printed.ftPerPt) / scales.printed.ftPerPt > 0.05
+    ? { printed: scales.printed.text, calibration: scales.calibration.text }
+    : undefined;
+  if (scaleConflict && !input.scaleChoice) missing.push('scale');
   if (missing.length) {
     const toPct = (pt: Pt) => ({ x: round1((pt.x / W) * 100), y: round1((pt.y / H) * 100) });
     return {
@@ -864,7 +933,8 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
         && (sheetTagPanels.length > 1 || panelsFromCircuits(circuits).length > 1),
       panelRecommended: [...new Set([...panelsFromCircuits(circuits).map(r => r.panel), ...sheetTagPanels.map(r => r.panel)])],
       panelHint: missing.includes('panel_label') ? panelHint : undefined,
-      recommendedWiring: specMethod,
+      recommendedWiring: input.settings?.wiringMethod || specMethod,
+      ...(scaleConflict ? { scaleConflict } : {}),
       obstacleMentions: routing.obstacleMentions,
       obstaclesFound: routing.obstacles.length,
       suggestedAreas: routing.obstacles.map(o => ({
@@ -878,25 +948,13 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     };
   }
 
-  // Scale: user calibration beats the printed view scale.
-  const calibration = canvas.pageCalibrationsByDoc[docId]?.[input.page];
-  let ftPerPt: number | null = null;
-  let scaleSource = '';
-  if (calibration?.pixelsPerUnit && calibration.unit) {
-    const unit = calibration.unit.toLowerCase();
-    const perUnitFt = unit.startsWith('ft') || unit === "'" ? 1 : unit.startsWith('in') ? 1 / 12 : unit === 'm' ? 3.28084 : null;
-    if (perUnitFt) {
-      ftPerPt = perUnitFt / calibration.pixelsPerUnit;
-      scaleSource = 'page calibration';
-    }
-  }
-  if (!ftPerPt) {
-    const viewScale = findViewScale(page, zones, circuits.flatMap(c => c.devices));
-    if (viewScale) {
-      ftPerPt = viewScale.ftPerPt;
-      scaleSource = `printed scale ${viewScale.text}`;
-    }
-  }
+  // Scale: the user's pick when calibration and the printed scale disagree; else calibration,
+  // then the printed view scale.
+  const scaleRows = scales;
+  const pickScale = input.scaleChoice === 'printed' ? (scaleRows.printed || scaleRows.calibration)
+    : (scaleRows.calibration || scaleRows.printed);
+  const ftPerPt: number | null = pickScale?.ftPerPt ?? null;
+  const scaleSource = pickScale ? (pickScale === scaleRows.printed ? `printed scale ${pickScale.text}` : `page calibration (${pickScale.text})`) : '';
   if (!ftPerPt) {
     return {
       needs: 'scale',
@@ -963,7 +1021,7 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   }
 
   const plan = planAllPanels({
-    page, zones, panelPlans, settings, ftPerPt, scaleSource, extraObstacles: userKeepClear, allowed: routing.allowed,
+    page, zones, panelPlans: panelPlans.filter(p => p.circuits.length), settings, ftPerPt, scaleSource, extraObstacles: userKeepClear, allowed: routing.allowed,
     keepClearConfirmed: !!input.keepClearConfirmed && input.keepClear !== undefined,
     floorViews: viewBoxes.length > 1 ? viewBoxes : undefined,
   });

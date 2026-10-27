@@ -50,6 +50,7 @@ export function buildMeasurementFromMarkup(
       type: 'length',
       value: runProductFeet(markup.aiRun.assembly, markup.aiRun.lengthFt || 0),
       unit: 'ft',
+      ...(markup.aiRun.componentProducts?.length ? { components: markup.aiRun.componentProducts.map(c => ({ ...c })) } : {}),
     };
   }
 

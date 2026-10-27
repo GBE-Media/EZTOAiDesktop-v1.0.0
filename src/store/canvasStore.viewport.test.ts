@@ -65,4 +65,15 @@ describe('canvas viewport fit and reset', () => {
     expect(useCanvasStore.getState().fitToCanvas(1200, 800)).toBe(true);
     expect(useCanvasStore.getState().pdfDocuments['doc-a'].viewUserAdjusted).toBe(false);
   });
+
+  it('keeps the page shown when the same page is selected again (AI picks / placements)', () => {
+    seedDocument('doc-a');
+    useCanvasStore.getState().fitToCanvas(1200, 800);
+    useCanvasStore.getState().setCurrentPage(1);
+    const before = useCanvasStore.getState().pdfDocuments['doc-a'];
+    useCanvasStore.getState().setCurrentPage(before.currentPage);
+    const after = useCanvasStore.getState().pdfDocuments['doc-a'];
+    expect(after.hasViewState).toBe(true);
+    expect(after.panOffset).toEqual(before.panOffset);
+  });
 });

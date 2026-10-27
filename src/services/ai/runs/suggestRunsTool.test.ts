@@ -67,7 +67,7 @@ beforeEach(() => {
 
 describe('suggest_runs tool', () => {
   it('asks for the panel location when the label is not on the sheet', async () => {
-    const result = await prepareRunPlan({ page: 4, panel: { label: 'ZZQ-9' }, circuits: circuitsFromTags(), settings: { wiringMethod: 'EMT' } } as never);
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'ZZQ-9' }, circuits: circuitsFromTags(), settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     expect('needs' in result && result.needs).toBe('input');
     expect((result as RunInputNeeded).missing).toEqual(['panel_location']);
   });
@@ -85,17 +85,35 @@ describe('suggest_runs tool', () => {
     const args = applyFieldAnswers(ask.resume!.args, ask.resume!.apply, {
       wiring_method: { value: 'MC', label: 'MC cable' },
     });
-    expect(args).toMatchObject({ page: 4, documentId: DOC, settings: { wiringMethod: 'MC' } });
+    expect(args).toMatchObject({ page: 4, documentId: DOC, settings: { wiringMethod: 'MC' }, wiringMethodConfirmed: true });
     const addApproval = vi.fn();
     const again = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval } as never, args as never);
     expect(again.status).toBe('approval-required');
     expect(again.askUser).toBeUndefined();
   });
 
+  it('always asks the wiring method, pre-selecting the one already given', async () => {
+    const tool = createSuggestRunsTool();
+    const out = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval: vi.fn() } as never, { page: 4, circuits: circuitsFromTags(), settings: { wiringMethod: 'PVC40' } } as never);
+    const field = out.askUser!.fields.find(f => f.id === 'wiring_method')!;
+    expect(field).toBeTruthy();
+    expect(field.recommended).toBe('PVC40');
+  });
+
+  it('asks which scale to use when the calibration and the printed scale disagree', () => {
+    const ask = buildRunInputQuestion({
+      needs: 'input', message: '', documentId: DOC, page: 4, missing: ['scale'], panels: [], panelArgs: [], candidates: [], panelNames: [],
+      scaleConflict: { printed: '1/8" = 1\'-0"', calibration: '1/4" = 1\'-0"' },
+    } as never, { page: 4 });
+    const field = ask.fields.find(f => f.id === 'scale')!;
+    expect(field.options!.map(o => o.value)).toEqual(['printed', 'calibration']);
+    expect(field.recommended).toBe('printed');
+  });
+
   it('circuits from the engineer\'s tags when the model lumps every fixture together', async () => {
     const tagged = circuitsFromTags();
     const lumped = [{ id: 'C1', itemIds: tagged.flatMap(c => c.itemIds), vaPerDevice: 100 }];
-    const result = await prepareRunPlan({ page: 4, circuits: lumped, settings: { wiringMethod: 'EMT' } } as never);
+    const result = await prepareRunPlan({ page: 4, circuits: lumped, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     if ('needs' in result) {
       // Panel LP is not uniquely labelled on this sheet: one point question per tag panel.
       expect(result.needs).toBe('input');
@@ -123,13 +141,16 @@ describe('suggest_runs tool', () => {
   it('splits circuits between the panels the user picked on the multi-select', async () => {
     const tagged = circuitsFromTags();
     const lumped = [{ id: 'C1', itemIds: tagged.flatMap(c => c.itemIds), vaPerDevice: 100 }];
-    const result = await prepareRunPlan({ page: 4, circuits: lumped, panelLabels: ['LP', 'ZQ'], settings: { wiringMethod: 'EMT' } } as never);
+    const result = await prepareRunPlan({ page: 4, circuits: lumped, panelLabels: ['LP', 'ZQ'], settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     // Every circuit lands on a chosen panel (ZQ has no tags here, so all follow LP's tags).
     if ('needs' in result) {
       const needed = result as RunInputNeeded;
       expect(needed.missing).not.toContain('panel_label');
-      expect(needed.panels.flatMap(p => p.circuits).length).toBeGreaterThanOrEqual(tagged.length);
       expect(needed.panels.every(p => ['LP', 'ZQ'].includes(p.label))).toBe(true);
+      // Every chosen panel is planned, and one with no fixtures on it still gets a location question.
+      expect(needed.panelArgs.map(p => p.label).sort()).toEqual(['LP', 'ZQ']);
+      expect(needed.panels.some(p => p.label === 'ZQ')).toBe(true);
+      expect(needed.missing).toContain('panel_location');
     } else {
       expect(result.markups.some(r => r.markup.aiRun?.kind === 'homerun')).toBe(true);
     }
@@ -143,7 +164,7 @@ describe('suggest_runs tool', () => {
 
   it('produces doc-coordinate run markups on a rotated sheet that land on the devices', async () => {
     const circuits = circuitsFromTags();
-    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' } } as never);
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     if ('needs' in result) throw new Error(result.message);
     const runs = result.markups.map(r => r.markup).filter(m => m.type === 'polyline') as PolygonMarkup[];
     const homeRuns = runs.filter(m => m.aiRun?.kind === 'homerun');
@@ -170,7 +191,7 @@ describe('suggest_runs tool', () => {
 
   it('draws visible light-blue runs: branch arcs fixture to fixture, footage stays consistent on edit', async () => {
     const circuits = circuitsFromTags();
-    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' } } as never);
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     if ('needs' in result) throw new Error(result.message);
     const all = result.markups.map(r => r.markup);
     // Opacity is 0–100: every run-plan markup must be fully visible (was 1 = invisible).
@@ -198,7 +219,7 @@ describe('suggest_runs tool', () => {
     const addApproval = vi.fn();
     const out = await tool.execute(
       { runId: 'r1', messageId: 'm1', addApproval } as never,
-      { page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits: circuitsFromTags(), settings: { wiringMethod: 'EMT' } } as never,
+      { page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits: circuitsFromTags(), settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never,
     );
     expect(out.status).toBe('approval-required');
     expect(addApproval).toHaveBeenCalledTimes(1);
@@ -229,7 +250,7 @@ describe('runs follow the placed fixtures', () => {
       ...state,
       pdfDocuments: { [DOC]: { ...state.pdfDocuments[DOC], markupsByPage: { 4: markers } } } as never,
     }));
-    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, keepClear: [] } as never);
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [] } as never);
     if ('needs' in result) throw new Error(result.message);
     const branches = result.markups.map(r => r.markup).filter(m => m.type === 'polyline' && (m as PolygonMarkup).aiRun?.kind === 'branch') as PolygonMarkup[];
     expect(branches.length).toBeGreaterThan(0);

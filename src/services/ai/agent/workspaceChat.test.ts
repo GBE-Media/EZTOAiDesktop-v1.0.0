@@ -104,8 +104,10 @@ describe('discrepancy cards', () => {
     expect(all).toHaveLength(1);
     expect(all[0].drawing.sheetNumber).toBe('E-201');
     const rfi = discrepancyAsRfi(all[0]);
-    expect(rfi).toMatch(/^RFI: Fixture type A/);
+    expect(rfi).toMatch(/^Subject: RFI – Fixture type A/);
     expect(rfi).toContain('"CCT: 3500K"');
+    expect(rfi).toMatch(/Question:\n.+\?/);
+    expect(rfi).toContain('Please reply with which requirement governs');
   });
 
   it('rejects unknown documents instead of inventing citations', async () => {

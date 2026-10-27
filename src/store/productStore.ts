@@ -377,22 +377,31 @@ export const useProductStore = create<ProductStore>()(
         set((state) => {
           const node = state.nodes[productId];
           if (!node || node.type !== 'product') return state;
-          
-          const newMeasurement: LinkedMeasurement = {
-            ...measurement,
-            id: generateId(),
-            createdAt: new Date().toISOString(),
+          const createdAt = new Date().toISOString();
+          const nodes = { ...state.nodes };
+          nodes[productId] = {
+            ...node,
+            measurements: [...(node.measurements || []), { ...measurement, id: generateId(), createdAt }],
           };
-          
-          return {
-            nodes: {
-              ...state.nodes,
-              [productId]: {
-                ...node,
-                measurements: [...(node.measurements || []), newMeasurement],
-              },
-            },
-          };
+          // Conduit run: the wire inside is its own product (run feet × conductors).
+          for (const component of measurement.components || []) {
+            const target = nodes[component.productId];
+            if (!target || target.type !== 'product' || component.productId === productId) continue;
+            const { components: _components, ...base } = measurement;
+            void _components;
+            nodes[component.productId] = {
+              ...target,
+              measurements: [...(target.measurements || []), {
+                ...base,
+                id: generateId(),
+                createdAt,
+                value: Math.round(measurement.value * component.perFt * 10) / 10,
+                componentOf: measurement.markupId,
+                perFt: component.perFt,
+              }],
+            };
+          }
+          return { nodes };
         });
       },
       
@@ -416,29 +425,20 @@ export const useProductStore = create<ProductStore>()(
       unlinkMeasurementByMarkupId: (markupId) => {
         const state = get();
         let unlinkedMeasurement: LinkedMeasurement | null = null;
-        
-        // Find the measurement by markupId across all products
+        const nodes = { ...state.nodes };
+        let changed = false;
+        // The primary link and any component links (wire in a conduit run) all go together.
         for (const nodeId of Object.keys(state.nodes)) {
           const node = state.nodes[nodeId];
           if (node.type !== 'product') continue;
-          
-          const measurement = (node.measurements || []).find((m) => m.markupId === markupId);
-          if (measurement) {
-            unlinkedMeasurement = measurement;
-            // Remove it from this product
-            set((s) => ({
-              nodes: {
-                ...s.nodes,
-                [nodeId]: {
-                  ...s.nodes[nodeId],
-                  measurements: (s.nodes[nodeId].measurements || []).filter((m) => m.markupId !== markupId),
-                },
-              },
-            }));
-            break;
-          }
+          const rows = node.measurements || [];
+          if (!rows.some((m) => m.markupId === markupId)) continue;
+          const primary = rows.find((m) => m.markupId === markupId && !m.componentOf);
+          if (primary && !unlinkedMeasurement) unlinkedMeasurement = primary;
+          nodes[nodeId] = { ...node, measurements: rows.filter((m) => m.markupId !== markupId) };
+          changed = true;
         }
-        
+        if (changed) set({ nodes });
         return unlinkedMeasurement;
       },
       
@@ -449,7 +449,7 @@ export const useProductStore = create<ProductStore>()(
           const node = nodes[nodeId];
           if (node.type !== 'product') continue;
           
-          const measurement = (node.measurements || []).find((m) => m.markupId === markupId);
+          const measurement = (node.measurements || []).find((m) => m.markupId === markupId && !m.componentOf);
           if (measurement) {
             return { productId: nodeId, measurement };
           }
@@ -460,6 +460,23 @@ export const useProductStore = create<ProductStore>()(
       
       updateMeasurementValueByMarkupId: (markupId, newValue) => {
         const state = get();
+        // Wire in a conduit run follows the run's new length.
+        const round1 = (v: number) => Math.round(v * 10) / 10;
+        if (Object.values(state.nodes).some((n) => (n.measurements || []).some((m) => m.markupId === markupId && m.componentOf))) {
+          const nodes = { ...state.nodes };
+          for (const nodeId of Object.keys(nodes)) {
+            const node = nodes[nodeId];
+            if (!(node.measurements || []).some((m) => m.markupId === markupId)) continue;
+            nodes[nodeId] = {
+              ...node,
+              measurements: (node.measurements || []).map((m) => (m.markupId !== markupId
+                ? m
+                : { ...m, value: m.componentOf ? round1(newValue * (m.perFt || 1)) : newValue })),
+            };
+          }
+          set({ nodes });
+          return;
+        }
         
         // Find the product containing this measurement
         for (const nodeId of Object.keys(state.nodes)) {

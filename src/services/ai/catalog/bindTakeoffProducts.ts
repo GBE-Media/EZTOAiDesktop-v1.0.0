@@ -5,7 +5,7 @@
  */
 import type { CanvasMarkup } from '@/types/markup';
 import { takeoffColor } from '@/lib/takeoffColors';
-import { assemblyProductSpec, runProductFeet } from '../runs/runMaterials';
+import { runMaterialProducts, runProductFeet } from '../runs/runMaterials';
 import { ensureTakeoffProduct, fixtureProductSpec, type TakeoffProductSpec } from './takeoffProducts';
 
 export interface BoundProduct {
@@ -61,8 +61,27 @@ export function bindTakeoffProducts(rows: Array<{ page: number; markup: CanvasMa
     if (m.type === 'count-marker') {
       spec = countSpec(m.label || '');
     } else if (m.type === 'polyline' && m.aiRun?.assembly && (m.aiRun.kind === 'homerun' || m.aiRun.kind === 'branch')) {
-      spec = assemblyProductSpec({ ...m.aiRun.assembly }, m.aiRun.kind);
-      ft = runProductFeet(m.aiRun.assembly, m.aiRun.lengthFt || 0);
+      // Conduit (or cable) is the run's product; the wire inside is its own product(s).
+      const products = runMaterialProducts(m.aiRun.assembly);
+      if (products.length) {
+        spec = products[0].spec;
+        ft = runProductFeet(m.aiRun.assembly, m.aiRun.lengthFt || 0);
+        const components: Array<{ productId: string; perFt: number }> = [];
+        for (const component of products.slice(1)) {
+          try {
+            const { productId, created } = ensure(component.spec);
+            components.push({ productId, perFt: component.perFt / (products[0].perFt || 1) });
+            const row = byId.get(productId) || { productId, name: component.spec.name, created, count: 0, unit: 'ft' as const };
+            row.count += 1;
+            // Same number the product tree shows: the run's footage × conductors.
+            row.ft = Math.round(((row.ft || 0) + runProductFeet(m.aiRun.assembly, m.aiRun.lengthFt || 0) * (component.perFt / (products[0].perFt || 1))) * 10) / 10;
+            byId.set(productId, row);
+          } catch {
+            // Library unavailable for this material: the conduit still links.
+          }
+        }
+        m.aiRun = { ...m.aiRun, componentProducts: components.length ? components : undefined };
+      }
     }
     if (!spec) continue;
     try {

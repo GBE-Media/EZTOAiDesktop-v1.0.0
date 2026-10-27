@@ -195,7 +195,24 @@ export function planRuns(input: PlanRunsInput): RunPlan {
   }
   const obstacles = [...(input.keepClearConfirmed ? [] : context.obstacles), ...(input.extraObstacles || [])];
   // Devices or the panel inside an obstacle footprint must not be walled in.
-  const obstacleBoxes = obstacles.map(o => o.box).filter(box => !pointIn(input.panel, box) && !allDevices.some(d => pointIn(d, box)));
+  // Auto-detected ones are dropped then; the user's keep-clear boxes always stand (the router
+  // steps out of a box from the nearest free cell).
+  const userBoxes = new Set((input.extraObstacles || []).map(o => o.box));
+  const obstacleBoxes = obstacles.map(o => o.box).filter(box => userBoxes.has(box) || (!pointIn(input.panel, box) && !allDevices.some(d => pointIn(d, box))));
+  // A drawn arc must respect the keep-clear areas too, not just the routed footage path.
+  const arcHits = (a: Pt, mid: Pt, b: Pt) => {
+    const c = { x: 2 * mid.x - (a.x + b.x) / 2, y: 2 * mid.y - (a.y + b.y) / 2 };
+    const pts: Pt[] = [];
+    for (let i = 0; i <= 16; i += 1) {
+      const t = i / 16;
+      pts.push({ x: (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * c.x + t * t * b.x, y: (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * c.y + t * t * b.y });
+    }
+    return obstacleBoxes.some(box => {
+      const inner = shrink(box, 1);
+      if (pointIn(a, inner) || pointIn(b, inner)) return false;
+      return pts.some((p, i) => i + 1 < pts.length && segmentHitsBox(p, pts[i + 1], inner));
+    });
+  };
   const router = new OrthoRouter({ width: W, height: H, segments: page.segments, obstacles: obstacleBoxes, allowed, blocked });
 
   const runs: PlannedRun[] = [];
@@ -220,13 +237,19 @@ export function planRuns(input: PlanRunsInput): RunPlan {
       const b = order[i + 1];
       const chord = Math.hypot(b.x - a.x, b.y - a.y) || 1;
       const bulge = Math.min(chord * 0.18, bulgeMax);
-      const mid = { x: (a.x + b.x) / 2 - ((b.y - a.y) / chord) * bulge, y: (a.y + b.y) / 2 + ((b.x - a.x) / chord) * bulge };
+      let mid = { x: (a.x + b.x) / 2 - ((b.y - a.y) / chord) * bulge, y: (a.y + b.y) / 2 + ((b.x - a.x) / chord) * bulge };
+      let arc: [Pt, Pt, Pt] | undefined = [a, mid, b];
+      if (arcHits(a, mid, b)) {
+        // Bulge the other way; if that also clips a keep-clear box, draw the routed path.
+        mid = { x: (a.x + b.x) / 2 + ((b.y - a.y) / chord) * bulge, y: (a.y + b.y) / 2 - ((b.x - a.x) / chord) * bulge };
+        arc = arcHits(a, mid, b) ? undefined : [a, mid, b];
+      }
       runs.push({
         id: `${circuit.id}-b${i + 1}`,
         kind: 'branch',
         circuitIds: [circuit.id],
         path: leg.path,
-        arc: [a, mid, b],
+        ...(arc ? { arc } : {}),
         fromPt: a,
         toPt: b,
         lengthFt: round1(len * input.ftPerPt),
