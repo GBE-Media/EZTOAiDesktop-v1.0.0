@@ -3,6 +3,7 @@
  * an estimator would check by eye; anything that fails is listed (and the model must say so).
  */
 import type { Box, Pt } from './spatial';
+import { outsideShare, type Footprint } from './footprint';
 
 type AuditRun = { id: string; kind: 'homerun' | 'branch'; path: Pt[]; arc?: [Pt, Pt, Pt]; lengthFt: number; riserFt?: number; label?: string };
 
@@ -35,7 +36,7 @@ function arcPoints([a, m, b]: [Pt, Pt, Pt]): Pt[] {
 
 export function auditRuns(
   runs: AuditRun[],
-  options: { ftPerPt: number; floorViews?: Box[]; keepClear?: Array<{ label: string; box: Box }>; pageMax: number },
+  options: { ftPerPt: number; floorViews?: Box[]; keepClear?: Array<{ label: string; box: Box }>; pageMax: number; footprint?: Footprint | null },
 ): RunAudit {
   const flagged: string[] = [];
   const name = (r: AuditRun) => (r.kind === 'homerun' ? r.id : `${r.id.replace(/-b\d+$/, '')} branch`);
@@ -43,13 +44,23 @@ export function auditRuns(
   const views = (options.floorViews || []).map(v => ({ x: v.x - pad, y: v.y - pad, width: v.width + 2 * pad, height: v.height + 2 * pad }));
   const inBox = (p: Pt, b: Box) => p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + b.height;
 
-  let offPlan = 0; let zoneHits = 0; let footage = 0;
+  let offPlan = 0; let zoneHits = 0; let footage = 0; let whiteSpace = 0;
   for (const run of runs) {
     const drawn = run.arc ? arcPoints(run.arc) : run.path;
     // 1. A run stays on one floor's plan (a floor change is a riser, never a line across the gap).
     if (views.length > 1 && drawn.length) {
       const home = views.findIndex(v => drawn.every(p => inBox(p, v)));
       if (home < 0) { offPlan += 1; flagged.push(`${name(run)} leaves its floor plan (crosses white space) — move it onto the plan.`); }
+    }
+    // 1b. Inside the building: no stretch of the run out in the white space around the plan
+    // (a fixture just outside an exterior wall still gets its short stub).
+    if (options.footprint && drawn.length > 1) {
+      const out = outsideShare(options.footprint, drawn);
+      const len = pathLength(drawn) * options.ftPerPt;
+      if (out > 0.02 && out * len > 3) {
+        whiteSpace += 1;
+        flagged.push(`${name(run)} runs ${Math.round(out * 100)}% outside the building (white space) — reroute it inside.`);
+      }
     }
     // 2. Keep-clear zones.
     for (const zone of options.keepClear || []) {
@@ -81,6 +92,7 @@ export function auditRuns(
   }
   const passed = [
     ...(views.length > 1 && !offPlan ? ['Every run stays on its own floor plan; floor changes use risers.'] : []),
+    ...(options.footprint && !whiteSpace ? ['Every run stays inside the building outline (no white space).'] : []),
     ...((options.keepClear || []).length && !zoneHits ? [`No run enters the ${(options.keepClear || []).length} keep-clear zone(s).`] : []),
     ...(!footage ? ['Home-run footage matches the drawn paths.'] : []),
     ...(branchFt.length >= 5 && !jumps ? ['No unusual fixture-to-fixture jumps.'] : []),

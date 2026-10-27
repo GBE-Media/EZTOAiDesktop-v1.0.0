@@ -12,6 +12,7 @@ import {
 } from './imageCapture';
 import { getZoneInputs, skipTilesCoveredByNonPlanZones, type PageZone } from './detection/pageZones';
 import { buildSymbolComponents, refineDetectionsWithSymbols } from './detection/vectorSymbols';
+import { bubbleAt, findAnnotationBubbles } from './detection/annotationBubbles';
 import { mergeLegendEntries, type SheetLegend } from './detection/sheetLegend';
 import {
   getTextContentWithBounds,
@@ -839,7 +840,10 @@ export async function analyzePageMaximumAccuracy(options: {
         (legendEntries.length
           ? 'For each item include legendTypeCode (from the allowed legend list or "no_confident_match"), matchConfidence ("high"|"medium"|"low"), and matchReasoning. '
           : '') +
-        'Do not count schedule/legend rows as installed items.',
+        'Do not count schedule/legend rows as installed items. '
+        + 'Never count drawing annotations as fixtures: column/row grid bubbles (a number or letter in a circle at the end of a dash-dot grid line), '
+        + 'section/detail callouts (a circle split with a sheet number like E-6), view-title bubbles, keynote hexagons/diamonds, north arrows, or text tags themselves — '
+        + 'count the fixture symbol, not the label next to it.',
         page
       ));
       tileResults.push({ region: tile.region, result });
@@ -879,6 +883,21 @@ export async function analyzePageMaximumAccuracy(options: {
   // Deterministic cross-check against the type tags printed on the plan (same every run).
   const extraNotes: string[] = [];
   let anchoredItems = locatedItems;
+  // Grid bubbles, section callouts and view-title bubbles: never fixtures, never type tags.
+  const zoneInput = visibleOnly ? null : await Promise.resolve().then(() => pdfDoc.getPage(page)).then(getZoneInputs).catch(() => null);
+  const symbolComponents = zoneInput?.segments?.length ? buildSymbolComponents(zoneInput.segments) : [];
+  const bubbles = zoneInput ? findAnnotationBubbles(symbolComponents, zoneInput.textItems) : [];
+  const onBubble = (xPct: number, yPct: number) => !!zoneInput && !!bubbleAt(bubbles, (xPct / 100) * zoneInput.pageWidth, (yPct / 100) * zoneInput.pageHeight);
+  if (bubbles.length) {
+    const kept = anchoredItems.filter(item => item.locationMissing || !onBubble(item.location.x, item.location.y));
+    const removed = anchoredItems.length - kept.length;
+    if (removed) {
+      const kinds = [...new Set(bubbles.map(b => (b.kind === 'grid' ? 'grid bubbles' : b.kind === 'callout' ? 'section/detail callouts' : 'view titles')))].join(', ');
+      extraNotes.push(`${removed} detection(s) sitting on drawing annotations (${kinds}) removed — those are not fixtures.`);
+    }
+    anchoredItems = kept;
+    console.info('[analyzePage] annotation bubbles', { page, bubbles: bubbles.length, removed });
+  }
   if (!visibleOnly && legendEntries.length && textEvidence.source === 'native' && textEvidence.items?.length) {
     const textFrameOk = await Promise.resolve().then(() => pdfDoc.getPage(page)).then(pdfPage => {
       const view = (pdfPage as unknown as { view?: number[]; rotate?: number });
@@ -905,8 +924,10 @@ export async function analyzePageMaximumAccuracy(options: {
           && py >= analysisRegion.y && py <= analysisRegion.y + analysisRegion.height;
       });
     }
+    // A grid bubble "A" or "6" is not a fixture-type tag.
+    if (bubbles.length) anchors = anchors.filter(anchor => !onBubble(anchor.x, anchor.y));
     if (anchors.length) {
-      const anchored = anchorDetectionsToTextTags(locatedItems, anchors, pageWidth, pageHeight);
+      const anchored = anchorDetectionsToTextTags(anchoredItems, anchors, pageWidth, pageHeight);
       anchoredItems = anchored.items;
       if (anchored.matched || anchored.added) {
         const tags = Object.entries(anchored.tagCounts).map(([code, n]) => `${code} ${n}`).join(', ');
@@ -922,14 +943,15 @@ export async function analyzePageMaximumAccuracy(options: {
   // Pin-point placement + duplicate/miss check against the drawn symbols (deterministic).
   let symbolCheck: SymbolCheckStats | undefined;
   if (!visibleOnly && anchoredItems.length) {
-    const zoneInput = await Promise.resolve().then(() => pdfDoc.getPage(page)).then(getZoneInputs).catch(() => null);
     if (zoneInput?.segments?.length) {
       const sx = zoneInput.pageWidth;
       const sy = zoneInput.pageHeight;
       const region = analysisRegion
         ? { x: (analysisRegion.x / pageWidth) * sx, y: (analysisRegion.y / pageHeight) * sy, width: (analysisRegion.width / pageWidth) * sx, height: (analysisRegion.height / pageHeight) * sy }
         : undefined;
-      const refined = refineDetectionsWithSymbols(anchoredItems, buildSymbolComponents(zoneInput.segments), sx, sy, { zones: pageZones, region });
+      // Bubble circles can never be snapped onto or "recovered" as missed fixtures.
+      const fixtureComponents = bubbles.length ? symbolComponents.filter(c => !bubbleAt(bubbles, c.cx, c.cy)) : symbolComponents;
+      const refined = refineDetectionsWithSymbols(anchoredItems, fixtureComponents, sx, sy, { zones: pageZones, region });
       anchoredItems = refined.items;
       const moves = [...(refined.moves || [])].sort((a, b) => a - b);
       symbolCheck = {

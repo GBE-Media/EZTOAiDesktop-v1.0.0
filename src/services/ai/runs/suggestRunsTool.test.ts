@@ -27,8 +27,8 @@ vi.mock('../agent/pageAnalysisCache', () => ({
 import { useCanvasStore } from '@/store/canvasStore';
 import { getAssistantTool } from '../tools/registry';
 import { runLengthFt } from './overlay';
-import { buildRunInputQuestion, createSuggestRunsTool, KEEPOUT_COLOR, RUN_COLOR, panelNameCandidates, prepareRunPlan, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
-import { applyFieldAnswers } from '../agent/askUser';
+import { buildRunInputQuestion, createSuggestRunsTool, KEEPOUT_COLOR, RUN_COLOR, panelNameCandidates, prepareRunPlan, resetRunDecisions, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
+import { applyFieldAnswers, formatFieldAnswersForModel, type AskUserRequest } from '../agent/askUser';
 import { createPageGeometry, docToRender, renderToDoc as renderToDocHelper } from '../placement/coords';
 import type { PolygonMarkup } from '@/types/markup';
 
@@ -48,7 +48,14 @@ function circuitsFromTags() {
   return [...byCircuit.entries()].map(([id, itemIds]) => ({ id, itemIds, vaPerDevice: 150, voltage: 120, phase: 1 as const }));
 }
 
+/** The user answers the card in the app (pins the answer, like the chat drawer does). */
+function answerCard(ask: AskUserRequest, answers: Record<string, unknown>) {
+  formatFieldAnswersForModel({ fields: ask.fields, resume: ask.resume } as never, answers as never);
+  return applyFieldAnswers(ask.resume!.args, ask.resume!.apply, answers as never);
+}
+
 beforeEach(() => {
+  resetRunDecisions();
   useCanvasStore.setState(state => ({
     ...state,
     activeDocId: DOC,
@@ -60,6 +67,7 @@ beforeEach(() => {
         originalPageWidth: H,
         originalPageHeight: W,
         contentRevision: 0,
+        markupsByPage: {},
       },
     } as never,
     pageCalibrationsByDoc: {},
@@ -83,7 +91,7 @@ describe('suggest_runs tool', () => {
     // wiring method is asked.
     expect(ask.fields.map(f => f.id)).toEqual(['wiring_method']);
     expect(ask.fields.find(f => f.id === 'wiring_method')!.options!.map(o => o.value)).toEqual(['EMT', 'MC', 'PVC40', 'RMC']);
-    const args = applyFieldAnswers(ask.resume!.args, ask.resume!.apply, {
+    const args = answerCard(ask, {
       wiring_method: { value: 'MC', label: 'MC cable' },
     });
     expect(args).toMatchObject({ page: 4, documentId: DOC, settings: { wiringMethod: 'MC' }, wiringMethodConfirmed: true });
@@ -91,6 +99,19 @@ describe('suggest_runs tool', () => {
     const again = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval } as never, args as never);
     expect(again.status).toBe('approval-required');
     expect(again.askUser).toBeUndefined();
+    // The pick is remembered for this document: a later run with the same method doesn't ask…
+    const later = await tool.execute({ runId: 'r2', messageId: 'm2', addApproval: vi.fn() } as never, { page: 4, circuits, settings: { wiringMethod: 'MC' }, wiringMethodConfirmed: true } as never);
+    expect(later.status).toBe('approval-required');
+    // …and the model can't swap it on its own: a different method asks again, pre-selected.
+    const swapped = await tool.execute({ runId: 'r3', messageId: 'm3', addApproval: vi.fn() } as never, { page: 4, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
+    expect(swapped.askUser?.fields.find(f => f.id === 'wiring_method')?.recommended).toBe('EMT');
+  });
+
+  it('never lets the model confirm the material itself (the spec method is only the recommendation)', async () => {
+    const tool = createSuggestRunsTool();
+    const out = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval: vi.fn() } as never, { page: 4, circuits: circuitsFromTags(), settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
+    expect(out.status).toBe('completed');
+    expect(out.askUser?.fields.map(f => f.id)).toContain('wiring_method');
   });
 
   it('always asks the wiring method, pre-selecting the one already given', async () => {
@@ -215,18 +236,83 @@ describe('suggest_runs tool', () => {
     expect(keepouts.every(m => m.style.strokeColor === KEEPOUT_COLOR)).toBe(true);
   });
 
+  it('locks the panel the user clicked: later runs end there and never move or redraw it', async () => {
+    const tool = createSuggestRunsTool();
+    const circuits = circuitsFromTags().map(c => ({ ...c, id: c.id.replace('LP', 'C') }));
+    const first = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval: vi.fn() } as never, { page: 4, panel: { label: 'ZZQ-9' }, circuits } as never);
+    expect(first.askUser!.fields.map(f => f.id)).toEqual(expect.arrayContaining(['panel_location', 'wiring_method']));
+    const args = answerCard(first.askUser!, {
+      panel_location: { point: { page: 4, xPct: 83, yPct: 52 } },
+      wiring_method: { value: 'EMT', label: 'EMT' },
+    });
+    const addApproval = vi.fn();
+    const placed = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval } as never, args as never);
+    expect(placed.status).toBe('approval-required');
+    // On the page right away (before any approval), locked and marked as the user's.
+    const pageMarkups = () => useCanvasStore.getState().getMarkupsByPage(DOC)[4] || [];
+    const panel = pageMarkups().find(m => m.aiRun?.kind === 'panel')!;
+    expect(panel.aiRun?.userPlaced).toBe(true);
+    expect(panel.locked).toBe(true);
+    const approval = addApproval.mock.calls[0][0];
+    expect(approval.payload.markups.some((r: { markup: { aiRun?: { kind: string } } }) => r.markup.aiRun?.kind === 'panel')).toBe(false);
+
+    // The model re-sends a different spot: the user's panel still wins.
+    const again = await prepareRunPlan({ page: 4, panel: { label: 'ZZQ-9', x: 20, y: 20 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never, { strict: true });
+    if ('needs' in again) throw new Error(again.message);
+    const r = panel as unknown as { x: number; y: number; width: number; height: number };
+    const centre = { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    const homeRuns = again.markups.map(m => m.markup as PolygonMarkup).filter(m => m.aiRun?.kind === 'homerun');
+    expect(homeRuns.length).toBeGreaterThan(0);
+    for (const h of homeRuns) {
+      const end = h.points[h.points.length - 1];
+      expect(Math.hypot(end.x - centre.x, end.y - centre.y)).toBeLessThan(r.width * 2);
+    }
+
+    // Approving the runs replaces old runs but never the user's panel.
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k), clear: () => store.clear() });
+    const { placeSuggestedRuns } = await import('../placement/handleApprovalDecision');
+    placeSuggestedRuns({ ...approval, payload: { ...approval.payload, markups: again.markups } } as never);
+    const after = pageMarkups().filter(m => m.aiRun?.kind === 'panel');
+    expect(after.map(m => m.id)).toEqual([panel.id]);
+  });
+
+  it('commits the user\'s keep-clear boxes to the page at once; the model can\'t shift or add copies', async () => {
+    const circuits = circuitsFromTags();
+    const zonePct = { x: 10, y: 10, width: 8, height: 6 };
+    const base = { page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true };
+    const first = await prepareRunPlan({ ...base, keepClear: [zonePct], keepClearConfirmed: true } as never, { strict: true, fromCard: true, cardKeys: ['keepClear', 'keepClearConfirmed', 'panel', 'wiringMethodConfirmed'] });
+    if ('needs' in first) throw new Error(first.message);
+    const zones = () => (useCanvasStore.getState().getMarkupsByPage(DOC)[4] || []).filter(m => m.aiRun?.kind === 'keepout');
+    expect(zones()).toHaveLength(1);
+    expect(zones()[0].locked).toBe(true);
+    // Not redrawn by the run itself.
+    expect(first.markups.some(r => r.markup.aiRun?.kind === 'keepout')).toBe(false);
+    const before = JSON.stringify(zones()[0]);
+    // The model re-types the zone a little off (and adds one): nothing new lands on the page,
+    // the user's zone stays exactly where it was, and no card asks again.
+    const second = await prepareRunPlan({ ...base, keepClear: [{ ...zonePct, x: 11.5 }, { x: 60, y: 60, width: 5, height: 5 }] } as never, { strict: true });
+    if ('needs' in second) throw new Error(second.message);
+    expect(second.markups.some(r => r.markup.aiRun?.kind === 'keepout')).toBe(false);
+    expect(zones()).toHaveLength(1);
+    expect(JSON.stringify(zones()[0])).toBe(before);
+  });
+
   it('is approval-gated and registered', async () => {
     const tool = createSuggestRunsTool();
     const addApproval = vi.fn();
-    const out = await tool.execute(
-      { runId: 'r1', messageId: 'm1', addApproval } as never,
-      { page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits: circuitsFromTags(), settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never,
-    );
+    const first = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval: vi.fn() } as never, { page: 4, circuits: circuitsFromTags() } as never);
+    const args = answerCard(first.askUser!, { wiring_method: { value: 'EMT', label: 'EMT' } });
+    const out = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval } as never, args as never);
     expect(out.status).toBe('approval-required');
     expect(addApproval).toHaveBeenCalledTimes(1);
     const approval = addApproval.mock.calls[0][0];
     expect(approval.toolId).toBe('suggest_runs');
     expect(approval.payload.markups.length).toBeGreaterThan(0);
+    // Routed inside the building outline: the white-space check runs and passes.
+    const checks = (out.output as { checks: { flagged: string[]; passed: string[] } }).checks;
+    expect(checks.flagged.filter(f => /outside the building/.test(f))).toEqual([]);
+    expect(checks.passed.some(p => /inside the building/.test(p))).toBe(true);
     expect(getAssistantTool('getRunSuggestions')).toBeUndefined();
   });
 });

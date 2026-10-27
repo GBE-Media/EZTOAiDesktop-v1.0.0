@@ -7,6 +7,7 @@
  */
 import type { PageZone, ZonePageInput } from '../detection/pageZones';
 import { zoneAtPoint } from '../detection/pageZones';
+import { footprintContains, outsideShare, type Footprint } from './footprint';
 import { codeRef, formatSize, type ConductorSize, type Material, type RacewayType } from './necTables';
 import {
   describeConductors,
@@ -115,6 +116,8 @@ export type PlanRunsInput = {
    * hold this panel's devices — never across the white space to another floor.
    */
   floorViews?: Box[];
+  /** Building outline: runs never leave it (no routing through white space). */
+  footprint?: Footprint | null;
 };
 
 /** Plan view holding a point; points in the white space / just outside go to the nearest view. */
@@ -207,13 +210,16 @@ export function planRuns(input: PlanRunsInput): RunPlan {
       const t = i / 16;
       pts.push({ x: (1 - t) * (1 - t) * a.x + 2 * (1 - t) * t * c.x + t * t * b.x, y: (1 - t) * (1 - t) * a.y + 2 * (1 - t) * t * c.y + t * t * b.y });
     }
+    // An arc that swings out past the exterior wall into the white space is not drawn.
+    if (input.footprint && footprintContains(input.footprint, a) && footprintContains(input.footprint, b)
+      && outsideShare(input.footprint, pts) > 0.02) return true;
     return obstacleBoxes.some(box => {
       const inner = shrink(box, 1);
       if (pointIn(a, inner) || pointIn(b, inner)) return false;
       return pts.some((p, i) => i + 1 < pts.length && segmentHitsBox(p, pts[i + 1], inner));
     });
   };
-  const router = new OrthoRouter({ width: W, height: H, segments: page.segments, obstacles: obstacleBoxes, allowed, blocked });
+  const router = new OrthoRouter({ width: W, height: H, segments: page.segments, obstacles: obstacleBoxes, allowed, blocked, footprint: input.footprint });
 
   const runs: PlannedRun[] = [];
   const codeRefs = new Set<string>();
