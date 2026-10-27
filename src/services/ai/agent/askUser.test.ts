@@ -47,7 +47,7 @@ describe('structured question fields', () => {
     const resume = { toolId: 'suggest_runs', args: { page: 93, circuits: [] }, apply: { loc: 'panel', name: 'panel.label', wm: 'settings.wiringMethod' } };
     const answers = { loc: { point: { page: 93, xPct: 41.26, yPct: 12.04 } }, name: { value: 'LP-1' }, wm: { value: 'MC' } };
     expect(applyFieldAnswers(resume.args, resume.apply, answers)).toEqual({
-      page: 93, circuits: [], panel: { x: 41.3, y: 12, label: 'LP-1' }, settings: { wiringMethod: 'MC' },
+      page: 93, circuits: [], panel: { x: 41.26, y: 12.04, label: 'LP-1' }, settings: { wiringMethod: 'MC' },
     });
     const fields = sanitizeClarificationFields([{ id: 'loc', kind: 'point', prompt: 'Where?' }]);
     const lines = formatFieldAnswersForModel({ fields, resume }, answers);
@@ -139,7 +139,7 @@ describe('structured answers: flags and areas', () => {
       keep: { areas: [{ page: 1, xPct: 5, yPct: 6, wPct: 7, hPct: 8 }] },
     });
     expect(merged).toEqual({
-      panels: [{ label: 'B', x: 10, y: 20 }, { label: 'C', offSheet: true }],
+      panels: [{ label: 'B', x: 10.04, y: 20 }, { label: 'C', offSheet: true }],
       keepClear: [{ x: 5, y: 6, width: 7, height: 8 }],
     });
     const fields = sanitizeClarificationFields([{ id: 'keep', kind: 'area', prompt: 'Keep clear?' }]);

@@ -214,6 +214,16 @@ export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarku
     canvas.setActiveDocId(rows.docId);
     useEditorStore.getState().setActiveDocument(rows.docId);
   }
+  // A new layout replaces the previous suggested runs on that page (no stacked duplicates).
+  // Keep-clear zones stay locked where the user put them.
+  const pages = [...new Set(markups.map(m => m.page))];
+  for (const page of pages) {
+    const state = useCanvasStore.getState();
+    const old = (state.getMarkupsByPage(rows.docId)[page] || [])
+      .filter(m => m.aiRun && m.aiRun.kind !== 'keepout')
+      .map(m => m.id);
+    if (old.length) state.deleteMarkups(page, old);
+  }
   const result = useCanvasStore.getState().addAIMarkupBatch(markups, false);
   if (!result.ok) return { status: 'failed', placed: 0, error: result.reason || 'Could not place runs' };
   return {

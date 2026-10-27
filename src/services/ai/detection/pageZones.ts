@@ -150,6 +150,20 @@ export async function extractZoneInputs(page: PDFPageProxy): Promise<ZonePageInp
   return { pageWidth: viewport.width, pageHeight: viewport.height, textItems, segments };
 }
 
+const zoneInputCache = new WeakMap<object, Promise<ZonePageInput>>();
+
+/** extractZoneInputs, once per loaded page (counting, zoning and runs share it). */
+export function getZoneInputs(page: PDFPageProxy): Promise<ZonePageInput> {
+  const hit = zoneInputCache.get(page);
+  if (hit) return hit;
+  const pending = extractZoneInputs(page).catch((error) => {
+    zoneInputCache.delete(page);
+    throw error;
+  });
+  zoneInputCache.set(page, pending);
+  return pending;
+}
+
 const MAX_SEGMENTS = 200_000;
 
 async function extractSegments(page: PDFPageProxy, vt: Matrix): Promise<number[]> {
@@ -363,7 +377,7 @@ export async function zonePage(
   if (cached?.length) return cached;
 
   const pdfPage = await pdfDoc.getPage(page);
-  const input = await extractZoneInputs(pdfPage);
+  const input = await getZoneInputs(pdfPage);
   if (isSparseText(input.textItems) && options?.visionFallback) {
     input.visionZones = await options.visionFallback({ pageWidth: input.pageWidth, pageHeight: input.pageHeight });
   }

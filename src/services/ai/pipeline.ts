@@ -10,7 +10,8 @@ import {
   capturePageVisionBundle,
   type PageTileRegion,
 } from './imageCapture';
-import { skipTilesCoveredByNonPlanZones, type PageZone } from './detection/pageZones';
+import { getZoneInputs, skipTilesCoveredByNonPlanZones, type PageZone } from './detection/pageZones';
+import { buildSymbolComponents, refineDetectionsWithSymbols } from './detection/vectorSymbols';
 import { mergeLegendEntries, type SheetLegend } from './detection/sheetLegend';
 import {
   getTextContentWithBounds,
@@ -884,9 +885,17 @@ export async function analyzePageMaximumAccuracy(options: {
       return ((view.rotate ?? 0) % 360) === 0 && vx0 === 0 && vy0 === 0
         && Math.abs(vx1 - pageWidth) < 1 && Math.abs(vy1 - pageHeight) < 1;
     }).catch(() => false);
+    const codes = legendEntries.map(entry => entry.typeCode);
     let anchors = textFrameOk
-      ? findTypeTagAnchors(textEvidence.items, legendEntries.map(entry => entry.typeCode), pageWidth, pageHeight, pageZones)
+      ? findTypeTagAnchors(textEvidence.items, codes, pageWidth, pageHeight, pageZones)
       : [];
+    if (!textFrameOk) {
+      // Rotated sheet: read the tags from the rotation-correct (display) text instead.
+      const display = await Promise.resolve().then(() => pdfDoc.getPage(page)).then(getZoneInputs).catch(() => null);
+      if (display?.textItems.length) {
+        anchors = findTypeTagAnchors(display.textItems as unknown as TextItemWithBounds[], codes, display.pageWidth, display.pageHeight, pageZones);
+      }
+    }
     if (analysisRegion) {
       anchors = anchors.filter(anchor => {
         const px = (anchor.x / 100) * pageWidth;
@@ -906,6 +915,27 @@ export async function analyzePageMaximumAccuracy(options: {
         );
       }
       console.info('[analyzePage] type tags', { page, anchors: anchored.anchors, matched: anchored.matched, resolved: anchored.resolved, added: anchored.added });
+    }
+  }
+
+  // Pin-point placement + duplicate/miss check against the drawn symbols (deterministic).
+  if (!visibleOnly && anchoredItems.length) {
+    const zoneInput = await Promise.resolve().then(() => pdfDoc.getPage(page)).then(getZoneInputs).catch(() => null);
+    if (zoneInput?.segments?.length) {
+      const sx = zoneInput.pageWidth;
+      const sy = zoneInput.pageHeight;
+      const region = analysisRegion
+        ? { x: (analysisRegion.x / pageWidth) * sx, y: (analysisRegion.y / pageHeight) * sy, width: (analysisRegion.width / pageWidth) * sx, height: (analysisRegion.height / pageHeight) * sy }
+        : undefined;
+      const refined = refineDetectionsWithSymbols(anchoredItems, buildSymbolComponents(zoneInput.segments), sx, sy, { zones: pageZones, region });
+      anchoredItems = refined.items;
+      if (refined.snapped || refined.duplicates || refined.added) {
+        extraNotes.push(
+          `Checked against the drawn symbols: ${refined.snapped} marker(s) centred on their symbol, `
+          + `${refined.duplicates} duplicate detection(s) of one fixture removed, ${refined.added} identical symbol(s) the vision pass missed added.`,
+        );
+      }
+      console.info('[analyzePage] symbols', { page, snapped: refined.snapped, duplicates: refined.duplicates, added: refined.added, shapes: refined.shapeAgreement });
     }
   }
 

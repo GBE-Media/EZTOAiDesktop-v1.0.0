@@ -4,7 +4,7 @@ import type { AiRunCircuit, CanvasMarkup, MarkupStyle, PolygonMarkup, RectangleM
 import type { AssistantToolDefinition } from '../tools/types';
 import { createApproval } from '../tools/registry';
 import { resolveDocumentRef } from '../documentRef';
-import { ensurePageZones, extractZoneInputs, type PageZone, type ZonePageInput } from '../detection/pageZones';
+import { ensurePageZones, getZoneInputs, type PageZone, type ZonePageInput } from '../detection/pageZones';
 import { allIndexedPages } from '../projectIndex/store';
 import { pageGeometryFromUnrotated } from '../placement/visionDisplayPctToDoc';
 import { docToRender, getRenderPageSize, normalizeRotationDeg, renderToDoc } from '../placement/coords';
@@ -23,13 +23,15 @@ import {
   type RunSettings,
   viewIndexOf,
 } from './planRuns';
+import { insideBox, tightenToDrawing, viewOffset } from './viewRegistration';
+import { auditRuns } from './runAudit';
 import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, panelsTaggedOnSheet, parseCircuitTag, readCircuitTags, suggestPanels } from './circuitTags';
 import { materialTotals, runAssembly, type RunAssembly } from './runMaterials';
 import { getLatestFullPageAnalysis, itemIsUnresolvedForCounts } from '../agent/pageAnalysisCache';
 import { formatSize } from './necTables';
 import { arcLength } from './overlay';
 import type { Box, Obstacle, Pt } from './spatial';
-import type { AskUserRequest } from '../agent/askUser';
+import { takePinnedResume, type AskUserRequest } from '../agent/askUser';
 import type { ClarificationField } from '@/types/assistant';
 
 const pointSchema = z.object({ x: z.number().min(0).max(100), y: z.number().min(0).max(100) });
@@ -121,7 +123,8 @@ export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestR
     requiresConfirmation: true,
     undoable: true,
     schema: suggestRunsSchema,
-    execute: async (context, rawInput) => {
+    execute: async (context, modelInput) => {
+      const rawInput = withPinnedAnswers(modelInput as Record<string, unknown>);
       const input = suggestRunsSchema.parse(rawInput);
       const prepared = await prepareRunPlan(input);
       if ('needs' in prepared) {
@@ -371,6 +374,21 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
   };
 }
 
+/** Fields the user answered on a card: taken from the card itself, not the model's copy. */
+const PINNED_FIELDS = ['keepClear', 'keepClearConfirmed', 'panels', 'panel', 'panelLabels', 'wiringMethodConfirmed', 'scaleChoice'] as const;
+
+export function withPinnedAnswers(modelInput: Record<string, unknown>): Record<string, unknown> {
+  const pinned = takePinnedResume('suggest_runs');
+  if (!pinned || pinned.page !== modelInput.page) return modelInput;
+  if (pinned.documentId && modelInput.documentId && pinned.documentId !== modelInput.documentId) return modelInput;
+  const out: Record<string, unknown> = { ...modelInput };
+  for (const key of PINNED_FIELDS) if (pinned[key] !== undefined) out[key] = pinned[key];
+  const ps = pinned.settings as Record<string, unknown> | undefined;
+  if (ps) out.settings = { ...(modelInput.settings as Record<string, unknown> | undefined), ...ps };
+  if (!out.documentId && pinned.documentId) out.documentId = pinned.documentId;
+  return out;
+}
+
 /** "1/8\" = 1'-0\"" style text for a feet-per-point scale (72 pt per inch). */
 export function scaleText(ftPerPt: number): string {
   const inPerFt = 1 / ftPerPt / 72;
@@ -541,11 +559,15 @@ export function riserBetween(
   panelLevel: { n: number; name: string } | null,
   circuitLevel: { n: number; name: string } | null,
   floorToFloorFt: number,
+  /** Grid-bubble shift from the panel's view to the circuits' view, when known. */
+  shift?: Pt | null,
 ): Omit<PanelRiser, 'panelPoint'> {
   const rx = panelBox.width > 0 ? (panelPoint.x - panelBox.x) / panelBox.width : 0.5;
   const ry = panelBox.height > 0 ? (panelPoint.y - panelBox.y) / panelBox.height : 0.5;
   const clamp = (v: number) => Math.min(0.98, Math.max(0.02, v));
-  const point = { x: circuitBox.x + clamp(rx) * circuitBox.width, y: circuitBox.y + clamp(ry) * circuitBox.height };
+  const point = shift
+    ? insideBox({ x: panelPoint.x + shift.x, y: panelPoint.y + shift.y }, circuitBox)
+    : { x: circuitBox.x + clamp(rx) * circuitBox.width, y: circuitBox.y + clamp(ry) * circuitBox.height };
   const levels = panelLevel && circuitLevel ? Math.max(1, Math.abs(circuitLevel.n - panelLevel.n)) : 1;
   // Circuits above their panel go down to it; below it, up.
   const direction: 'up' | 'down' = panelLevel && circuitLevel && circuitLevel.n < panelLevel.n ? 'up' : 'down';
@@ -609,7 +631,7 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   const cacheKey = `${docId}:${input.page}:${revision}`;
   let page = zoneInputCache.get(cacheKey);
   if (!page) {
-    page = await extractZoneInputs(pdfPage);
+    page = await getZoneInputs(pdfPage);
     zoneInputCache.set(cacheKey, page);
     if (zoneInputCache.size > 12) zoneInputCache.delete(zoneInputCache.keys().next().value as string);
   }
@@ -756,6 +778,9 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
       viewLevels = fromTitles.map(v => v.level);
     }
   }
+  // Rough view boxes include the white space around each plan: trim them to the line work so
+  // risers and routes stay on the drawing.
+  if (viewBoxes.length > 1) viewBoxes = viewBoxes.map(b => tightenToDrawing(b, page.segments));
   // Fixtures / a panel in the white space or just outside a view belong to the nearest view.
   const viewOf = (p: Pt) => viewIndexOf(p, viewBoxes);
   if (viewBoxes.length > 1) {
@@ -868,11 +893,30 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   // Keep-clear areas: found from room labels; the user's marked areas are added.
   const allDevicePts = circuits.flatMap(c => c.devices);
   const routing = planRoutingContext(page, zones, allDevicePts, panelPlans.flatMap(p => (p.point ? [p.point] : [])));
-  const userKeepClear: Obstacle[] = (input.keepClear || []).map((area, i) => ({
-    kind: 'opening',
-    label: area.label || `Keep clear ${i + 1}`,
+  // Keep-clear zones already on the page are locked there: always routed around, never moved
+  // or re-drawn by a new run (the user deletes one to drop it).
+  const lockedZones: Obstacle[] = [];
+  for (const m of canvas.getMarkupsByPage(docId)[input.page] || []) {
+    if (m.type !== 'rectangle' || m.aiRun?.kind !== 'keepout') continue;
+    const r = m as RectangleMarkup;
+    const a = docToRender({ x: r.x, y: r.y }, identityGeometry);
+    const b = docToRender({ x: r.x + r.width, y: r.y + r.height }, identityGeometry);
+    const box = { x: Math.min(a.x, b.x) * sx, y: Math.min(a.y, b.y) * sy, width: Math.abs(b.x - a.x) * sx, height: Math.abs(b.y - a.y) * sy };
+    lockedZones.push({ kind: 'opening', label: (m.label || 'Keep clear').replace(/^Keep clear:\s*/, ''), box, placed: true });
+  }
+  const sameZone = (p: Box, q: Box) => {
+    const ix = Math.max(0, Math.min(p.x + p.width, q.x + q.width) - Math.max(p.x, q.x));
+    const iy = Math.max(0, Math.min(p.y + p.height, q.y + q.height) - Math.max(p.y, q.y));
+    const inter = ix * iy;
+    return inter > 0.6 * Math.min(p.width * p.height, q.width * q.height);
+  };
+  const newZones: Obstacle[] = (input.keepClear || []).map((area, i) => ({
+    kind: 'opening' as const,
+    label: area.label || `Keep clear ${lockedZones.length + i + 1}`,
     box: { x: (area.x / 100) * W, y: (area.y / 100) * H, width: (area.width / 100) * W, height: (area.height / 100) * H },
-  }));
+    userZone: true,
+  })).filter(z => z.box.width > 0 && z.box.height > 0 && !lockedZones.some(l => sameZone(l.box, z.box)));
+  const userKeepClear: Obstacle[] = [...lockedZones, ...newZones];
 
   const missing: RunInputNeeded['missing'] = [];
   const needLocation = panelPlans.filter(p => !p.point && !p.offSheet);
@@ -896,7 +940,8 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
   // The sheet names elevators / stairs / shafts we couldn't outline: let the user mark them.
   // Hybrid: the AI drafts boxes from the room labels and the user confirms / adjusts them on the
   // card (and can add more) before anything is routed around them.
-  if (input.keepClear === undefined && (routing.obstacles.length || routing.obstacleMentions)) missing.push('keep_clear');
+  // Zones already locked on the page were confirmed by the user before: don't ask again.
+  if (input.keepClear === undefined && !lockedZones.length && (routing.obstacles.length || routing.obstacleMentions)) missing.push('keep_clear');
   // Circuiting needs a load per fixture; never stop the run over it — ask on the same card.
   const hasLoad = input.autoCircuits?.vaPerDevice != null
     || (input.circuits?.length && input.circuits.every(c => c.loadVA != null || c.vaPerDevice != null || c.loadAmps != null));
@@ -999,7 +1044,10 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
       if (!awayByView.size) return [pp];
       const out: PanelPlan[] = [{ ...pp, circuits: here }];
       for (const [v, away] of awayByView) {
-        const stacked = riserBetween(viewBoxes[panelView], viewBoxes[v], panelPoint, viewLevels[panelView], viewLevels[v], floorToFloorFt);
+        // Stacked plans share the column/row grid: line the floors up on the grid bubbles.
+        const shift = viewOffset(page.textItems, viewBoxes[panelView], viewBoxes[v]);
+        const stacked = riserBetween(viewBoxes[panelView], viewBoxes[v], panelPoint, viewLevels[panelView], viewLevels[v], floorToFloorFt, shift);
+        const toPanelFloor = (p: Pt) => (shift ? insideBox({ x: p.x - shift.x, y: p.y - shift.y }, viewBoxes[panelView], 0) : mapBetweenViews(p, viewBoxes[v], viewBoxes[panelView]));
         // A floor whose circuits are spread out (wings at both ends) breaks at up to 3 risers,
         // each resumed on the panel's floor and run back to the panel.
         const groups = riserGroups(away, viewBoxes[v]);
@@ -1009,7 +1057,7 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
             const devices = group.flatMap(c => c.devices);
             const nearest = devices.reduce((best, d) => (Math.hypot(d.x - stacked.point.x, d.y - stacked.point.y) < Math.hypot(best.x - stacked.point.x, best.y - stacked.point.y) ? d : best), devices[0]);
             const point = { x: nearest.x + Math.sign(stacked.point.x - nearest.x) * viewBoxes[v].width * 0.01, y: nearest.y };
-            const arrival = mapBetweenViews(point, viewBoxes[v], viewBoxes[panelView]);
+            const arrival = toPanelFloor(point);
             const horizontalFt = Math.round((Math.abs(arrival.x - panelPoint.x) + Math.abs(arrival.y - panelPoint.y)) * ftPerPt * 10) / 10;
             riser = { ...stacked, point, panelPoint, arrival, horizontalFt, ft: Math.round((stacked.ft + horizontalFt) * 10) / 10 };
           }
@@ -1022,12 +1070,18 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
 
   const plan = planAllPanels({
     page, zones, panelPlans: panelPlans.filter(p => p.circuits.length), settings, ftPerPt, scaleSource, extraObstacles: userKeepClear, allowed: routing.allowed,
-    keepClearConfirmed: !!input.keepClearConfirmed && input.keepClear !== undefined,
+    keepClearConfirmed: lockedZones.length > 0 || (!!input.keepClearConfirmed && input.keepClear !== undefined),
     floorViews: viewBoxes.length > 1 ? viewBoxes : undefined,
   });
   const markups = buildRunMarkups(plan, circuits, settings, geometry, input.page, anchorByPoint);
   const materials = materialTotals(plan.runs.map(run => ({ assembly: run.assembly, lengthFt: run.lengthFt })));
   const homeRuns = plan.runs.filter(r => r.kind === 'homerun');
+  const audit = auditRuns(plan.runs, {
+    ftPerPt,
+    floorViews: viewBoxes.length > 1 ? viewBoxes : undefined,
+    keepClear: userKeepClear.map(z => ({ label: z.label, box: z.box })),
+    pageMax: Math.max(W, H),
+  });
   const codeLine = `${code.summary}${location ? ` Project: ${location.text}.` : ''}`;
   const summaryLines = [
     codeLine,
@@ -1035,6 +1089,9 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
     ...(plan.obstacles.length ? [`Routed around: ${[...new Set(plan.obstacles.map(o => o.label))].join(', ')}`] : []),
     ...(materials.length ? [`Materials: ${materials.slice(0, 6).map(m => `${m.name} ${m.ft.toLocaleString()} ft`).join(' · ')}`] : []),
     ...(usedTags ? [`Circuits from the engineer's tags: ${panelPlans.map(p => `panel ${p.label} (${p.circuits.length})`).join(', ')}`] : []),
+    audit.flagged.length
+      ? `Checks: ${audit.flagged.length} to review — ${audit.flagged.slice(0, 3).join(' ')}${audit.flagged.length > 3 ? ' …' : ''}`
+      : `Checks passed: ${audit.passed.join(' ')}`,
   ];
   return {
     docId,
@@ -1073,6 +1130,7 @@ export async function prepareRunPlan(input: SuggestRunsInput): Promise<Prepared>
       obstacles: plan.obstacles.map(o => ({ kind: o.kind, label: o.label })),
       codeRefs: plan.codeRefs,
       warnings: plan.warnings,
+      checks: { ...audit, note: audit.flagged.length ? 'Tell the user exactly which runs need review and why (from flagged).' : 'All layout checks passed.' },
       assumptions: [
         `Lengths from ${scaleSource}; ${settings.verticalFt} ft vertical per home run.`,
         'Voltage drop uses full circuit load at the farthest device (conservative).',
@@ -1206,6 +1264,8 @@ function buildRunMarkups(
   const branchWidth = Math.max(1, docMax * 0.0007);
 
   for (const ob of plan.obstacles) {
+    // Already on the page (locked): leave the user's zone exactly where it is.
+    if (ob.placed) continue;
     const a = toDoc({ x: ob.box.x, y: ob.box.y });
     const b = toDoc({ x: ob.box.x + ob.box.width, y: ob.box.y + ob.box.height });
     const rect: RectangleMarkup = {
@@ -1219,7 +1279,9 @@ function buildRunMarkups(
       style: style(KEEPOUT_COLOR, 'rgba(249, 115, 22, 0.22)', Math.max(1.5, docMax * 0.0009), 100),
       label: `Keep clear: ${ob.label}${ob.approximate ? ' (approx.)' : ''}`,
       aiNote: `Runs routed around ${ob.label}.`,
-      aiRun: { runId: `keepout-${ob.label}`, kind: 'keepout', ftPerPt: plan.ftPerPt, lengthFt: 0, summary: `Keep clear: ${ob.label}` },
+      // Locked to the page so a drag can't shift it; the router reads it back on every run.
+      locked: true,
+      aiRun: { runId: `keepout-${ob.label}`, kind: 'keepout', ftPerPt: plan.ftPerPt, lengthFt: 0, summary: `Keep clear: ${ob.label}`, ...(ob.userZone ? { userZone: true } : {}) },
     };
     out.push({ page: pageNumber, markup: rect });
   }

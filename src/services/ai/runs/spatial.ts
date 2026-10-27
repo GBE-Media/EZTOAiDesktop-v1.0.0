@@ -16,6 +16,10 @@ export type Obstacle = {
   box: Box;
   /** Room outline not found — box is an estimate around the label. */
   approximate?: boolean;
+  /** Already on the page as a locked keep-clear markup (not drawn again). */
+  placed?: boolean;
+  /** Drawn by the user. */
+  userZone?: boolean;
 };
 
 const OBSTACLE_PATTERNS: Array<{ kind: Obstacle['kind']; re: RegExp }> = [
@@ -306,7 +310,12 @@ export class OrthoRouter {
       }
     }
     if (found < 0) {
-      return { path: [from, { x: to.x, y: from.y }, to], bends: 1, wallCrossings: 0, ok: false };
+      // No clear path: of the two L-shapes, take the one through the fewest blocked cells
+      // (keep-clear zones / off-plan white space), never a blind diagonal.
+      const a = [from, { x: to.x, y: from.y }, to];
+      const b = [from, { x: from.x, y: to.y }, to];
+      const path = this.blockedAlong(b) < this.blockedAlong(a) ? b : a;
+      return { path, bends: 1, wallCrossings: 0, ok: false };
     }
     const cells: number[] = [];
     for (let s = found; s >= 0; s = prev[s]) cells.push(s >> 2);
@@ -319,6 +328,21 @@ export class OrthoRouter {
     });
     const path = simplifyOrthogonal([from, ...snapEnds(pts, from, to), to]);
     return { path, bends: Math.max(0, path.length - 2), wallCrossings, ok: true };
+  }
+
+  /** Blocked cells a path passes through. */
+  blockedAlong(path: Pt[]): number {
+    let n = 0;
+    for (let i = 0; i + 1 < path.length; i += 1) {
+      const a = path[i]; const b = path[i + 1];
+      const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (this.cell * 0.5)));
+      for (let s = 0; s <= steps; s += 1) {
+        const cx = Math.floor((a.x + ((b.x - a.x) * s) / steps) / this.cell);
+        const cy = Math.floor((a.y + ((b.y - a.y) * s) / steps) / this.cell);
+        if (cx >= 0 && cy >= 0 && cx < this.gw && cy < this.gh && this.blocked[cy * this.gw + cx]) n += 1;
+      }
+    }
+    return n;
   }
 
   private usedNear(x: number, y: number): boolean {

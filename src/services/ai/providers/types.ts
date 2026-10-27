@@ -182,6 +182,8 @@ export interface DetectedItem {
   notes?: string;
   /** True only when the model omitted coordinates (not inferred from notes text). */
   locationMissing?: boolean;
+  /** Shape fingerprint of the drawn symbol this detection was snapped to. */
+  symbolSig?: string;
   /** Tile id that produced this detection, used for seam merge / ownership. */
   sourceTileId?: string;
   /**
