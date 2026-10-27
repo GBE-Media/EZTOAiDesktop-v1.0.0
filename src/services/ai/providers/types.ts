@@ -144,10 +144,27 @@ export interface BlueprintAnalysisResult {
   countReliability?: 'high' | 'partial' | 'low';
   /** Verification notes from legend-aware self-check. */
   countVerificationNotes?: string[];
+  /** How well the vision model's own placements matched the drawn symbols (before snapping). */
+  symbolCheck?: SymbolCheckStats;
   questions?: string[];
   questionOptions?: QuestionOption[];
   evidence?: string[];
   location?: ProjectLocation;
+}
+
+export interface SymbolCheckStats {
+  /** Detections with a location that were checked against the line work. */
+  checked: number;
+  /** Placed by the model within 9 pt of their drawn symbol. */
+  onSymbol: number;
+  /** Moved onto their symbol by the check. */
+  snapped: number;
+  /** Same fixture detected twice (removed). */
+  duplicates: number;
+  /** Identical symbols the model missed (added). */
+  added: number;
+  /** Median distance (pt) between the model's point and the symbol. */
+  medianOffsetPt: number;
 }
 
 export interface QuestionOption {

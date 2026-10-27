@@ -16,6 +16,10 @@ export interface AssistantToolContext {
   extractPageText: (input: unknown) => Promise<unknown>;
   /** Count/filter detections from cached (or fresh) page analysis. */
   countPageItems?: (input: unknown) => Promise<unknown>;
+  /** Count a page several times with the current and a candidate vision model and score them. */
+  compareVisionModels?: (input: unknown) => Promise<unknown>;
+  /** Switch the drawing-reading (vision + placement) model. */
+  setVisionModel?: (input: unknown) => unknown;
   getPageLayout?: (input: unknown) => Promise<unknown>;
   searchDocument: (query: string) => Promise<EvidenceCitation[]>;
   inspectCatalog: () => unknown;

@@ -101,9 +101,19 @@ const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
   },
 };
 
+/** A model forced for the vision stage while a model comparison runs. */
+interface VisionModelTrial {
+  provider: AIProviderType;
+  model: string;
+  /** Models that actually answered (the proxy may report a dated variant). */
+  answeredBy: Set<string>;
+  calls: number;
+}
+
 class AIService {
   private config: AIServiceConfig;
   private initialized: boolean = false;
+  private visionTrial: VisionModelTrial | null = null;
 
   constructor() {
     this.config = {
@@ -176,6 +186,26 @@ class AIService {
       ...this.config.pipeline,
       ...config,
     };
+  }
+
+  /**
+   * Run `fn` with every vision-stage call sent to exactly this model — no fallback to another
+   * model, so a comparison never silently measures a different one. Calls are sequential per
+   * trial; overlapping trials are rejected.
+   */
+  async withVisionModel<T>(
+    selection: { provider: AIProviderType; model: string },
+    fn: () => Promise<T>,
+  ): Promise<{ result: T; answeredBy: string[]; calls: number }> {
+    if (this.visionTrial) throw new Error('Another model comparison is already running.');
+    const trial: VisionModelTrial = { ...selection, answeredBy: new Set(), calls: 0 };
+    this.visionTrial = trial;
+    try {
+      const result = await fn();
+      return { result, answeredBy: [...trial.answeredBy], calls: trial.calls };
+    } finally {
+      this.visionTrial = null;
+    }
   }
 
   getAgentModels(): AgentModelsConfig {
@@ -292,7 +322,9 @@ class AIService {
   private getStageConfig(stage: PipelineStage): { provider: AIProviderType; model: string } {
     switch (stage) {
       case 'vision':
-        return this.config.pipeline.visionModel;
+        return this.visionTrial
+          ? { provider: this.visionTrial.provider, model: this.visionTrial.model }
+          : this.config.pipeline.visionModel;
       case 'estimation':
         return this.config.pipeline.estimationModel;
       case 'placement':
@@ -331,6 +363,16 @@ class AIService {
    * final error is a clear summary rather than a raw provider message.
    */
   private async sendProxyRequestWithFallback(params: ProxyRequest): Promise<AICompletionResponse> {
+    const trial = this.visionTrial;
+    if (trial && trial.provider === params.provider && trial.model === params.model) {
+      trial.calls += 1;
+      const response = await sendProxyRequest({
+        ...params,
+        temperature: resolveRequestTemperature(params.model, params.temperature),
+      });
+      trial.answeredBy.add(response.model || params.model);
+      return response;
+    }
     const attempts: Array<{ provider: AIProviderType; model: string }> = [
       { provider: params.provider, model: params.model },
       ...(FALLBACK_CHAINS[params.provider] || []).filter(

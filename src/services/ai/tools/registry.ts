@@ -218,6 +218,52 @@ const coreTools: AssistantToolDefinition[] = [
     },
   },
   {
+    id: 'compare_vision_models',
+    title: 'Compare vision models',
+    description:
+      'A/B test the model that reads the drawings: counts one page several times (fresh, never cached) with the current '
+      + 'vision model and a candidate (default google/gemini-3.1-pro-preview), with the same symbol check for both, and scores '
+      + 'run-to-run count variation, % of markers placed on the drawn symbol, duplicates/misses fixed, and speed. '
+      + 'Places nothing. Takes several minutes (6 page analyses at runs=3). Use only when the user asks to compare or test models.',
+    risk: 'read',
+    requiresConfirmation: false,
+    undoable: false,
+    schema: z.object({
+      page: z.number().int().positive(),
+      runs: z.number().int().min(1).max(3).optional().describe('Counts per model (default 3).'),
+      candidateModel: z.string().min(1).optional().describe('Model to test against the current one.'),
+      documentId: z.string().min(1).optional(),
+    }),
+    execute: async (context, input) => {
+      if (!context.compareVisionModels) {
+        return { status: 'failed', summary: 'Model comparison is not available.', output: { status: 'unavailable' } };
+      }
+      const output = await context.compareVisionModels(input) as { status?: string; message?: string; recommended?: string };
+      if (output?.status !== 'completed') {
+        return { status: 'failed', summary: output?.message || 'The model comparison could not run.', output };
+      }
+      return { status: 'completed', summary: `Compared vision models on page ${input.page}; recommended ${output.recommended}.`, output };
+    },
+  },
+  {
+    id: 'set_vision_model',
+    title: 'Set vision model',
+    description:
+      'Switch the model that reads drawings (counting and marker placement). Only after the user chose it on a card '
+      + '(e.g. after compare_vision_models). Saved in settings; the user can switch back the same way.',
+    risk: 'write',
+    requiresConfirmation: false,
+    undoable: false,
+    schema: z.object({ model: z.string().min(1) }),
+    execute: async (context, input) => {
+      if (!context.setVisionModel) return { status: 'failed', summary: 'Model switching is not available.', output: {} };
+      const output = await context.setVisionModel(input) as { status?: string; message?: string };
+      return output?.status === 'completed'
+        ? { status: 'completed', summary: `Drawings are now read with ${input.model}.`, output }
+        : { status: 'failed', summary: output?.message || 'Could not switch the model.', output };
+    },
+  },
+  {
     id: 'search_document',
     title: 'Search document',
     description: 'Search native PDF text and OCR evidence.',

@@ -38,6 +38,15 @@ import { compactProjectDocuments } from '../projectIndex/summaries';
 import { describeResolvedDocument, resolveDocumentRef } from '../documentRef';
 import { ensurePageZones } from '../detection/pageZones';
 import type { PageZoneKind } from '../detection/pageZones';
+import { getAIService } from '../aiService';
+import { useAISettingsStore } from '@/store/aiSettingsStore';
+import {
+  COMPARISON_CANDIDATE_MODEL,
+  compareModels,
+  describeComparison,
+  scoreModel,
+  type ComparisonRun,
+} from './modelComparison';
 
 export interface CreateAgentToolContextOptions {
   runId: string;
@@ -527,6 +536,106 @@ async function defaultCountPageItems(
 }
 
 /**
+ * Count one page several times with each vision model (fresh analyses, never the cache, no
+ * fallback to another model) and score them side by side. Nothing is placed or cached.
+ */
+async function defaultCompareVisionModels(
+  input: unknown,
+  options: { trade: TradeType; signal?: AbortSignal },
+): Promise<unknown> {
+  const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};
+  const page = typeof raw.page === 'number' && Number.isInteger(raw.page) && raw.page > 0 ? raw.page : null;
+  if (page == null) return { status: 'unavailable', message: 'compare_vision_models requires a page number.' };
+  const runs = Math.min(3, Math.max(1, typeof raw.runs === 'number' ? Math.round(raw.runs) : 3));
+  const resolved = resolveToolDocument(raw);
+  if ('error' in resolved) return { status: 'unavailable', message: resolved.error };
+  const docId = resolved.docId;
+  const pdfData = docId ? useCanvasStore.getState().pdfDocuments[docId] : null;
+  const pdfDoc = pdfData?.pdfDocument;
+  const pageWidth = pdfData?.originalPageWidth;
+  const pageHeight = pdfData?.originalPageHeight;
+  if (!docId || !pdfData || !pdfDoc || !pageWidth || !pageHeight) {
+    return { status: 'unavailable', message: 'No PDF document is open to compare models on.' };
+  }
+  if (page > (pdfData.totalPages || 0)) return { status: 'unavailable', message: `Page ${page} is out of range.` };
+
+  const service = getAIService();
+  const current = service.getPipelineConfig().visionModel;
+  const candidateModel = typeof raw.candidateModel === 'string' && raw.candidateModel.trim()
+    ? raw.candidateModel.trim()
+    : (current.model === COMPARISON_CANDIDATE_MODEL ? 'openai/gpt-5.6-sol' : COMPARISON_CANDIDATE_MODEL);
+  const candidate = { provider: 'lovable' as const, model: candidateModel };
+  const startedRevision = pdfData.contentRevision ?? 0;
+  const zones = await ensurePageZones(docId, page);
+  const pageGeometry = createPageGeometry({ pageNumber: page, docWidth: pageWidth, docHeight: pageHeight });
+
+  const runOnce = async (selection: { provider: typeof current.provider; model: string }): Promise<ComparisonRun> => {
+    const started = Date.now();
+    try {
+      const { result, answeredBy } = await service.withVisionModel(selection, () => analyzePageMaximumAccuracy({
+        pdfDoc,
+        page,
+        pageWidth,
+        pageHeight,
+        trade: options.trade,
+        pageZones: zones,
+        sheetLegend: () => loadSheetLegend(pdfDoc, docId, page, startedRevision),
+      }));
+      const counted = countItemsFromAnalysis(result.analysis, '', { pageGeometry, zones });
+      return {
+        typeCounts: counted.allTypeCounts,
+        symbolCheck: result.analysis.symbolCheck,
+        seconds: (Date.now() - started) / 1000,
+        answeredBy,
+      };
+    } catch (error) {
+      if (options.signal?.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
+      return { seconds: (Date.now() - started) / 1000, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+
+  // Interleave the models so drift over time (gateway load, caching) affects both equally.
+  const currentRuns: ComparisonRun[] = [];
+  const candidateRuns: ComparisonRun[] = [];
+  for (let i = 0; i < runs; i += 1) {
+    if (options.signal?.aborted) throw new DOMException('Assistant run cancelled', 'AbortError');
+    currentRuns.push(await runOnce(current));
+    candidateRuns.push(await runOnce(candidate));
+    // A model that can't be reached at all won't recover mid-test.
+    if (i === 0 && candidateRuns[0].error && currentRuns[0].error) break;
+  }
+  if ((useCanvasStore.getState().pdfDocuments[docId]?.contentRevision ?? 0) !== startedRevision) {
+    return { status: 'unavailable', message: 'The document changed during the comparison; run it again.' };
+  }
+  const verdict = compareModels(scoreModel(current.model, currentRuns), scoreModel(candidate.model, candidateRuns));
+  return {
+    status: 'completed',
+    page,
+    runsPerModel: runs,
+    currentModel: current.model,
+    candidateModel: candidate.model,
+    recommended: verdict.recommended,
+    switchRecommended: verdict.switchRecommended,
+    summaryLines: describeComparison(verdict, page),
+    scores: { current: verdict.current, candidate: verdict.candidate },
+    disagreements: verdict.disagreements,
+  };
+}
+
+/** Switch the model used to read drawings (counts and placement). Persists in settings. */
+function defaultSetVisionModel(input: unknown): unknown {
+  const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};
+  const model = typeof raw.model === 'string' ? raw.model.trim() : '';
+  const known = getAIService().getVisionModels().some(m => m.id === model);
+  if (!model || !known) return { status: 'failed', message: `Unknown vision model "${model}".` };
+  const previous = getAIService().getPipelineConfig().visionModel.model;
+  const settings = useAISettingsStore.getState();
+  settings.setPipelineModel('vision', { provider: 'lovable', model });
+  settings.setPipelineModel('placement', { provider: 'lovable', model });
+  return { status: 'completed', previousModel: previous, model };
+}
+
+/**
  * Bind Zustand stores into an AssistantToolContext for the agent runner.
  */
 export function createAgentToolContext(options: CreateAgentToolContextOptions): AssistantToolContext {
@@ -598,6 +707,13 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
       trade: options.trade,
       signal: options.signal,
     })),
+
+    compareVisionModels: input => defaultCompareVisionModels(input, {
+      trade: options.trade,
+      signal: options.signal,
+    }),
+
+    setVisionModel: input => defaultSetVisionModel(input),
 
     getPageLayout: async (input) => {
       const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};

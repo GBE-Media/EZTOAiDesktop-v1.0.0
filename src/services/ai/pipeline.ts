@@ -31,6 +31,7 @@ import type {
   LayoutSuggestion,
   PipelineStage,
   ChatMarkupPointer,
+  SymbolCheckStats,
 } from './providers/types';
 import {
   detectionPctToDocPointerFields,
@@ -919,6 +920,7 @@ export async function analyzePageMaximumAccuracy(options: {
   }
 
   // Pin-point placement + duplicate/miss check against the drawn symbols (deterministic).
+  let symbolCheck: SymbolCheckStats | undefined;
   if (!visibleOnly && anchoredItems.length) {
     const zoneInput = await Promise.resolve().then(() => pdfDoc.getPage(page)).then(getZoneInputs).catch(() => null);
     if (zoneInput?.segments?.length) {
@@ -929,6 +931,15 @@ export async function analyzePageMaximumAccuracy(options: {
         : undefined;
       const refined = refineDetectionsWithSymbols(anchoredItems, buildSymbolComponents(zoneInput.segments), sx, sy, { zones: pageZones, region });
       anchoredItems = refined.items;
+      const moves = [...(refined.moves || [])].sort((a, b) => a - b);
+      symbolCheck = {
+        checked: refined.checked || 0,
+        onSymbol: refined.onSymbol || 0,
+        snapped: refined.snapped,
+        duplicates: refined.duplicates,
+        added: refined.added,
+        medianOffsetPt: moves.length ? moves[Math.floor(moves.length / 2)] : 0,
+      };
       if (refined.snapped || refined.duplicates || refined.added) {
         extraNotes.push(
           `Checked against the drawn symbols: ${refined.snapped} marker(s) centred on their symbol, `
@@ -1048,6 +1059,7 @@ ${JSON.stringify(items.map(item => ({
       legendTypeCodes: legendEntries.map((e) => e.typeCode),
       legendTypeCounts: legendAware.legendTypeCounts,
       countReliability,
+      ...(symbolCheck ? { symbolCheck } : {}),
       countVerificationNotes: [
         ...(borrowedLegend && !borrowedLegend.ownPage ? [`Fixture types from the legend/schedule on ${borrowedLegend.sourceLabel}.`] : []),
         ...legendAware.verification.notes,
