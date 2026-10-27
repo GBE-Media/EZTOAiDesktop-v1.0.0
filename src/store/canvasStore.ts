@@ -632,6 +632,10 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     if (!state.activeDocId) return state;
     const docData = state.pdfDocuments[state.activeDocId];
     if (!docData) return state;
+    // Same page (the AI showing/placing on the page already open): keep the view. Resetting
+    // hasViewState here hid the page until the user panned, because nothing re-fits an
+    // unchanged page.
+    if (docData.currentPage === page) return state;
 
     useEditorStore.getState().updateDocument(state.activeDocId, { currentPage: page });
 

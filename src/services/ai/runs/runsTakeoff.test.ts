@@ -81,11 +81,31 @@ describe('run materials and products', () => {
       aiRun: { runId: 'HR1', kind: 'homerun', ftPerPt: 1, lengthFt: 42.25, assembly },
     } as unknown as CanvasMarkup;
     const bound = bindTakeoffProducts([{ page: 1, markup: count }, { page: 1, markup: review }, { page: 1, markup: run }]);
-    expect(bound).toHaveLength(2);
+    // Fixture + the conduit + the wire inside it (listed separately, one run on the drawing).
+    expect(bound).toHaveLength(3);
     expect((count as { productId?: string }).productId).toBeTruthy();
     expect((review as { productId?: string }).productId).toBeUndefined();
-    expect(bound.find(b => b.unit === 'ft')?.ft).toBe(42.3);
-    expect(buildMeasurementFromMarkup(run, 'doc')).toMatchObject({ type: 'length', value: 42.3, unit: 'ft' });
+    const conduit = bound.find(b => /EMT Conduit/.test(b.name))!;
+    const wire = bound.find(b => /THHN/.test(b.name))!;
+    expect(conduit.ft).toBe(42.3);
+    expect(wire.ft).toBe(126.9);
+    expect((run as { productId?: string }).productId).toBe(conduit.productId);
+    const measurement = buildMeasurementFromMarkup(run, 'doc')!;
+    expect(measurement).toMatchObject({ type: 'length', value: 42.3, unit: 'ft' });
+    expect(measurement.components).toEqual([{ productId: wire.productId, perFt: 3 }]);
+
+    // Linking puts the wire feet on the wire product; editing the run updates both; deleting
+    // the run removes both.
+    const store = useProductStore.getState();
+    store.linkMeasurement(conduit.productId, measurement);
+    const wireRows = () => useProductStore.getState().nodes[wire.productId].measurements || [];
+    expect(wireRows().find(m => m.markupId === 'r1')?.value).toBe(126.9);
+    useProductStore.getState().updateMeasurementValueByMarkupId('r1', 50);
+    expect(wireRows().find(m => m.markupId === 'r1')?.value).toBe(150);
+    expect(useProductStore.getState().getMeasurementByMarkupId('r1')?.productId).toBe(conduit.productId);
+    const removed = useProductStore.getState().unlinkMeasurementByMarkupId('r1');
+    expect(removed?.components).toHaveLength(1);
+    expect(wireRows().some(m => m.markupId === 'r1')).toBe(false);
   });
 });
 

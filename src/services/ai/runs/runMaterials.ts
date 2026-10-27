@@ -84,38 +84,46 @@ export function singleCable(assembly: Pick<RunAssembly, 'materials'> | null | un
   return /^MC Cable /.test(only.name) ? { name: only.name, perFt: only.perFt } : null;
 }
 
-/** Feet of product a run contributes (cable feet for single-cable MC runs). */
+/** Feet of the run's primary product (the conduit, or the first cable × cables in the bundle). */
 export function runProductFeet(assembly: Pick<RunAssembly, 'materials'> | null | undefined, lengthFt: number): number {
-  const cable = singleCable(assembly);
-  return Math.round(lengthFt * (cable ? cable.perFt : 1) * 10) / 10;
+  const first = assembly?.materials[0];
+  return Math.round(lengthFt * (first ? first.perFt : 1) * 10) / 10;
 }
 
-export function assemblyProductSpec(assembly: RunAssembly, kind: 'homerun' | 'branch'): TakeoffProductSpec {
-  const cable = singleCable(assembly);
-  if (cable) {
+const CONDUIT_LABELS: Record<string, string> = { PVC: 'PVC Sch 40 Conduit', EMT: 'EMT Conduit', RMC: 'Rigid Conduit (RMC)', IMC: 'IMC Conduit' };
+
+/** Product tree folder + display name for one run material. */
+export function materialProductSpec(name: string): TakeoffProductSpec {
+  if (/^MC Cable /.test(name)) {
     return {
-      key: `run:${cable.name}`,
-      name: cable.name,
+      key: `run:${name}`,
+      name,
       folder: 'MC Cable',
       unit: 'ft',
-      description: `${cable.name}, feet of cable (home runs count each cable in the bundle)`,
-      components: [{ name: cable.name, quantity: 1, unit: 'ft', componentType: 'product' as const, sortOrder: 0 }],
+      description: `${name}, feet of cable (home runs count each cable in the bundle)`,
     };
   }
-  return {
-    key: assembly.key,
-    name: assembly.name,
-    folder: kind === 'homerun' ? 'Home Runs' : 'Branch Circuits',
-    unit: 'ft',
-    description: `Per foot: ${assembly.materials.map(m => `${m.perFt} ft ${m.name}`).join(', ')}`,
-    components: assembly.materials.map((m, i) => ({
-      name: m.name,
-      quantity: m.perFt,
-      unit: 'ft',
-      componentType: 'product' as const,
-      sortOrder: i,
-    })),
-  };
+  if (/THHN|THWN|XHHW|^#\d|\bAWG\b|kcmil/i.test(name)) {
+    return { key: `wire:${name}`, name, folder: 'Wire', unit: 'ft', description: `${name}, feet of conductor (run feet × conductors)` };
+  }
+  const conduit = /^(\S+")\s*(PVC|EMT|RMC|IMC)$/.exec(name.trim());
+  const display = conduit ? `${conduit[1]} ${CONDUIT_LABELS[conduit[2]] || conduit[2]}` : name;
+  return { key: `conduit:${name}`, name: display, folder: 'Conduit', unit: 'ft', description: `${display}, feet of raceway` };
+}
+
+/**
+ * Products a run is taken off as: the conduit (or cable) is the run's own product; the wire
+ * pulled in a conduit is listed and counted separately (feet = run feet × conductors). The
+ * drawing still shows one run.
+ */
+export function runMaterialProducts(assembly: Pick<RunAssembly, 'materials'>): Array<{ spec: TakeoffProductSpec; perFt: number }> {
+  return assembly.materials.map(m => ({ spec: materialProductSpec(m.name), perFt: m.perFt }));
+}
+
+/** The run's primary product (conduit / cable). */
+export function assemblyProductSpec(assembly: RunAssembly, _kind?: 'homerun' | 'branch'): TakeoffProductSpec {
+  void _kind;
+  return runMaterialProducts(assembly)[0]?.spec || materialProductSpec(assembly.name);
 }
 
 /** Totals by material across runs (feet, rounded up). */

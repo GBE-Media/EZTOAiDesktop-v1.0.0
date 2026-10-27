@@ -44,15 +44,13 @@ import { runProductFeet } from '@/services/ai/runs/runMaterials';
 import { followAnchoredRuns } from '@/services/ai/runs/anchors';
 import { countMarkerCaption, resolveMarkupDrawAppearance } from './markupDrawAppearance';
 import { getCachedPageZones } from '@/services/ai/detection/pageZones';
-import { pageGeometryFromUnrotated, visionDisplayPctRectToDoc } from '@/services/ai/placement/visionDisplayPctToDoc';
 import {
   computeAreaMeasurementFromPoints,
   computeLengthMeasurement,
 } from '@/lib/measurementValues';
 import { pageCalibrationToRenderPixelsPerUnit } from '@/services/ai/placement/pageCalibration';
 import { useDrawingPickStore } from '@/store/drawingPickStore';
-import { docToRender, getRenderPageSize } from '@/services/ai/placement/coords';
-import { visionDisplayPctToDoc } from '@/services/ai/placement/visionDisplayPctToDoc';
+import { canvasBoxToPagePct, canvasPointToPagePct, pagePctToCanvasPoint } from '@/lib/pickCoords';
 
 const EMPTY_MARKUPS: CanvasMarkup[] = [];
 
@@ -390,17 +388,11 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         key_plan: '#22c55e',
         revisions: '#a855f7',
       };
-      const cachedGeometry = useCanvasStore.getState().getPageGeometry(currentPage);
-      const zoneGeometry = pageGeometryFromUnrotated({
-        pageNumber: currentPage,
-        docWidth: cachedGeometry?.docWidth || width,
-        docHeight: cachedGeometry?.docHeight || height,
-        rotationDeg: cachedGeometry?.rotationDeg ?? 0,
-      });
       zones.forEach(zone => {
         if (zone.source === 'sheet') return;
-        // Zone bounds are display-percent; markups live in unrotated doc points.
-        const rect = visionDisplayPctRectToDoc(zone.bounds, zoneGeometry);
+        // Zone bounds are display-percent of the rendered (rotated) page = this canvas.
+        const zp = pagePctToCanvasPoint({ xPct: zone.bounds.x, yPct: zone.bounds.y }, width, height);
+        const rect = { x: zp.x, y: zp.y, width: (zone.bounds.width / 100) * width, height: (zone.bounds.height / 100) * height };
         ctx.save();
         ctx.strokeStyle = palette[zone.kind] || '#94a3b8';
         ctx.lineWidth = 2;
@@ -417,10 +409,9 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     // Points the user picked for an AI question card.
     const pinsHere = Object.values(pickPins).filter(pin => pin.page === currentPage && (!pin.documentId || pin.documentId === activeDocId));
     if (pinsHere.length) {
-      const pinGeometry = pickGeometry(currentPage);
       const s = 100 / Math.max(zoom, 10);
       pinsHere.forEach(pin => {
-        const p = visionDisplayPctToDoc({ x: pin.xPct, y: pin.yPct }, pinGeometry);
+        const p = pagePctToCanvasPoint(pin, width, height);
         ctx.save();
         ctx.fillStyle = 'rgba(139, 92, 246, 0.25)';
         ctx.strokeStyle = '#8b5cf6';
@@ -440,11 +431,10 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     }
 
     // Areas the user dragged for an AI question card (and the one being dragged).
-    const areaGeometry = pickGeometry(currentPage);
     const areasHere = Object.values(pickAreas).flatMap(list => list.map((a, i) => ({ ...a, n: i + 1 }))).filter(a => a.page === currentPage && (!a.documentId || a.documentId === activeDocId));
     const areaRects = areasHere.map(a => {
-      const p1 = visionDisplayPctToDoc({ x: a.xPct, y: a.yPct }, areaGeometry);
-      const p2 = visionDisplayPctToDoc({ x: a.xPct + a.wPct, y: a.yPct + a.hPct }, areaGeometry);
+      const p1 = pagePctToCanvasPoint({ xPct: a.xPct, yPct: a.yPct }, width, height);
+      const p2 = pagePctToCanvasPoint({ xPct: a.xPct + a.wPct, yPct: a.yPct + a.hPct }, width, height);
       return { x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), w: Math.abs(p2.x - p1.x), h: Math.abs(p2.y - p1.y), n: a.n as number | undefined, label: a.label };
     });
     if (areaDrag) {
@@ -1531,17 +1521,6 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     };
   };
 
-  // Page geometry for display-percent <-> doc conversion (falls back to the canvas size, unrotated).
-  function pickGeometry(pageNumber: number) {
-    const cached = useCanvasStore.getState().getPageGeometry(pageNumber);
-    return pageGeometryFromUnrotated({
-      pageNumber,
-      docWidth: cached?.docWidth || width,
-      docHeight: cached?.docHeight || height,
-      rotationDeg: cached?.rotationDeg ?? 0,
-    });
-  }
-
   const handleContextMenu = (e: MouseEvent<HTMLCanvasElement>) => {
     if (isPanMode) return;
     const rawPoint = getMousePosition(e);
@@ -1819,16 +1798,10 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     if (isPicking && pickRequest?.mode === 'area') return;
     if (isPicking) {
       // Answering an AI question: "click the panel on the drawing".
-      const geometry = pickGeometry(currentPage);
-      const identity = { ...geometry, renderScale: 1 };
-      const display = docToRender(rawPoint, identity);
-      const size = getRenderPageSize(identity);
-      const clamp = (v: number) => Math.max(0, Math.min(100, v));
       useDrawingPickStore.getState().complete({
         documentId: activeDocId || undefined,
         page: currentPage,
-        xPct: Math.round(clamp((display.x / size.width) * 100) * 10) / 10,
-        yPct: Math.round(clamp((display.y / size.height) * 100) * 10) / 10,
+        ...canvasPointToPagePct(rawPoint, width, height),
       });
       return;
     }
@@ -2301,19 +2274,6 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   // Keep-clear boxes: pointer capture so every drag finishes (even when released over the chat
   // panel or the pick pill) and each box is appended to the session that started it. A click
   // without a drag on an existing box removes that box.
-  const areaPct = (start: Point, end: Point) => {
-    const geometry = pickGeometry(currentPage);
-    const identity = { ...geometry, renderScale: 1 };
-    const size = getRenderPageSize(identity);
-    const clamp = (v: number) => Math.max(0, Math.min(100, v));
-    const a = docToRender(start, identity);
-    const b = docToRender(end, identity);
-    const x1 = clamp((Math.min(a.x, b.x) / size.width) * 100);
-    const y1 = clamp((Math.min(a.y, b.y) / size.height) * 100);
-    const x2 = clamp((Math.max(a.x, b.x) / size.width) * 100);
-    const y2 = clamp((Math.max(a.y, b.y) / size.height) * 100);
-    return { x1, y1, x2, y2 };
-  };
   const handleAreaPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!isPicking || pickRequest?.mode !== 'area' || e.button !== 0) return;
     e.stopPropagation();
@@ -2333,18 +2293,12 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     setAreaDrag(null);
     if (e.type === 'pointercancel') return;
     const end = getMousePosition(e as unknown as MouseEvent<HTMLCanvasElement>);
-    const { x1, y1, x2, y2 } = areaPct(drag.start, end);
-    const r1 = (v: number) => Math.round(v * 10) / 10;
+    const box = canvasBoxToPagePct(drag.start, end, width, height);
+    const x1 = box.xPct;
+    const y1 = box.yPct;
     const store = useDrawingPickStore.getState();
-    if (x2 - x1 >= 0.3 && y2 - y1 >= 0.3) {
-      store.addArea({
-        documentId: activeDocId || undefined,
-        page: currentPage,
-        xPct: r1(x1),
-        yPct: r1(y1),
-        wPct: r1(x2 - x1),
-        hPct: r1(y2 - y1),
-      }, drag.key);
+    if (box.wPct >= 0.3 && box.hPct >= 0.3) {
+      store.addArea({ documentId: activeDocId || undefined, page: currentPage, ...box }, drag.key);
       return;
     }
     // A click: toggle off the box under the cursor (last drawn wins).

@@ -22,7 +22,9 @@ export const flagDiscrepanciesSchema = z.object({
     severity: z.enum(['high', 'medium', 'low']),
     drawing: sideSchema.describe('The drawing side (or the first document).'),
     spec: sideSchema.describe('The spec side (or the conflicting document).'),
-    recommendation: z.string().max(400).optional(),
+    recommendation: z.string().max(400).optional().describe('What you would assume / price until answered, in plain words.'),
+    question: z.string().max(300).optional().describe('The one question the engineer must answer, in plain English a person can reply to (e.g. "Which wiring method should be used for concealed lighting branch circuits: EMT per spec 26 05 33, or MC cable per drawing note E-2.1?").'),
+    impact: z.string().max(240).optional().describe('One sentence: why it matters for the bid (cost, labor, material).'),
   })).min(1).max(12),
 });
 
@@ -91,6 +93,8 @@ export function createFlagDiscrepanciesTool(): AssistantToolDefinition<typeof fl
           drawing,
           spec,
           recommendation: row.recommendation,
+          ...(row.question ? { question: row.question } : {}),
+          ...(row.impact ? { impact: row.impact } : {}),
           createdAt: new Date().toISOString(),
         };
         const key = discrepancyKey(item);

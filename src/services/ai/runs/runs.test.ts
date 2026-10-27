@@ -130,6 +130,32 @@ describe('suggested runs on a real sheet (Otsego E210)', () => {
     }
   });
 
+  it('never draws a branch arc through a keep-clear box the user marked', () => {
+    const scale = findViewScale(page, zones, circuits.flatMap(c => c.devices))!;
+    const base = { page, zones, panel: { x: 0.83 * W, y: 0.52 * H }, panelLabel: 'LP', circuits, settings: DEFAULT_RUN_SETTINGS, ftPerPt: scale.ftPerPt, scaleSource: scale.text };
+    const first = planRuns(base);
+    const withArc = first.runs.find(r => r.kind === 'branch' && r.arc && Math.hypot(r.arc[2].x - r.arc[0].x, r.arc[2].y - r.arc[0].y) > 40)!;
+    expect(withArc).toBeTruthy();
+    // A box right on the arc's bulge, clear of both fixtures.
+    const [a, mid, b] = withArc.arc!;
+    const size = Math.hypot(b.x - a.x, b.y - a.y) * 0.15;
+    const box = { x: mid.x - size / 2, y: mid.y - size / 2, width: size, height: size };
+    const sample = (arc: [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }]) => {
+      const [p0, m, p2] = arc;
+      const c = { x: 2 * m.x - (p0.x + p2.x) / 2, y: 2 * m.y - (p0.y + p2.y) / 2 };
+      return Array.from({ length: 33 }, (_, i) => {
+        const t = i / 32;
+        return { x: (1 - t) ** 2 * p0.x + 2 * (1 - t) * t * c.x + t * t * p2.x, y: (1 - t) ** 2 * p0.y + 2 * (1 - t) * t * c.y + t * t * p2.y };
+      });
+    };
+    const inBox = (p: { x: number; y: number }) => p.x > box.x + 1 && p.x < box.x + box.width - 1 && p.y > box.y + 1 && p.y < box.y + box.height - 1;
+    expect(sample(withArc.arc!).some(inBox)).toBe(true);
+    const second = planRuns({ ...base, extraObstacles: [{ kind: 'opening', label: 'Keep clear 1', box }], keepClearConfirmed: true });
+    for (const run of second.runs.filter(r => r.kind === 'branch' && r.arc)) {
+      expect(sample(run.arc!).some(inBox), run.id).toBe(false);
+    }
+  });
+
   it('auto-groups devices by printed circuit tags', () => {
     const devices = circuits.flatMap(c => c.devices.map(d => ({ x: d.x, y: d.y + 4 })));
     const grouped = autoCircuit(devices, page, {

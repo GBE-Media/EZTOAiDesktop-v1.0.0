@@ -126,6 +126,10 @@ export interface Discrepancy {
   drawing: DiscrepancySide;
   spec: DiscrepancySide;
   recommendation?: string;
+  /** Plain-language question for the engineer/architect ("Which wiring method governs…?"). */
+  question?: string;
+  /** Why it matters for the estimate (cost / scope / schedule), one sentence. */
+  impact?: string;
   createdAt: string;
 }
 

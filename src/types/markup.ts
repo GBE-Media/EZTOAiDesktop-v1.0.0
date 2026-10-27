@@ -98,6 +98,8 @@ export interface AiRunMeta {
   riser?: { direction: 'up' | 'down'; fromLevel?: string; toLevel?: string; panel?: string };
   /** What each foot of the run is made of (linked to a product on placement). */
   assembly?: { key: string; name: string; materials: Array<{ name: string; unit: 'ft'; perFt: number }> };
+  /** Conduit runs: wire products inside (markup.productId is the conduit). */
+  componentProducts?: Array<{ productId: string; perFt: number }>;
   /** Feet per document point used for lengths. */
   ftPerPt: number;
   lengthFt: number;

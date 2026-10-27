@@ -1,5 +1,5 @@
 import { useRef, useState, useEffect } from 'react';
-import { List, Settings2, Ruler, FileText, ChevronLeft, ChevronRight, Package, Bot } from 'lucide-react';
+import { List, Settings2, Ruler, FileText, ChevronLeft, ChevronRight, Package, Bot, X } from 'lucide-react';
 import { MenuBar } from './MenuBar';
 import { Toolbar } from './Toolbar';
 import { DocumentTabs } from './DocumentTabs';
@@ -29,14 +29,15 @@ import type { ImperativePanelHandle } from 'react-resizable-panels';
 
 export function EditorLayout() {
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(true);
-  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(true);
+  // Properties / measurements: its own drawer over the right edge of the canvas — never shares
+  // the AI panel's space, and closing the AI never opens it.
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
   const [mode, setMode] = useState<'documents' | 'products'>('documents');
   
   const { activeDocument } = useEditorStore();
   const isAiChatOpen = useAIChatStore((state) => state.isOpen);
   
   const leftPanelRef = useRef<ImperativePanelHandle>(null);
-  const rightPanelRef = useRef<ImperativePanelHandle>(null);
   const aiPanelRef = useRef<ImperativePanelHandle>(null);
   
   // Initialize keyboard shortcuts
@@ -58,7 +59,6 @@ export function EditorLayout() {
   useEffect(() => {
     const timer = setTimeout(() => {
       leftPanelRef.current?.collapse();
-      rightPanelRef.current?.collapse();
       aiPanelRef.current?.collapse();
     }, 0);
     return () => clearTimeout(timer);
@@ -128,16 +128,7 @@ export function EditorLayout() {
     }
   };
 
-  const toggleRightPanel = () => {
-    const panel = rightPanelRef.current;
-    if (panel) {
-      if (rightPanelCollapsed) {
-        panel.expand();
-      } else {
-        panel.collapse();
-      }
-    }
-  };
+  const toggleRightPanel = () => setPropertiesOpen(open => !open);
 
   const toggleAiPanel = () => {
     const panel = aiPanelRef.current;
@@ -254,75 +245,56 @@ export function EditorLayout() {
             </button>
           </ResizableHandle>
 
-          {/* Main canvas */}
-          <ResizablePanel defaultSize={60} minSize={30}>
-            <Canvas />
-          </ResizablePanel>
-
-          {/* Right resize handle with collapse toggle */}
-          <ResizableHandle withHandle className="relative">
-            <button
-              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 w-4 h-8 flex items-center justify-center bg-panel-header hover:bg-secondary border border-panel-border rounded-sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleRightPanel();
-              }}
-            >
-              {rightPanelCollapsed ? (
-                <ChevronLeft className="w-3 h-3 text-muted-foreground" />
-              ) : (
-                <ChevronRight className="w-3 h-3 text-muted-foreground" />
-              )}
-            </button>
-          </ResizableHandle>
-
-          {/* Right panel - Properties & Measurements (starts collapsed; user opens manually) */}
-          <ResizablePanel 
-            ref={rightPanelRef}
-            defaultSize={0} 
-            minSize={15} 
-            maxSize={30}
-            collapsible
-            collapsedSize={0}
-            onCollapse={() => setRightPanelCollapsed(true)}
-            onExpand={() => setRightPanelCollapsed(false)}
-          >
-            <div className="h-full flex flex-col bg-panel border-l border-panel-border relative">
-              {/* Clickable edge zone to collapse */}
-              <div 
-                className="absolute left-0 top-0 bottom-0 w-2 cursor-pointer hover:bg-primary/20 z-10 transition-colors"
+          {/* Main canvas, with the Properties drawer sliding over its right edge */}
+          <ResizablePanel defaultSize={55} minSize={30}>
+            <div className="relative h-full w-full overflow-hidden">
+              <Canvas />
+              <button
+                type="button"
+                className="absolute right-0 top-1/2 z-30 flex h-16 w-5 -translate-y-1/2 items-center justify-center rounded-l-md border border-r-0 border-panel-border bg-panel-header text-muted-foreground shadow hover:bg-secondary hover:text-foreground"
+                style={{ right: propertiesOpen ? 300 : 0 }}
                 onClick={toggleRightPanel}
-                title="Click to collapse"
-              />
-              {mode === 'documents' ? (
-                <>
-                  <PanelContainer 
-                    title="Properties" 
-                    icon={<Settings2 className="w-3 h-3" />}
-                  >
-                    <div className="h-[350px]">
-                      <PropertiesPanel />
-                    </div>
-                  </PanelContainer>
-
-                  <PanelContainer 
-                    title="Measurements" 
-                    icon={<Ruler className="w-3 h-3" />}
-                  >
-                    <div className="h-[250px]">
-                      <MeasurementsPanel />
-                    </div>
-                  </PanelContainer>
-                </>
-              ) : (
-                <PanelContainer 
-                  title="Product Details" 
-                  icon={<Package className="w-3 h-3" />}
-                >
-                  <div className="h-full">
-                    <ProductDetailsPanel />
+                title={propertiesOpen ? 'Close properties' : 'Open properties'}
+                aria-label={propertiesOpen ? 'Close properties' : 'Open properties'}
+              >
+                {propertiesOpen ? <ChevronRight className="h-3 w-3" /> : <ChevronLeft className="h-3 w-3" />}
+              </button>
+              {propertiesOpen && (
+                <aside className="absolute right-0 top-0 bottom-0 z-30 flex w-[300px] flex-col overflow-y-auto border-l border-panel-border bg-panel shadow-2xl">
+                  <div className="flex items-center justify-between border-b border-panel-border px-3 py-1.5">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      {mode === 'documents' ? 'Properties' : 'Product details'}
+                    </span>
+                    <button
+                      type="button"
+                      className="rounded p-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                      onClick={() => setPropertiesOpen(false)}
+                      aria-label="Close properties"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
                   </div>
-                </PanelContainer>
+                  {mode === 'documents' ? (
+                    <>
+                      <PanelContainer title="Properties" icon={<Settings2 className="w-3 h-3" />}>
+                        <div className="h-[350px]">
+                          <PropertiesPanel />
+                        </div>
+                      </PanelContainer>
+                      <PanelContainer title="Measurements" icon={<Ruler className="w-3 h-3" />}>
+                        <div className="h-[250px]">
+                          <MeasurementsPanel />
+                        </div>
+                      </PanelContainer>
+                    </>
+                  ) : (
+                    <PanelContainer title="Product Details" icon={<Package className="w-3 h-3" />}>
+                      <div className="h-full">
+                        <ProductDetailsPanel />
+                      </div>
+                    </PanelContainer>
+                  )}
+                </aside>
               )}
             </div>
           </ResizablePanel>
