@@ -29,7 +29,7 @@ import { getAssistantTool } from '../tools/registry';
 import { runLengthFt } from './overlay';
 import { buildRunInputQuestion, createSuggestRunsTool, KEEPOUT_COLOR, RUN_COLOR, panelNameCandidates, prepareRunPlan, resetRunDecisions, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
 import { applyFieldAnswers, clearPinnedResumes, formatFieldAnswersForModel, type AskUserRequest } from '../agent/askUser';
-import { createPageGeometry, docToRender, renderToDoc as renderToDocHelper } from '../placement/coords';
+import { BASE_RENDER_SCALE } from '@/lib/coordinateUtils';
 import type { PolygonMarkup } from '@/types/markup';
 
 const DOC = 'doc_otsego';
@@ -190,7 +190,7 @@ describe('suggest_runs tool', () => {
     expect(specWiringMethod(['NO RELEVANT TEXT'])).toBeUndefined();
   });
 
-  it('produces doc-coordinate run markups on a rotated sheet that land on the devices', async () => {
+  it('stores runs in the canvas frame (rotation + render scale) so they land where the user sees the page', async () => {
     const circuits = circuitsFromTags();
     const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     if ('needs' in result) throw new Error(result.message);
@@ -198,20 +198,20 @@ describe('suggest_runs tool', () => {
     const homeRuns = runs.filter(m => m.aiRun?.kind === 'homerun');
     expect(homeRuns.length).toBeGreaterThan(0);
     expect(homeRuns.every(m => /EMT/.test(m.label || ''))).toBe(true);
-    // Every run point maps back inside the displayed page (rotation applied correctly).
-    const geometry = createPageGeometry({ pageNumber: 4, docWidth: H, docHeight: W, rotationDeg: 90, renderScale: 1 });
+    // Canvas = the rotated page rendered at BASE_RENDER_SCALE, like count markers and every
+    // other markup: each point is inside the rendered page and tagged with that frame.
+    expect(runs.every(m => m.aiRun?.frame === 'render')).toBe(true);
+    const toDisplay = (p: { x: number; y: number }) => ({ x: p.x / BASE_RENDER_SCALE, y: p.y / BASE_RENDER_SCALE });
     for (const m of runs) {
       for (const p of m.points) {
         expect(p.x).toBeGreaterThanOrEqual(-1);
-        expect(p.x).toBeLessThanOrEqual(H + 1);
-        const display = docToRender(p, geometry);
-        expect(display.x).toBeGreaterThanOrEqual(-1);
-        expect(display.x).toBeLessThanOrEqual(W + 1);
+        expect(p.x).toBeLessThanOrEqual(W * BASE_RENDER_SCALE + 1);
+        expect(p.y).toBeLessThanOrEqual(H * BASE_RENDER_SCALE + 1);
       }
     }
     // An in-building destination (83 %, 65 %); the old 83 %, 52 % was in white space.
-    const end = docToRender(homeRuns[0].points[homeRuns[0].points.length - 1], geometry);
-    const start = docToRender(homeRuns[0].points[0], geometry);
+    const end = toDisplay(homeRuns[0].points[homeRuns[0].points.length - 1]);
+    const start = toDisplay(homeRuns[0].points[0]);
     const nearPanel = [start, end].some(p => Math.hypot(p.x - 0.83 * W, p.y - 0.65 * H) < 0.05 * W);
     expect(nearPanel).toBe(true);
     expect(result.modelSummary.code).toBeTruthy();
@@ -325,16 +325,15 @@ describe('suggest_runs tool', () => {
 
 describe('runs follow the placed fixtures', () => {
   it('ties branch strings to the count markers and moves them with the fixture', async () => {
-    const { renderToDoc } = await import('../placement/coords');
     const { followAnchoredRuns } = await import('./anchors');
     const circuits = circuitsFromTags();
-    const geometry = createPageGeometry({ pageNumber: 4, docWidth: H, docHeight: W, rotationDeg: 90, renderScale: 1 });
-    // Count markers sit a little off the analysis locations (as placed / nudged on the print).
+    // Count markers sit a little off the analysis locations (as placed / nudged on the print),
+    // stored like the app stores them: render space (rotated page × BASE_RENDER_SCALE).
     const markers = analysisItems.map(item => {
       const display = { x: (item.location.x / 100) * W + 6, y: (item.location.y / 100) * H + 4 };
-      const doc = renderToDoc(display, geometry);
+      const canvasPt = { x: display.x * BASE_RENDER_SCALE, y: display.y * BASE_RENDER_SCALE };
       return {
-        id: `cm_${item.id}`, type: 'count-marker', page: 4, x: doc.x, y: doc.y, number: 1, label: 'A',
+        id: `cm_${item.id}`, type: 'count-marker', page: 4, x: canvasPt.x, y: canvasPt.y, number: 1, label: 'A',
         aiLinkedItemId: item.id, style: { strokeColor: '#000', fillColor: '#000', strokeWidth: 1, opacity: 100 },
         locked: false, author: 'AI', createdAt: '',
       };
@@ -381,17 +380,18 @@ describe('runs follow the placed fixtures', () => {
 
   it('keeps keep-clear zones locked where the user put them across runs', async () => {
     const circuits = circuitsFromTags();
-    const geometry = createPageGeometry({ pageNumber: 4, docWidth: H, docHeight: W, rotationDeg: 90, renderScale: 1 });
     const zonePct = { x: 10, y: 10, width: 8, height: 6 };
     const first = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [zonePct], keepClearConfirmed: true } as never);
     if ('needs' in first) throw new Error(first.message);
     const zone = first.markups.map(r => r.markup).find(m => m.aiRun?.kind === 'keepout')!;
     expect(zone.locked).toBe(true);
     expect(zone.aiRun?.userZone).toBe(true);
-    // Placed where the user drew it (display % → doc points, same frame as the canvas).
-    const corner = renderToDocHelper({ x: (zonePct.x / 100) * W, y: (zonePct.y / 100) * H }, geometry);
+    // Placed exactly where the user drew it: page % → canvas render space (the frame they drew in).
+    const corner = { x: (zonePct.x / 100) * W * BASE_RENDER_SCALE, y: (zonePct.y / 100) * H * BASE_RENDER_SCALE };
     const z = zone as unknown as { x: number; y: number; width: number; height: number };
-    expect(Math.min(Math.abs(z.x - corner.x), Math.abs(z.x + z.width - corner.x))).toBeLessThan(0.5);
+    expect(Math.abs(z.x - corner.x)).toBeLessThan(0.5);
+    expect(Math.abs(z.y - corner.y)).toBeLessThan(0.5);
+    expect(Math.abs(z.width - (zonePct.width / 100) * W * BASE_RENDER_SCALE)).toBeLessThan(0.5);
 
     // On the page now. The next run reads it back, doesn't redraw it, and doesn't ask again —
     // even when the model re-sends shifted coordinates.
@@ -535,5 +535,64 @@ describe('runs follow the placed fixtures', () => {
     expect(placeSuggestedRuns(approval)).toMatchObject({ status: 'failed', placed: 0, error: expect.stringContaining('changed after this preview') });
     expect(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4]).toEqual(before);
     vi.unstubAllGlobals();
+  });
+
+  it('reads a keep-clear zone saved by an older version where the user drew it, and re-saves it in the canvas frame', async () => {
+    const { renderToDoc } = await import('../placement/coords');
+    const circuits = circuitsFromTags();
+    const zonePct = { x: 10, y: 10, width: 8, height: 6 };
+    // Older builds stored run markups in unrotated PDF points (scale 1).
+    const legacyGeom = { pageNumber: 4, docWidth: H, docHeight: W, renderScale: 1, rotationDeg: 90 as const };
+    const a = renderToDoc({ x: (zonePct.x / 100) * W, y: (zonePct.y / 100) * H }, legacyGeom);
+    const b = renderToDoc({ x: ((zonePct.x + zonePct.width) / 100) * W, y: ((zonePct.y + zonePct.height) / 100) * H }, legacyGeom);
+    const legacy = {
+      id: 'old_zone', type: 'rectangle', page: 4, x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), width: Math.abs(b.x - a.x), height: Math.abs(b.y - a.y),
+      style: { strokeColor: KEEPOUT_COLOR, fillColor: KEEPOUT_COLOR, strokeWidth: 1, opacity: 30 }, locked: true, author: 'AI', createdAt: '',
+      aiRun: { kind: 'keepout', userZone: true, label: 'Keep clear' },
+    };
+    useCanvasStore.setState(state => ({
+      ...state,
+      pdfDocuments: { [DOC]: { ...state.pdfDocuments[DOC], markupsByPage: { 4: [legacy] } } } as never,
+    }));
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
+    if ('needs' in result) throw new Error(result.message);
+    expect(result.legacyUpgradeIds).toEqual(['old_zone']);
+    const up = result.markups.map(r => r.markup).find(m => m.id === 'old_zone') as unknown as { x: number; y: number; width: number; height: number; aiRun: { frame?: string } };
+    expect(up.aiRun.frame).toBe('render');
+    expect(Math.abs(up.x - (zonePct.x / 100) * W * BASE_RENDER_SCALE)).toBeLessThan(0.5);
+    expect(Math.abs(up.y - (zonePct.y / 100) * H * BASE_RENDER_SCALE)).toBeLessThan(0.5);
+    expect(Math.abs(up.width - (zonePct.width / 100) * W * BASE_RENDER_SCALE)).toBeLessThan(0.5);
+    // No run crosses the zone where the user drew it.
+    const box = { x1: up.x, y1: up.y, x2: up.x + up.width, y2: up.y + up.height };
+    const runs = result.markups.map(r => r.markup).filter(m => m.type === 'polyline') as PolygonMarkup[];
+    for (const r of runs) for (const p of r.points) {
+      expect(p.x > box.x1 + 1 && p.x < box.x2 - 1 && p.y > box.y1 + 1 && p.y < box.y2 - 1).toBe(false);
+    }
+  });
+
+  it('skips fixtures the user deleted and wires fixtures the user placed by hand', async () => {
+    const circuits = circuitsFromTags();
+    const toCanvasPt = (item: { location: { x: number; y: number } }) => ({ x: (item.location.x / 100) * W * BASE_RENDER_SCALE, y: (item.location.y / 100) * H * BASE_RENDER_SCALE });
+    const style = { strokeColor: '#000', fillColor: '#000', strokeWidth: 1, opacity: 100 };
+    const deleted = analysisItems[0];
+    const markers: Array<Record<string, unknown>> = analysisItems.slice(1).map(item => ({
+      id: `cm_${item.id}`, type: 'count-marker', page: 4, ...toCanvasPt(item), number: 1, label: 'A', aiLinkedItemId: item.id, style, locked: false, author: 'AI', createdAt: '',
+    }));
+    // A fixture the user added by hand, next to one of the AI's.
+    const near = toCanvasPt(analysisItems[1]);
+    markers.push({ id: 'cm_hand', type: 'count-marker', page: 4, x: near.x + 30, y: near.y, number: 1, label: 'A', style, locked: false, author: 'User', createdAt: '' });
+    useCanvasStore.setState(state => ({
+      ...state,
+      pdfDocuments: { [DOC]: { ...state.pdfDocuments[DOC], markupsByPage: { 4: markers } } } as never,
+    }));
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [] } as never);
+    if ('needs' in result) throw new Error(result.message);
+    const runs = result.markups.map(r => r.markup).filter(m => m.type === 'polyline') as PolygonMarkup[];
+    const anchored = new Set(runs.flatMap(r => [r.aiRun?.anchors?.start, r.aiRun?.anchors?.end]).filter(Boolean));
+    expect(anchored.has('cm_hand')).toBe(true);
+    const gone = toCanvasPt(deleted);
+    for (const r of runs) {
+      for (const p of [r.points[0], r.points[r.points.length - 1]]) expect(Math.hypot(p.x - gone.x, p.y - gone.y)).toBeGreaterThan(1);
+    }
   });
 });

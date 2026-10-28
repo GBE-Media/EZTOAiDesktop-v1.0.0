@@ -104,8 +104,14 @@ export interface AiRunMeta {
   assembly?: { key: string; name: string; materials: Array<{ name: string; unit: 'ft'; perFt: number }> };
   /** Conduit runs: wire products inside (markup.productId is the conduit). */
   componentProducts?: Array<{ productId: string; perFt: number }>;
-  /** Feet per document point used for lengths. */
+  /** Feet per markup unit used for lengths (per canvas unit when frame is 'render'). */
   ftPerPt: number;
+  /**
+   * Coordinate frame of this markup's geometry. 'render' = canvas render space like every other
+   * markup (page rendered at BASE_RENDER_SCALE, rotation applied). Missing = written by an older
+   * version in unrotated PDF points; read back that way and upgraded when the page is re-run.
+   */
+  frame?: 'render';
   lengthFt: number;
   circuits?: AiRunCircuit[];
   settings?: {

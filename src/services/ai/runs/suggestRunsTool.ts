@@ -7,7 +7,7 @@ import { resolveDocumentRef } from '../documentRef';
 import { ensurePageZones, getZoneInputs, type PageZone, type ZonePageInput } from '../detection/pageZones';
 import { allIndexedPages } from '../projectIndex/store';
 import { pageGeometryFromUnrotated } from '../placement/visionDisplayPctToDoc';
-import { docToRender, getRenderPageSize, normalizeRotationDeg, renderToDoc } from '../placement/coords';
+import { normalizeRotationDeg } from '../placement/coords';
 import type { PageGeometry } from '../placement/types';
 import { detectProjectLocation, governingNec, NEC_ADOPTION_CHECKED } from './jurisdiction';
 import {
@@ -25,6 +25,7 @@ import {
   viewIndexOf,
 } from './planRuns';
 import { insideBox, tightenToDrawing, viewOffset } from './viewRegistration';
+import { CANVAS_SCALE, fromCanvas, isLegacyRunMarkup, markupBoxToPlan, toCanvas, upgradeLegacyRunMarkup } from './runFrame';
 import { auditRuns } from './runAudit';
 import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, panelsTaggedOnSheet, parseCircuitTag, readCircuitTags, suggestPanels } from './circuitTags';
 import { materialTotals, runAssembly, type RunAssembly } from './runMaterials';
@@ -163,6 +164,7 @@ export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestR
           inputSnapshot: runInputSnapshot(useCanvasStore.getState().pdfDocuments[prepared.docId]?.markupsByPage[input.page] || []),
           page: input.page,
           markups: prepared.markups,
+          ...(prepared.legacyUpgradeIds ? { legacyUpgradeIds: prepared.legacyUpgradeIds } : {}),
           summary: prepared.summaryLines,
         },
         description: input.description || `Place ${prepared.homeRuns} suggested home run${prepared.homeRuns === 1 ? '' : 's'} on page ${input.page}`,
@@ -183,6 +185,8 @@ type Prepared =
   | {
     docId: string;
     markups: Array<{ page: number; markup: CanvasMarkup }>;
+    /** Old-frame user zones / panels re-saved (by these replacement copies) on placement. */
+    legacyUpgradeIds?: string[];
     homeRuns: number;
     summaryLines: string[];
     modelSummary: Record<string, unknown>;
@@ -630,7 +634,10 @@ export function riserBetween(
   const point = shift
     ? insideBox({ x: panelPoint.x + shift.x, y: panelPoint.y + shift.y }, circuitBox)
     : { x: circuitBox.x + clamp(rx) * circuitBox.width, y: circuitBox.y + clamp(ry) * circuitBox.height };
-  const levels = panelLevel && circuitLevel ? Math.max(1, Math.abs(circuitLevel.n - panelLevel.n)) : 1;
+  // Two views of the same floor (partial plans, enlarged area) are a horizontal continuation:
+  // no vertical footage. Unknown floors still count one floor (the user can correct it).
+  const sameFloor = !!panelLevel && !!circuitLevel && circuitLevel.n === panelLevel.n;
+  const levels = panelLevel && circuitLevel ? (sameFloor ? 0 : Math.abs(circuitLevel.n - panelLevel.n)) : 1;
   // Circuits above their panel go down to it; below it, up.
   const direction: 'up' | 'down' = panelLevel && circuitLevel && circuitLevel.n < panelLevel.n ? 'up' : 'down';
   return {
@@ -674,7 +681,8 @@ export function riserGroups<T extends { devices: Pt[] }>(circuits: T[], view: Bo
 }
 
 /** Text for the continuation: "↓ to Panel B (Level 1)". */
-export function riserText(panel: string, riser: Pick<PanelRiser, 'direction' | 'toLevel'>): string {
+export function riserText(panel: string, riser: Pick<PanelRiser, 'direction' | 'toLevel'> & { levels?: number }): string {
+  if (riser.levels === 0) return `→ to Panel ${panel} (continues on the other view, same floor)`;
   return `${riser.direction === 'up' ? '↑' : '↓'} to Panel ${panel}${riser.toLevel ? ` (${riser.toLevel})` : ' (other floor)'}`;
 }
 
@@ -744,35 +752,40 @@ export async function prepareRunPlan(
   const analysisItems = analysis?.analysis?.items || [];
   const legendCodes = analysis?.analysis?.legendTypeCodes;
   const itemsById = new Map(analysisItems.map(item => [item.id, item]));
-  // Runs tie to the count markers actually on the print (same frame the user sees), so a
-  // string lands on its fixtures and follows them when one is moved.
-  const identityGeometry: PageGeometry = { ...geometry, renderScale: 1 };
-  const renderSize = getRenderPageSize(identityGeometry);
-  const sx = renderSize.width > 0 ? W / renderSize.width : 1;
-  const sy = renderSize.height > 0 ? H / renderSize.height : 1;
+  // Runs tie to the count markers actually on the print, so a string lands on its fixtures and
+  // follows them when one is moved. Markups live in the canvas frame (render space); the plan
+  // works in page display points — see runFrame.ts.
   const markerByItem = new Map<string, { id: string; pt: Pt }>();
+  const handPlaced: Array<{ id: string; pt: Pt }> = [];
   for (const m of canvas.getMarkupsByPage(docId)[input.page] || []) {
     if (m.type !== 'count-marker') continue;
     const linked = (m as { aiLinkedItemId?: string }).aiLinkedItemId;
     const x = (m as { x?: number }).x;
     const y = (m as { y?: number }).y;
-    if (!linked || typeof x !== 'number' || typeof y !== 'number') continue;
-    const r = docToRender({ x, y }, identityGeometry);
+    if (typeof x !== 'number' || typeof y !== 'number') continue;
+    const pt = fromCanvas({ x, y });
+    if (!linked) {
+      // A fixture the user counted by hand: it gets wired like any other.
+      if (!(m as { reviewMarker?: boolean }).reviewMarker) handPlaced.push({ id: m.id, pt });
+      continue;
+    }
     const prev = markerByItem.get(linked);
     // Prefer the real count over a review marker for the same item.
-    if (!prev || !(m as { reviewMarker?: boolean }).reviewMarker) markerByItem.set(linked, { id: m.id, pt: { x: r.x * sx, y: r.y * sy } });
+    if (!prev || !(m as { reviewMarker?: boolean }).reviewMarker) markerByItem.set(linked, { id: m.id, pt });
+  }
+  // Markers from an earlier count (their item ids are gone after a re-count) are still fixtures
+  // on the print: wire them like hand-counted ones.
+  for (const [linked, marker] of [...markerByItem]) {
+    if (itemsById.has(linked)) continue;
+    markerByItem.delete(linked);
+    handPlaced.push(marker);
   }
   // The user's own inputs live on the page: the keep-clear boxes they drew and the panels they
   // clicked are committed (locked) the moment they answer the card, and every later run reads
   // them back from there — never from the model's re-typed coordinates.
   const docMax = Math.max(geometry.docWidth, geometry.docHeight) || 3000;
   const pageMarkups = () => useCanvasStore.getState().getMarkupsByPage(docId)[input.page] || [];
-  const markupBox = (m: CanvasMarkup): Box => {
-    const r = m as RectangleMarkup;
-    const a = docToRender({ x: r.x, y: r.y }, identityGeometry);
-    const b = docToRender({ x: r.x + r.width, y: r.y + r.height }, identityGeometry);
-    return { x: Math.min(a.x, b.x) * sx, y: Math.min(a.y, b.y) * sy, width: Math.abs(b.x - a.x) * sx, height: Math.abs(b.y - a.y) * sy };
-  };
+  const markupBox = (m: CanvasMarkup): Box => markupBoxToPlan(m, geometry);
   const pctBox = (a: { x?: number; y?: number; width?: number; height?: number }): Box => ({
     x: ((a.x ?? 0) / 100) * W, y: ((a.y ?? 0) / 100) * H, width: ((a.width ?? 0) / 100) * W, height: ((a.height ?? 0) / 100) * H,
   });
@@ -786,7 +799,7 @@ export async function prepareRunPlan(
       (input.keepClear || []).forEach((area, i) => {
         const box = pctBox(area);
         if (!(box.width > 0 && box.height > 0) || placedZones.some(z => sameBox(z, box))) return;
-        commit.push({ page: input.page, markup: keepoutMarker(box, area.label || `Keep clear ${placedZones.length + i + 1}`, identityGeometry, input.page, docMax, 0, true) });
+        commit.push({ page: input.page, markup: keepoutMarker(box, area.label || `Keep clear ${placedZones.length + i + 1}`, input.page, docMax, 0, true) });
       });
     }
     if (asked.size) {
@@ -798,7 +811,7 @@ export async function prepareRunPlan(
         const label = (p.label || '').trim();
         // Re-picked on a card: the new spot replaces that panel's old marker.
         for (const m of existing) if (m.aiRun?.kind === 'panel' && m.aiRun.userPlaced && normPanelLabel(m.aiRun.panel) === normPanelLabel(label)) replaced.push(m.id);
-        const marker = panelMarker(toDisplay(p.offSheet ? p.exit as Pt : { x: p.x as number, y: p.y as number }), label, identityGeometry, input.page, docMax, 0, true);
+        const marker = panelMarker(toDisplay(p.offSheet ? p.exit as Pt : { x: p.x as number, y: p.y as number }), label, input.page, docMax, 0, true);
         if (p.offSheet) {
           marker.aiRun!.offSheet = true;
           marker.label = `To panel ${label} (other sheet)`;
@@ -841,6 +854,15 @@ export async function prepareRunPlan(
       anchorByPoint.set(pointKey(marker.pt), marker.id);
       return marker.pt;
     }
+    // Hand-counted fixture (its count marker is its own id).
+    const hand = handPlaced.find(h => h.id === id);
+    if (hand) {
+      anchorByPoint.set(pointKey(hand.pt), hand.id);
+      return hand.pt;
+    }
+    // The count is on the print: a fixture whose marker the user deleted gets no run. Only a
+    // page with no count markers at all falls back to the analysis locations.
+    if (markerByItem.size || handPlaced.length) return null;
     const item = itemsById.get(id);
     if (!item || item.locationMissing || !item.location) return null;
     return toDisplay(item.location);
@@ -864,11 +886,15 @@ export async function prepareRunPlan(
 
   // The engineer's circuit tags ("B-4" next to a fixture = panel B, circuit 4) beat any grouping
   // the model guessed (e.g. every fixture on one circuit).
-  const poolIds = input.circuits?.some(c => c.itemIds?.length)
-    ? input.circuits.flatMap(c => c.itemIds || [])
-    : input.autoCircuits?.itemIds?.length
-      ? input.autoCircuits.itemIds
-      : analysisItems.filter(item => !itemIsUnresolvedForCounts(item, legendCodes).unresolved).map(item => item.id);
+  const poolIds = [
+    ...(input.circuits?.some(c => c.itemIds?.length)
+      ? input.circuits.flatMap(c => c.itemIds || [])
+      : input.autoCircuits?.itemIds?.length
+        ? input.autoCircuits.itemIds
+        : analysisItems.filter(item => !itemIsUnresolvedForCounts(item, legendCodes).unresolved).map(item => item.id)),
+    // Fixtures the user counted by hand on this page are wired too, whatever the model listed.
+    ...handPlaced.map(h => h.id),
+  ];
   const poolDevices = [...new Set(poolIds)].flatMap(id => {
     const point = devicePoint(id);
     return point ? [{ point, itemId: id }] : [];
@@ -910,6 +936,22 @@ export async function prepareRunPlan(
       breakerAmps: input.autoCircuits?.breakerAmps ?? 20,
       useCircuitTags: useTags,
     });
+  }
+  // A hand-counted fixture the circuits above don't reach joins the circuit of its nearest fixture.
+  const wired = new Set(circuits.flatMap(c => c.devices.map(pointKey)));
+  for (const h of handPlaced) {
+    if (wired.has(pointKey(h.pt)) || !circuits.length) continue;
+    let best: PlannedCircuit | null = null; let bestD = Infinity;
+    for (const c of circuits) for (const d of c.devices) {
+      const dist = Math.hypot(d.x - h.pt.x, d.y - h.pt.y);
+      if (dist < bestD) { bestD = dist; best = c; }
+    }
+    if (!best) continue;
+    devicePoint(h.id);
+    const perDevice = best.loadVA && best.devices.length ? best.loadVA / best.devices.length : undefined;
+    best.devices = [...best.devices, h.pt];
+    if (perDevice) best.loadVA = perDevice * best.devices.length;
+    wired.add(pointKey(h.pt));
   }
   if (!circuits.length) {
     return {
@@ -1268,6 +1310,14 @@ export async function prepareRunPlan(
     footprint,
   });
   const markups = buildRunMarkups(plan, circuits, settings, geometry, input.page, anchorByPoint, new Set(userPanels.keys()));
+  // Keep-clear zones / panels saved by an older version sit in the old frame (drawn off from
+  // where the user put them). Placing this layout re-saves them where they belong.
+  const legacyUpgradeIds: string[] = [];
+  for (const m of pageMarkups()) {
+    if (!isLegacyRunMarkup(m) || (m.aiRun?.kind !== 'keepout' && !m.aiRun?.userPlaced)) continue;
+    markups.push({ page: input.page, markup: upgradeLegacyRunMarkup(m, geometry) });
+    legacyUpgradeIds.push(m.id);
+  }
   const materials = materialTotals(plan.runs.map(run => ({ assembly: run.assembly, lengthFt: run.lengthFt })));
   const homeRuns = plan.runs.filter(r => r.kind === 'homerun');
   const audit = auditRuns(plan.runs, {
@@ -1284,6 +1334,7 @@ export async function prepareRunPlan(
     ...(plan.obstacles.length ? [`Routed around: ${[...new Set(plan.obstacles.map(o => o.label))].join(', ')}`] : []),
     ...(materials.length ? [`Materials: ${materials.slice(0, 6).map(m => `${m.name} ${m.ft.toLocaleString()} ft`).join(' · ')}`] : []),
     ...(usedTags ? [`Circuits from the engineer's tags: ${panelPlans.map(p => `panel ${p.label} (${p.circuits.length})`).join(', ')}`] : []),
+    ...(plan.blockedCircuits?.length ? [`Not routed — review: ${shortCircuitList(plan.blockedCircuits)} (no clear path; nothing drawn for ${plan.blockedCircuits.length === 1 ? 'it' : 'them'}).`] : []),
     audit.flagged.length
       ? `Checks: ${audit.flagged.length} to review — ${audit.flagged.slice(0, 3).join(' ')}${audit.flagged.length > 3 ? ' …' : ''}`
       : `Checks passed: ${audit.passed.join(' ')}`,
@@ -1291,9 +1342,11 @@ export async function prepareRunPlan(
   return {
     docId,
     markups,
+    ...(legacyUpgradeIds.length ? { legacyUpgradeIds } : {}),
     homeRuns: homeRuns.length,
     summaryLines,
     modelSummary: {
+      ...(plan.blockedCircuits?.length ? { notRouted: plan.blockedCircuits, notRoutedNote: 'These circuits had no clear path and were not drawn. Tell the user which ones and offer to adjust their keep-clear zones or panel location; never invent a route.' } : {}),
       code: { ...code, location, adoptionDataChecked: NEC_ADOPTION_CHECKED },
       scale: scaleSource,
       settings,
@@ -1364,12 +1417,15 @@ function planAllPanels(options: {
   const codeRefs = new Set<string>();
   const panels: MultiPanelPlan['panels'] = [];
   const loadCenterFt: Record<string, number> = {};
+  const blocked: string[] = [];
   let hr = 0;
   for (const pp of options.panelPlans) {
     if (!pp.circuits.length) continue;
     const label = pp.label || 'Panel';
     const point = pp.point || snapInside(options.footprint, offSheetExitPoint(options.allowed, pp.circuits.flatMap(c => c.devices), options.page));
-    const plan = planRuns({
+    let plan: RunPlan;
+    try {
+      plan = planRuns({
       page: options.page,
       zones: options.zones,
       panel: point,
@@ -1384,7 +1440,14 @@ function planAllPanels(options: {
       footprint: options.footprint,
       panelOffSheet: pp.offSheet || !pp.point,
       ...(pp.riser ? { riser: { ft: pp.riser.ft, text: riserText(label, pp.riser) } } : {}),
-    });
+      });
+    } catch (error) {
+      // A panel none of whose circuits can be routed doesn't stop the other panels.
+      if (!(error instanceof RunRoutingError)) throw error;
+      blocked.push(...error.circuitIds);
+      continue;
+    }
+    blocked.push(...(plan.blockedCircuits || []));
     const renumber = new Map<string, string>();
     for (const run of plan.runs) {
       if (run.kind !== 'homerun') continue;
@@ -1417,15 +1480,20 @@ function planAllPanels(options: {
     Object.assign(loadCenterFt, plan.loadCenterFt || {});
     panels.push({ label, point, offSheet: pp.offSheet || !pp.point, ...(pp.riser ? { riser: pp.riser } : {}) });
   }
+  const blockedCircuits = [...new Set(blocked)];
+  // Nothing at all could be routed: the user reviews the inputs (no partial, no fallback lines).
+  if (!runs.length && blockedCircuits.length) throw new RunRoutingError(blockedCircuits);
+  const notRouted = `Not routed (no clear path without crossing a keep-clear zone or leaving the building): ${blockedCircuits.join(', ')}.`;
   return {
     runs,
     obstacles,
     ftPerPt: options.ftPerPt,
     scaleSource: options.scaleSource,
-    warnings: [...new Set(warnings)],
+    warnings: [...new Set(blockedCircuits.length ? [...warnings.filter(w => !w.startsWith('Not routed')), `${notRouted} Nothing was drawn for ${blockedCircuits.length === 1 ? 'it' : 'them'}.`] : warnings)],
     codeRefs: [...codeRefs],
     panels,
     loadCenterFt,
+    ...(blockedCircuits.length ? { blockedCircuits } : {}),
   };
 }
 
@@ -1439,8 +1507,10 @@ function buildRunMarkups(
   /** Panels the user placed on the page (normalised labels). */
   placedPanels: Set<string> = new Set(),
 ): Array<{ page: number; markup: CanvasMarkup }> {
-  const identity: PageGeometry = { ...geometry, renderScale: 1 };
-  const toDoc = (p: Pt) => renderToDoc(p, identity);
+  // Plan frame → canvas frame (where markups are stored and drawn).
+  const toDoc = (p: Pt) => toCanvas(p);
+  // Lengths are derived from drawn canvas points, so ftPerPt is per canvas unit.
+  const ftPerUnit = plan.ftPerPt / CANVAS_SCALE;
   const now = new Date().toISOString();
   const base = {
     page: pageNumber,
@@ -1465,7 +1535,7 @@ function buildRunMarkups(
   for (const ob of plan.obstacles) {
     // Already on the page (locked): leave the user's zone exactly where it is.
     if (ob.placed) continue;
-    out.push({ page: pageNumber, markup: keepoutMarker(ob.box, ob.label, identity, pageNumber, docMax, plan.ftPerPt, !!ob.userZone, !!ob.approximate) });
+    out.push({ page: pageNumber, markup: keepoutMarker(ob.box, ob.label, pageNumber, docMax, plan.ftPerPt, !!ob.userZone, !!ob.approximate) });
   }
 
   // Floor-to-floor continuations: a riser symbol where the home runs leave this floor, and a
@@ -1484,13 +1554,16 @@ function buildRunMarkups(
       height: riserSize,
       style: style(RUN_COLOR, 'rgba(255, 255, 255, 0.9)', Math.max(1.2, docMax * 0.0008), 100),
       label: text,
-      aiNote: role === 'leave'
+      aiNote: riser.levels === 0
+        ? (role === 'leave' ? `Home runs continue on the other view of this floor to panel ${panel} (no vertical footage).` : `Home runs from the other view of this floor arrive at panel ${panel} here.`)
+        : role === 'leave'
         ? `Home runs rise/drop here to panel ${panel}${riser.toLevel ? ` on ${riser.toLevel}` : ''}: +${Math.round(riser.ft)} ft vertical per run (${riser.levels} floor${riser.levels > 1 ? 's' : ''}).`
         : `Home runs from ${riser.fromLevel || 'the other floor'} arrive at panel ${panel} here.`,
       aiRun: {
         runId: `riser-${panel}-${role}`,
         kind: 'riser',
-        ftPerPt: plan.ftPerPt,
+        frame: 'render',
+        ftPerPt: ftPerUnit,
         lengthFt: 0,
         panel,
         riser: { direction, fromLevel: riser.fromLevel, toLevel: riser.toLevel, panel },
@@ -1503,7 +1576,7 @@ function buildRunMarkups(
     const r = panel.riser;
     out.push({ page: pageNumber, markup: riserMarkup(r.point, riserText(panel.label, r), r, panel.label, 'leave') });
     const offset = r.arrival || { x: r.panelPoint.x + riserSize * 1.6, y: r.panelPoint.y - riserSize * 1.6 };
-    const from = `${r.direction === 'up' ? '↓' : '↑'} from ${r.fromLevel || 'other floor'}${r.horizontalFt ? ` · ${Math.round(r.horizontalFt)} ft to Panel ${panel.label}` : ''}`;
+    const from = r.levels === 0 ? `→ from the other view${r.horizontalFt ? ` · ${Math.round(r.horizontalFt)} ft to Panel ${panel.label}` : ''}` : `${r.direction === 'up' ? '↓' : '↑'} from ${r.fromLevel || 'other floor'}${r.horizontalFt ? ` · ${Math.round(r.horizontalFt)} ft to Panel ${panel.label}` : ''}`;
     out.push({ page: pageNumber, markup: riserMarkup(offset, from, r, panel.label, 'arrive') });
   }
 
@@ -1511,7 +1584,7 @@ function buildRunMarkups(
     if (panel.offSheet || panel.riser) continue;
     // The user's own panel marker is already on the page: never drawn twice or moved.
     if (placedPanels.has(normPanelLabel(panel.label)) || (placedPanels.has('') && placedPanels.size === 1)) continue;
-    out.push({ page: pageNumber, markup: panelMarker(panel.point, panel.label, identity, pageNumber, docMax, plan.ftPerPt, false) });
+    out.push({ page: pageNumber, markup: panelMarker(panel.point, panel.label, pageNumber, docMax, plan.ftPerPt, false) });
   }
 
   for (const run of plan.runs) {
@@ -1519,7 +1592,7 @@ function buildRunMarkups(
     const curve = !isHome && run.arc ? run.arc.map(toDoc) : null;
     const points = curve || run.path.map(toDoc);
     if (points.length < 2) continue;
-    const arcFt = curve ? arcLength(curve[0], curve[1], curve[2]) * plan.ftPerPt : 0;
+    const arcFt = curve ? arcLength(curve[0], curve[1], curve[2]) * ftPerUnit : 0;
     const footageFactor = curve && arcFt > 0 ? Math.max(1, Math.round((run.lengthFt / arcFt) * 1000) / 1000) : undefined;
     const runCircuits: AiRunCircuit[] = run.circuitIds.map(id => {
       const c = byId.get(id);
@@ -1550,7 +1623,8 @@ function buildRunMarkups(
       aiRun: {
         runId: run.id,
         kind: run.kind,
-        ftPerPt: plan.ftPerPt,
+        frame: 'render',
+        ftPerPt: ftPerUnit,
         lengthFt: run.lengthFt,
         panel: run.panelLabel,
         ...(curve ? { curve: true, footageFactor } : {}),
@@ -1595,9 +1669,10 @@ function sameBox(p: Box, q: Box): boolean {
     && Math.abs(p.width - q.width) < 0.1 && Math.abs(p.height - q.height) < 0.1;
 }
 
-function keepoutMarker(box: Box, label: string, identity: PageGeometry, pageNumber: number, docMax: number, ftPerPt: number, userZone: boolean, approximate = false): RectangleMarkup {
-  const a = renderToDoc({ x: box.x, y: box.y }, identity);
-  const b = renderToDoc({ x: box.x + box.width, y: box.y + box.height }, identity);
+function keepoutMarker(box: Box, label: string, pageNumber: number, docMax: number, ftPerPt: number, userZone: boolean, approximate = false): RectangleMarkup {
+  // Plan frame → canvas frame (where the user drew it / sees it).
+  const a = toCanvas({ x: box.x, y: box.y });
+  const b = toCanvas({ x: box.x + box.width, y: box.y + box.height });
   return {
     page: pageNumber,
     author: 'BidveraAi',
@@ -1614,12 +1689,12 @@ function keepoutMarker(box: Box, label: string, identity: PageGeometry, pageNumb
     aiNote: `Runs routed around ${label}.`,
     // Locked to the page so a drag can't shift it; the router reads it back on every run.
     locked: true,
-    aiRun: { runId: `keepout-${label}`, kind: 'keepout', ftPerPt, lengthFt: 0, summary: `Keep clear: ${label}`, ...(userZone ? { userZone: true } : {}) },
+    aiRun: { runId: `keepout-${label}`, kind: 'keepout', frame: 'render', ftPerPt: ftPerPt / CANVAS_SCALE, lengthFt: 0, summary: `Keep clear: ${label}`, ...(userZone ? { userZone: true } : {}) },
   } as RectangleMarkup;
 }
 
-function panelMarker(at: Pt, label: string, identity: PageGeometry, pageNumber: number, docMax: number, ftPerPt: number, userPlaced: boolean): RectangleMarkup {
-  const c = renderToDoc(at, identity);
+function panelMarker(at: Pt, label: string, pageNumber: number, docMax: number, ftPerPt: number, userPlaced: boolean): RectangleMarkup {
+  const c = toCanvas(at);
   const size = docMax * 0.006;
   const name = label || 'Panel';
   return {
@@ -1638,7 +1713,7 @@ function panelMarker(at: Pt, label: string, identity: PageGeometry, pageNumber: 
     aiNote: userPlaced ? `Panel ${name} — placed by you; home runs end here.` : `Home runs end at panel ${name}.`,
     // The user's panel is locked where they clicked it; runs never move or replace it.
     locked: userPlaced,
-    aiRun: { runId: `panel-${label}`, kind: 'panel', ftPerPt, lengthFt: 0, panel: label, summary: `Panel ${name}`, ...(userPlaced ? { userPlaced: true } : {}) },
+    aiRun: { runId: `panel-${label}`, kind: 'panel', frame: 'render', ftPerPt: ftPerPt / CANVAS_SCALE, lengthFt: 0, panel: label, summary: `Panel ${name}`, ...(userPlaced ? { userPlaced: true } : {}) },
   } as RectangleMarkup;
 }
 
