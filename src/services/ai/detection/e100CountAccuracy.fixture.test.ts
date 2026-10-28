@@ -411,6 +411,41 @@ describe('tile reconcile ownership and absolute radius', () => {
     expect(items.filter(row => !row.locationMissing)).toHaveLength(2);
   });
 
+  it('never chains two same-tile fixtures together through a neighbour tile', () => {
+    const pageW = 720;
+    const pageH = 720;
+    const [left, right] = generateOverlappingTileRegions(pageW, pageH, 2, 2);
+    const local = (region: typeof left, pt: { x: number; y: number }) => ({
+      x: ((pt.x - region.x) / region.width) * 100,
+      y: ((pt.y - region.y) / region.height) * 100,
+    });
+    const a = { x: 345, y: 120 };
+    const b = { x: 375, y: 120 };
+    const mid = { x: 360, y: 120 };
+    const items = reconcileTileDetections([
+      { region: left, result: { page: 1, items: [item('a', 'A', local(left, a).x, local(left, a).y), item('b', 'A', local(left, b).x, local(left, b).y)], dimensions: [], text: [], symbols: [] } },
+      { region: right, result: { page: 1, items: [item('m', 'A', local(right, mid).x, local(right, mid).y)], dimensions: [], text: [], symbols: [] } },
+    ], pageW, pageH);
+    expect(items.filter(row => !row.locationMissing)).toHaveLength(2);
+  });
+
+  it('counts one fixture once when two tiles label it differently', () => {
+    const pageW = 720;
+    const pageH = 720;
+    const [left, right] = generateOverlappingTileRegions(pageW, pageH, 2, 2);
+    const local = (region: typeof left, pt: { x: number; y: number }) => ({
+      x: ((pt.x - region.x) / region.width) * 100,
+      y: ((pt.y - region.y) / region.height) * 100,
+    });
+    const p = { x: 360, y: 120 };
+    const q = { x: 364, y: 123 };
+    const items = reconcileTileDetections([
+      { region: left, result: { page: 1, items: [item('l', 'A', local(left, p).x, local(left, p).y)], dimensions: [], text: [], symbols: [] } },
+      { region: right, result: { page: 1, items: [item('r', 'B', local(right, q).x, local(right, q).y)], dimensions: [], text: [], symbols: [] } },
+    ], pageW, pageH);
+    expect(items.filter(row => !row.locationMissing)).toHaveLength(1);
+  });
+
   it('keeps different-code symbols that are close together', () => {
     const [region] = generateOverlappingTileRegions(612, 792, 1, 1);
     const items = reconcileTileDetections([{

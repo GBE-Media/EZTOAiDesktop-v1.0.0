@@ -142,6 +142,8 @@ export interface BlueprintAnalysisResult {
   legendTypeCounts?: Record<string, number>;
   /** Legend-grounded reliability for per-type counts. */
   countReliability?: 'high' | 'partial' | 'low';
+  /** Detail tiles the vision pass could not read: the count is incomplete until re-run. */
+  incompleteTiles?: string[];
   /** Verification notes from legend-aware self-check. */
   countVerificationNotes?: string[];
   /** How well the vision model's own placements matched the drawn symbols (before snapping). */

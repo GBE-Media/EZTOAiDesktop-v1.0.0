@@ -34,6 +34,8 @@ const SNAP_PT = 24;
 /** Fixtures added from a printed tag sit beside the tag, so they look further. */
 const TAG_SNAP_PT = 54;
 const MAX_COMPONENTS = 60_000;
+/** Look-alikes added per confirmed fixture of a type, at most. */
+const MAX_ADD_RATIO = 2;
 /** "Sitting on" a symbol (pt). */
 const CLOSE_PT = 9;
 
@@ -291,8 +293,10 @@ export function refineDetectionsWithSymbols(
         symbolSig: sig,
       });
     });
-    // Too many look-alikes means the shape isn't specific to this fixture: add nothing.
-    if (found.length && found.length <= Math.max(3, (totals.get(code) || 0) * 0.6)) additions.push(...found);
+    // Far more look-alikes than confirmed fixtures means the shape isn't specific to this type
+    // (ceiling-grid squares, generic circles): add nothing. The limit scales with the confirmed
+    // count, so one extra confirmed fixture never flips the total by dozens.
+    if (found.length && found.length <= Math.max(3, (totals.get(code) || 0) * MAX_ADD_RATIO)) additions.push(...found);
   }
 
   const checked = pts.filter(Boolean).length;

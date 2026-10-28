@@ -35,12 +35,21 @@ export function findLegendPages(docId: string, page: number, limit = 2): number[
   const rows = allIndexedPages().filter(row => row.docId === docId && row.kind !== 'spec');
   const target = rows.find(row => row.page === page);
   const discipline = disciplineOf(target);
+  // "SEE SHEET E001 FOR LUMINAIRE SCHEDULE": the sheet the plan itself points to wins.
+  const sheetKey = (label: string) => label.toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^([A-Z]+)0+(?=\d)/, '$1');
+  const referenced = new Set<string>();
+  if (target) {
+    for (const m of pageText(target).matchAll(/\bSEE\s+(?:SHEETS?|DWG\.?|DRAWING)\s+([A-Z]{1,3}[-.\s]?\d+(?:\.\d+)?[A-Z]?)\b[^.]{0,60}?(?:SCHEDULE|LEGEND|SYMBOL)/gi)) {
+      referenced.add(sheetKey(m[1]));
+    }
+  }
   const scored = rows
     .filter(row => row.page !== page)
     .map(row => {
       const text = pageText(row);
       const title = `${row.sheetTitle || ''} ${row.label || ''}`;
       let score = 0;
+      if (referenced.size && [row.sheetNumber, row.label].some(l => !!l && referenced.has(sheetKey(l)))) score += 20;
       if (LIGHTING_SCHEDULE_RE.test(text)) score += 6;
       if (LEGEND_RE.test(text)) score += 3;
       if (/LEGEND|SCHEDULE|SYMBOL/i.test(title)) score += 3;
@@ -165,15 +174,41 @@ export function parseScheduleTables(items: ZoneTextItem[]): LegendEntry[] {
     const colX0 = header.x - Math.max(20, glyph(header) * 2);
     const colX1 = nextHeader ? nextHeader.x - 2 : header.x + header.width + 60;
     const descHeader = headerRow.find(cell => /DESCRIPTION/i.test(cell.str));
+    const reach = Math.max(header.width * 2.5, glyph(header) * 8);
     const below = text
-      .filter(item => item.y > header.y + glyph(header) * 0.5 && item.x >= colX0 && item.x <= tableX1 + 40)
+      .filter(item => item.y > header.y + glyph(header) * 0.5 && item.x >= Math.min(colX0, header.x - reach) && item.x <= tableX1 + 40)
       .sort((a, b) => a.y - b.y || a.x - b.x);
+    const headerCenter = header.x + header.width / 2;
+    const centred = (item: ZoneTextItem) => {
+      const center = item.x + item.width / 2;
+      return item.x >= colX0 && center <= colX1
+        && Math.abs(center - headerCenter) <= Math.max(header.width * 1.2, glyph(header) * 4);
+    };
+    // Marks are often left-aligned in a wide cell with the header centred over it (Library: MARK
+    // at x 224, marks at x 185.5). When nothing sits under the header, take the column of
+    // left-aligned codes just left of / under it instead.
+    const alignedColumn = (): Set<ZoneTextItem> | null => {
+      const near = below.filter(item => item.y - header.y < Math.max(400, glyph(header) * 45)
+        && item.x >= header.x - reach && item.x <= header.x + header.width
+        && (!nextHeader || item.x + item.width <= nextHeader.x));
+      const groups = new Map<number, ZoneTextItem[]>();
+      for (const item of near) {
+        const key = Math.round(item.x);
+        const list = groups.get(key) || groups.get(key - 1) || groups.get(key + 1);
+        if (list) list.push(item); else groups.set(key, [item]);
+      }
+      let best: ZoneTextItem[] | null = null;
+      for (const list of groups.values()) {
+        const codes = list.filter(item => CODE_RE.test(item.str.trim().replace(/[.:]$/, '').toUpperCase()));
+        if (codes.length < 3 || codes.length < list.length * 0.7) continue;
+        if (!best || codes.length > best.length) best = list;
+      }
+      return best ? new Set(best) : null;
+    };
+    const column = below.some(centred) ? null : alignedColumn();
     let lastY = header.y;
     for (const item of below) {
-      const headerCenter = header.x + header.width / 2;
-      const center = item.x + item.width / 2;
-      const inCol = item.x >= colX0 && center <= colX1
-        && Math.abs(center - headerCenter) <= Math.max(header.width * 1.2, glyph(header) * 4);
+      const inCol = column ? column.has(item) : centred(item);
       if (!inCol) continue;
       const str = item.str.trim().replace(/[.:]$/, '');
       if (STOP_RE.test(str)) break;

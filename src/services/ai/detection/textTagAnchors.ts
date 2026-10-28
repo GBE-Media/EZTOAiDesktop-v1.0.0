@@ -23,6 +23,10 @@ const NO_MATCH = 'no_confident_match';
 const MIN_ANCHORS = 6;
 /** A tag belongs to a fixture within this distance (page points, ~0.75"). */
 const PAIR_RADIUS_PT = 54;
+/** A type counts as fully tagged when it has this many tags… */
+const FULLY_TAGGED_MIN = 8;
+/** …and at least this share of its detections sit beside one. */
+const FULLY_TAGGED_SHARE = 0.8;
 
 function median(values: number[]): number {
   if (!values.length) return 0;
@@ -53,7 +57,11 @@ export function findTypeTagAnchors(
     const tokens = [...text.matchAll(/\S+/g)];
     if (tokens.length > 3) continue;
     for (const token of tokens) {
-      const value = token[0].replace(/[(),.;:]+$/g, '').toUpperCase();
+      const printed = token[0].replace(/[(),.;:]+$/g, '');
+      // Case-sensitive: schedules print types in capitals; a lower-case letter beside a fixture
+      // is its switch leg ("E2, 1, c"), never type C.
+      if (printed !== printed.toUpperCase()) continue;
+      const value = printed;
       if (!codeSet.has(value)) continue;
       const frac = text.length ? (token.index! + value.length / 2) / text.length : 0.5;
       const px = item.x + item.width * frac;
@@ -86,6 +94,8 @@ export interface AnchorReconcileResult {
   matched: number;
   added: number;
   resolved: number;
+  /** Untagged detections of a fully-tagged type, sent to review. */
+  demoted?: number;
   tagCounts: Record<string, number>;
 }
 
@@ -156,10 +166,19 @@ export function anchorDetectionsToTextTags(
     return { items, anchors: anchors.length, matched: 0, added: 0, resolved: 0, tagCounts };
   }
 
+  // A tag left over next to a detection that no tag claimed is a type conflict (for review), not
+  // a missed fixture. A neighbour already paired with its own tag doesn't block it: in dense
+  // grids a missed fixture sits right next to a found one.
+  const conflict = new Set<number>();
+  anchors.forEach((anchor, a) => {
+    if (anchorUsed.has(a)) return;
+    const ax = (anchor.x / 100) * pageWidth;
+    const ay = (anchor.y / 100) * pageHeight;
+    if (pts.some((pt, i) => !!pt && !itemUsed.has(i) && Math.hypot(pt.x - ax, pt.y - ay) <= PAIR_RADIUS_PT)) conflict.add(a);
+  });
   let added = 0;
   anchors.forEach((anchor, a) => {
-    // Something was detected there with another type: a conflict for review, not a missed fixture.
-    if (anchorUsed.has(a) || hasNeighbour.has(a)) return;
+    if (anchorUsed.has(a) || conflict.has(a)) return;
     added += 1;
     next.push({
       id: `tag_${anchor.code}_${a}`,
@@ -175,5 +194,32 @@ export function anchorDetectionsToTextTags(
     });
   });
 
-  return { items: next, anchors: anchors.length, matched: anchorUsed.size, added, resolved, tagCounts };
+  // Text is the primary count: when this sheet tags (nearly) every fixture of a type, a detection
+  // of that type with no tag beside it is a duplicate or a misread — send it to review rather than
+  // let it inflate the total. Sheets that tag only some fixtures keep every detection.
+  let demoted = 0;
+  const pairedByCode: Record<string, number> = {};
+  const detectedByCode: Record<string, number> = {};
+  items.forEach((item, i) => {
+    if (!pts[i] || isUnresolved(next[i])) return;
+    const code = (next[i].legendTypeCode || '').trim().toUpperCase();
+    if (!tagCounts[code]) return;
+    detectedByCode[code] = (detectedByCode[code] || 0) + 1;
+    if (itemUsed.has(i)) pairedByCode[code] = (pairedByCode[code] || 0) + 1;
+  });
+  items.forEach((item, i) => {
+    if (!pts[i] || itemUsed.has(i) || isUnresolved(next[i])) return;
+    const code = (next[i].legendTypeCode || '').trim().toUpperCase();
+    const tags = tagCounts[code] || 0;
+    const paired = pairedByCode[code] || 0;
+    if (tags < FULLY_TAGGED_MIN || paired < (detectedByCode[code] || 0) * FULLY_TAGGED_SHARE) return;
+    demoted += 1;
+    next[i] = {
+      ...next[i],
+      matchConfidence: 'low',
+      evidence: [next[i].evidence, `No "${code}" tag printed here, though every other ${code} on this sheet is tagged — review`].filter(Boolean).join('; '),
+    };
+  });
+
+  return { items: next, anchors: anchors.length, matched: anchorUsed.size, added, resolved, demoted, tagCounts };
 }

@@ -110,7 +110,8 @@ export function regionKeyFromRect(
 
 export function getCachedAnalyze(key: string): CachedAnalyzePageResult | null {
   const entry = analyzeByKey.get(key);
-  if (!entry || !stillFresh(entry.at)) {
+  // An analysis with unread tiles is never reused as an answer: asking again re-reads only them.
+  if (!entry || !stillFresh(entry.at) || entry.value.analysis.incompleteTiles?.length) {
     if (entry) analyzeByKey.delete(key);
     return null;
   }
@@ -318,6 +319,8 @@ export interface PageItemCountResult {
   unresolvedCountByType?: Record<string, number>;
   unresolvedTruncated?: boolean;
   countReliability?: 'high' | 'partial' | 'low';
+  /** Set when detail tiles failed: the numbers are a floor, not a total to present as final. */
+  incomplete?: { failedTiles: string[] };
   legendTypeCodes?: string[];
   verificationNotes?: string[];
   message?: string;
@@ -816,11 +819,14 @@ export function countItemsFromAnalysis(
       hasMoreUnresolved: hasMoreUnresolved || undefined,
       analysisRef: options?.analysisRef,
       countReliability: reliability,
+      incomplete: analysis.incompleteTiles?.length ? { failedTiles: analysis.incompleteTiles } : undefined,
       legendTypeCodes: analysis.legendTypeCodes,
       verificationNotes,
       excludedByZone: zoneFilter?.excludedByZone,
       zoneWarning: zoneFilter?.warning,
-      message: (namedNoCode
+      message: (analysis.incompleteTiles?.length
+        ? `INCOMPLETE COUNT — ${analysis.incompleteTiles.length} detail tile(s) failed to read, so these numbers are only a minimum. `
+        : '') + (namedNoCode
         ? verificationNotes[0]
         : (q
           ? `Counted ${total} item(s) matching "${q}" from page ${analysis.page} analysis (${options?.source || 'cache'}).`
