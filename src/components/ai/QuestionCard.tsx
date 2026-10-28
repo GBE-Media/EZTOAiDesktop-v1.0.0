@@ -110,7 +110,7 @@ export function QuestionCard({ clarificationId }: { clarificationId: string }) {
       </div>
 
       {clarification.fields?.length ? (
-        <StructuredQuestionFields clarification={clarification} />
+        <StructuredQuestionFields key={clarification.id} clarification={clarification} />
       ) : isPending ? (
         <>
           {options.length > 0 && (

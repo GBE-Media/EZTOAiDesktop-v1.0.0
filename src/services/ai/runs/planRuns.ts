@@ -180,6 +180,13 @@ export function offSheetExitPoint(allowed: Box[], devices: Pt[], page: ZonePageI
   return options.reduce((best, p) => (dist(p, { x: cx, y: cy }) < dist(best, { x: cx, y: cy }) ? p : best), options[0]);
 }
 
+export class RunRoutingError extends Error {
+  constructor(public readonly circuitIds: string[]) {
+    super(`No clear route for ${circuitIds.join(', ')}. Your panels and keep-clear zones have not been moved. Review the destination and keep-clear boundaries on this plan before retrying; no fallback line was drawn.`);
+    this.name = 'RunRoutingError';
+  }
+}
+
 export function planRuns(input: PlanRunsInput): RunPlan {
   const { page, zones, settings } = input;
   const W = page.pageWidth;
@@ -235,6 +242,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     let farthest = 0;
     for (let i = 0; i + 1 < order.length; i += 1) {
       const leg = router.route(order[i], order[i + 1]);
+      if (!leg.ok) throw new RunRoutingError([circuit.id]);
       const len = pathLength(leg.path);
       branchPts += len;
       // Drawn like Revit wiring: an arc from fixture to fixture (bulging to one side); footage is
@@ -293,6 +301,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     // Home run starts at the group's device closest to the panel.
     const startLeg = legs.reduce((best, leg) => dist(leg.homeDevice, input.panel) < dist(best.homeDevice, input.panel) ? leg : best, legs[0]);
     const route = router.route(startLeg.homeDevice, input.panel);
+    if (!route.ok) throw new RunRoutingError(group.map(c => c.id));
     router.markUsed(route.path);
     const riserFt = input.riser?.ft || 0;
     const homeFt = pathLength(route.path) * input.ftPerPt + riserFt;
@@ -368,7 +377,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
   const crosses = (path: Pt[]) => obstacleBoxes.some(box => path.some((p, i) => i + 1 < path.length && segmentHitsBox(p, path[i + 1], shrink(box, 2))));
   for (const run of homeRuns) {
     const original = before.get(run)!;
-    if (crosses(run.path) && !crosses(original)) run.path = original;
+    if ((crosses(run.path) || router.blockedAlong(run.path)) && !crosses(original)) run.path = original;
     // Footage always equals what's drawn (+ riser), so editing / re-running agrees to the foot.
     const drawnFt = pathLength(run.path) * input.ftPerPt + (run.riserFt || 0);
     if (Math.abs(drawnFt - run.lengthFt) > 0.05) run.lengthFt = round1(drawnFt);

@@ -64,10 +64,12 @@ describe('keep-clear boxes', () => {
     store.start({ key: 'card:keep_clear', label: 'Drag', mode: 'area', page: 93 });
     const box = (x: number) => ({ page: 93, xPct: x, yPct: 10, wPct: 5, hPct: 5 });
     store.addArea(box(10), 'card:keep_clear');
-    // Something else replaced / cleared the request mid-session: the next boxes still land.
-    useDrawingPickStore.getState().cancel();
     useDrawingPickStore.getState().addArea(box(20), 'card:keep_clear');
     useDrawingPickStore.getState().addArea(box(30), 'card:keep_clear');
+    expect(useDrawingPickStore.getState().areas['card:keep_clear']).toHaveLength(3);
+    // A release arriving after Done / Cancel must not resurrect the ended session.
+    useDrawingPickStore.getState().cancel();
+    useDrawingPickStore.getState().addArea(box(40), 'card:keep_clear');
     expect(useDrawingPickStore.getState().areas['card:keep_clear']).toHaveLength(3);
   });
 });

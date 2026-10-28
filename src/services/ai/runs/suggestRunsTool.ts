@@ -16,6 +16,7 @@ import {
   offSheetExitPoint,
   planRoutingContext,
   planRuns,
+  RunRoutingError,
   shortCircuitList,
   type PlannedCircuit,
   type PlannedRun,
@@ -33,6 +34,7 @@ import { arcLength } from './overlay';
 import type { Box, Obstacle, Pt } from './spatial';
 import { takePinnedResume, type AskUserRequest } from '../agent/askUser';
 import { buildFootprint, snapInside, type Footprint } from './footprint';
+import { runInputSnapshot } from './runInputSnapshot';
 import { findAnnotationBubbles } from '../detection/annotationBubbles';
 import { buildSymbolComponents } from '../detection/vectorSymbols';
 import type { ClarificationField } from '@/types/assistant';
@@ -56,17 +58,20 @@ const circuitSchema = z.object({
 export const suggestRunsSchema = z.object({
   documentId: z.string().optional().describe('Open document id. Defaults to the active tab.'),
   page: z.number().int().positive(),
+  reviewPanelLocations: z.boolean().optional().describe('When the user wants to move/re-pick panel or off-sheet continuation locations, ask fresh drawing cards. Existing points stay fixed until the user submits replacements. Do not retype coordinates.'),
   panel: z.object({
     label: z.string().optional().describe('Panel name as shown on the plan, e.g. "LP" or "LP-1".'),
     x: z.number().min(0).max(100).optional(),
     y: z.number().min(0).max(100).optional(),
-    offSheet: z.boolean().optional().describe('Panel is on another sheet: home runs stop at the plan edge.'),
+    offSheet: z.boolean().optional().describe('Panel is on another sheet: ask the user for the continuation point on this plan.'),
+    exit: pointSchema.optional().describe('User-picked continuation point on this page for an off-sheet panel.'),
   }).optional().describe('Panel the home runs go to. Omit x/y to find the label on the sheet. If unknown, omit it — the tool asks the user (they can click it on the drawing).'),
   panels: z.array(z.object({
     label: z.string().min(1),
     x: z.number().min(0).max(100).optional(),
     y: z.number().min(0).max(100).optional(),
     offSheet: z.boolean().optional(),
+    exit: pointSchema.optional(),
   })).optional().describe('Several panels (circuit tags like "B-4" → panel B). Omit — the tool reads the tags and asks for locations.'),
   scaleChoice: z.enum(['printed', 'calibration']).optional().describe('Set by the card when the page calibration and the printed plan scale disagree.'),
   wiringMethodConfirmed: z.boolean().optional().describe('Set by the card answer only. The material counts as decided only after the user picked it on the card (remembered per document); a spec/drawing method is just the pre-selected recommendation in settings.wiringMethod.'),
@@ -127,11 +132,27 @@ export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestR
     undoable: true,
     schema: suggestRunsSchema,
     execute: async (context, modelInput) => {
-      const { args: rawInput, fromCard, cardKeys, askedPanels } = pinnedAnswers(modelInput as Record<string, unknown>);
+      const { args: rawInput, fromCard, cardKeys, askedPanels } = pinnedAnswers(modelInput as Record<string, unknown>, context.runId);
       const input = suggestRunsSchema.parse(rawInput);
       // The model's own copy of the user's inputs is never trusted: the panels / keep-clear
       // zones the user marked are read from the page, the material from what they picked.
-      const prepared = await prepareRunPlan(input, { strict: true, fromCard, cardKeys, askedPanels });
+      let prepared: Prepared;
+      try {
+        prepared = await prepareRunPlan(input, { strict: true, fromCard, cardKeys, askedPanels });
+      } catch (error) {
+        if (!(error instanceof RunRoutingError)) throw error;
+        return {
+          status: 'completed',
+          summary: error.message,
+          output: { needs: 'routing_review', circuits: error.circuitIds, placed: 0 },
+          askUser: {
+            question: 'The runs could not be routed without crossing a blocked area.',
+            description: error.message,
+            focus: { documentId: input.documentId, page: input.page },
+            fields: [{ id: 'routing_review', kind: 'text', prompt: 'What should I adjust? Your existing panels and keep-clear zones will stay in place unless you explicitly ask to change them.', placeholder: 'Describe the change or cancel this layout' }],
+          },
+        };
+      }
       if ('needs' in prepared) {
         const askUser = prepared.needs === 'input' ? buildRunInputQuestion(prepared as RunInputNeeded, rawInput as Record<string, unknown>) : undefined;
         return { status: 'completed', summary: prepared.message, output: prepared, ...(askUser ? { askUser } : {}) };
@@ -139,6 +160,7 @@ export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestR
       const approval = createApproval(definition, context, {
         payload: {
           documentId: prepared.docId,
+          inputSnapshot: runInputSnapshot(useCanvasStore.getState().pdfDocuments[prepared.docId]?.markupsByPage[input.page] || []),
           page: input.page,
           markups: prepared.markups,
           summary: prepared.summaryLines,
@@ -179,9 +201,10 @@ export interface RunInputNeeded {
   scaleConflict?: { printed: string; calibration: string };
   panelLabel?: string;
   /** Panels from the engineer's circuit tags that still need a location. */
-  panels: Array<{ label: string; index: number; circuits: string[]; candidates: Array<{ text: string; x: number; y: number }>; scheduled: boolean }>;
+  panels: Array<{ label: string; index: number; circuits: string[]; candidates: Array<{ text: string; x: number; y: number }>; scheduled: boolean; offSheet?: boolean }>;
   /** Panel-args to pre-fill on resume (one per tag panel, in order). */
-  panelArgs: Array<{ label: string; x?: number; y?: number; offSheet?: boolean }>;
+  panelArgs: Array<{ label: string; x?: number; y?: number; offSheet?: boolean; exit?: Pt }>;
+  panelOffSheet?: boolean;
   candidates: Array<{ text: string; x: number; y: number }>;
   panelNames: string[];
   /** Several panels serve this sheet: the card lets the user pick all that apply. */
@@ -252,15 +275,15 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
   if (needed.panels.length) {
     for (const panel of needed.panels) {
       const id = `panel_loc_${panel.index}`;
-      apply[id] = `panels.${panel.index}`;
+      apply[id] = `panels.${panel.index}${panel.offSheet ? '.exit' : ''}`;
       fields.push({
         id,
         kind: 'point',
-        prompt: `Where is panel ${panel.label}? (${panel.circuits.length} circuit${panel.circuits.length === 1 ? '' : 's'}: ${circuitPreview(panel.circuits)})`,
+        prompt: panel.offSheet ? `Where should home runs to panel ${panel.label} leave this plan?` : `Where is panel ${panel.label}? (${panel.circuits.length} circuit${panel.circuits.length === 1 ? '' : 's'}: ${circuitPreview(panel.circuits)})`,
         documentId: needed.documentId,
         page: needed.page,
-        pickLabel: `Click panel ${panel.label} on the drawing`,
-        options: [
+        pickLabel: panel.offSheet ? `Click the continuation point for panel ${panel.label} on this plan` : `Click panel ${panel.label} on the drawing`,
+        options: panel.offSheet ? [] : [
           ...panel.candidates.slice(0, 3).map((c, i) => ({
             id: `${id}_cand_${i + 1}`,
             label: panel.candidates.length === 1 ? `Use "${c.text}" on this sheet` : `"${c.text}" #${i + 1}`,
@@ -272,15 +295,15 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
       });
     }
   } else if (needed.missing.includes('panel_location') && !multiPanel) {
-    apply.panel_location = 'panel';
+    apply.panel_location = needed.panelOffSheet ? 'panel.exit' : 'panel';
     fields.push({
       id: 'panel_location',
       kind: 'point',
-      prompt: label ? `Where is panel ${label}?` : 'Where is the panel?',
+      prompt: needed.panelOffSheet ? `Where should home runs to panel ${label || ''} leave this plan?` : label ? `Where is panel ${label}?` : 'Where is the panel?',
       documentId: needed.documentId,
       page: needed.page,
-      pickLabel: label ? `Click panel ${label} on the drawing` : 'Click the panel on the drawing',
-      options: [
+      pickLabel: needed.panelOffSheet ? 'Click the continuation point on this plan' : label ? `Click panel ${label} on the drawing` : 'Click the panel on the drawing',
+      options: needed.panelOffSheet ? [] : [
         ...needed.candidates.slice(0, 4).map((c, i) => ({
           id: `cand_${i + 1}`,
           label: needed.candidates.length === 1 ? `Use "${c.text}" found on the sheet` : `"${c.text}" #${i + 1}`,
@@ -368,13 +391,12 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
       toolId: 'suggest_runs',
       args: {
         ...rawArgs,
+        reviewPanelLocations: false,
         documentId: needed.documentId,
         page,
         ...(needed.panelArgs.length ? { panels: needed.panelArgs } : {}),
         ...(needed.missing.includes('keep_clear') ? { keepClear: [], keepClearConfirmed: true } : {}),
         ...(needed.missing.includes('wiring_method') ? { wiringMethodConfirmed: true } : {}),
-        // Which panel spots this card asks the user to click (those get locked on the page).
-        ...(needed.panels.length || apply.panel_location ? { askedPanels: needed.panels.length ? needed.panels.map(p => p.label) : ['*'] } : {}),
       },
       apply,
     },
@@ -382,28 +404,34 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
 }
 
 /** Fields the user answered on a card: taken from the card itself, not the model's copy. */
-const PINNED_FIELDS = ['keepClear', 'keepClearConfirmed', 'panels', 'panel', 'panelLabels', 'wiringMethodConfirmed', 'scaleChoice'] as const;
-
 export function withPinnedAnswers(modelInput: Record<string, unknown>): Record<string, unknown> {
   return pinnedAnswers(modelInput).args;
 }
 
 /** Overlay the user's last card answer; `fromCard` = this call resumes that card. */
-export function pinnedAnswers(modelInput: Record<string, unknown>): { args: Record<string, unknown>; fromCard: boolean; cardKeys: string[]; askedPanels: string[] } {
-  const pinned = takePinnedResume('suggest_runs');
+export function pinnedAnswers(modelInput: Record<string, unknown>, runId?: string): { args: Record<string, unknown>; fromCard: boolean; cardKeys: string[]; askedPanels: string[] } {
+  const pinned = takePinnedResume('suggest_runs', runId, args =>
+    args.page === modelInput.page && (!modelInput.documentId || args.documentId === modelInput.documentId));
   const none = { args: modelInput, fromCard: false, cardKeys: [], askedPanels: [] };
-  if (!pinned || pinned.page !== modelInput.page) return none;
-  if (pinned.documentId && modelInput.documentId && pinned.documentId !== modelInput.documentId) return none;
-  const out: Record<string, unknown> = { ...modelInput };
-  for (const key of PINNED_FIELDS) if (pinned[key] !== undefined) out[key] = pinned[key];
-  const ps = pinned.settings as Record<string, unknown> | undefined;
-  if (ps) out.settings = { ...(modelInput.settings as Record<string, unknown> | undefined), ...ps };
-  if (!out.documentId && pinned.documentId) out.documentId = pinned.documentId;
+  if (!pinned) return none;
+  // Carry the entire original request, including fixture VA and circuit selections.
+  // Only paths actually answered on this card confer user-confirmed provenance.
+  const { answeredPaths: rawPaths, ...out } = pinned;
+  const paths = Array.isArray(rawPaths) ? rawPaths.map(String) : [];
+  const keys = paths.map(p => p.split(/[.#]/)[0]);
+  if (paths.includes('settings.wiringMethod')) keys.push('wiringMethodConfirmed');
+  const askedPanels = paths.flatMap(path => {
+    if (path === 'panel' || path === 'panel.exit') return [(out.panel as { label?: string } | undefined)?.label || '*'];
+    const match = /^panels\.(\d+)(?:\.exit)?$/.exec(path);
+    if (!match) return [];
+    const panel = (out.panels as Array<{ label?: string }> | undefined)?.[Number(match[1])];
+    return panel?.label ? [panel.label] : [];
+  });
   return {
     args: out,
     fromCard: true,
-    cardKeys: PINNED_FIELDS.filter(key => pinned[key] !== undefined),
-    askedPanels: Array.isArray(pinned.askedPanels) ? (pinned.askedPanels as unknown[]).map(String) : [],
+    cardKeys: [...new Set(keys)],
+    askedPanels,
   };
 }
 
@@ -668,14 +696,15 @@ export async function prepareRunPlan(
     input = { ...input };
     const decided = decisionsFor(docId);
     const picked = input.settings?.wiringMethod as WiringMethodValue | undefined;
-    if (card.has('wiringMethodConfirmed') && input.wiringMethodConfirmed && picked) decided.wiringMethod = picked;
-    else if (decided.wiringMethod && (!picked || picked === decided.wiringMethod)) {
-      input.wiringMethodConfirmed = true;
-      input.settings = { ...(input.settings || {}), wiringMethod: decided.wiringMethod } as SuggestRunsInput['settings'];
-    } else input.wiringMethodConfirmed = false;
-    if (card.has('keepClear')) {
-      decided.keepClearPages.add(input.page);
-    } else {
+    const materialAnswered = card.has('wiringMethodConfirmed') && input.wiringMethodConfirmed && picked;
+    // Persist the answer only after any drawing-input commit below succeeds.
+    if (!materialAnswered) {
+      if (decided.wiringMethod && (!picked || picked === decided.wiringMethod)) {
+        input.wiringMethodConfirmed = true;
+        input.settings = { ...(input.settings || {}), wiringMethod: decided.wiringMethod } as SuggestRunsInput['settings'];
+      } else input.wiringMethodConfirmed = false;
+    }
+    if (!card.has('keepClear')) {
       modelKeepClear = input.keepClear?.length ? input.keepClear : undefined;
       if (decided.keepClearPages.has(input.page)) { input.keepClear = []; input.keepClearConfirmed = true; }
       else { input.keepClear = undefined; input.keepClearConfirmed = false; }
@@ -763,32 +792,46 @@ export async function prepareRunPlan(
     if (asked.size) {
       // Only the spots the user clicked on this card (not panels found from the sheet text).
       const picked = [...(input.panels || []), ...(input.panel ? [input.panel] : [])]
-        .filter(p => typeof p.x === 'number' && typeof p.y === 'number' && !p.offSheet)
+        .filter(p => p.offSheet ? !!p.exit : typeof p.x === 'number' && typeof p.y === 'number')
         .filter(p => asked.has('*') || asked.has(normPanelLabel(p.label)));
       for (const p of picked) {
         const label = (p.label || '').trim();
         // Re-picked on a card: the new spot replaces that panel's old marker.
         for (const m of existing) if (m.aiRun?.kind === 'panel' && m.aiRun.userPlaced && normPanelLabel(m.aiRun.panel) === normPanelLabel(label)) replaced.push(m.id);
-        commit.push({ page: input.page, markup: panelMarker(toDisplay({ x: p.x as number, y: p.y as number }), label, identityGeometry, input.page, docMax, 0, true) });
+        const marker = panelMarker(toDisplay(p.offSheet ? p.exit as Pt : { x: p.x as number, y: p.y as number }), label, identityGeometry, input.page, docMax, 0, true);
+        if (p.offSheet) {
+          marker.aiRun!.offSheet = true;
+          marker.label = `To panel ${label} (other sheet)`;
+          marker.aiNote = `Continuation point placed by you. Home runs leave this plan here for panel ${label}.`;
+        }
+        commit.push({ page: input.page, markup: marker });
       }
     }
     if (commit.length) {
       try {
-        const state = useCanvasStore.getState();
-        if (state.activeDocId !== docId) state.setActiveDocId(docId);
-        if (replaced.length) useCanvasStore.getState().deleteMarkups(input.page, replaced);
-        useCanvasStore.getState().addAIMarkupBatch(commit, false);
+        const result = useCanvasStore.getState().addAIMarkupBatch(commit, false, {
+          documentId: docId, replaceIdsByPage: { [input.page]: replaced },
+        });
+        if (!result.ok) return { needs: 'document', message: `Could not save your drawing inputs: ${result.reason || 'placement failed'}. No runs were generated.` };
       } catch (err) {
         console.warn('[suggest_runs] could not lock the user inputs on the page', err);
+        return { needs: 'document', message: 'Could not save your drawing inputs. No runs were generated; please retry.' };
       }
     }
   }
+  if (opts.strict) {
+    const decided = decisionsFor(docId);
+    if (card.has('wiringMethodConfirmed') && input.wiringMethodConfirmed && input.settings?.wiringMethod) decided.wiringMethod = input.settings.wiringMethod;
+    if (card.has('keepClear')) decided.keepClearPages.add(input.page);
+  }
   // Panels the user placed on this page (label → point), the truth for every run.
   const userPanels = new Map<string, Pt>();
+  const userExits = new Set<string>();
   for (const m of pageMarkups()) {
     if (m.type !== 'rectangle' || m.aiRun?.kind !== 'panel' || !m.aiRun.userPlaced) continue;
     const b = markupBox(m);
     userPanels.set(normPanelLabel(m.aiRun.panel), { x: b.x + b.width / 2, y: b.y + b.height / 2 });
+    if (m.aiRun.offSheet) userExits.add(normPanelLabel(m.aiRun.panel));
   }
 
   const anchorByPoint = new Map<string, string>();
@@ -972,7 +1015,7 @@ export async function prepareRunPlan(
     // One panel picked on the multi-select = "all home runs to this panel".
     ...(chosenPanels.length === 1 && !input.panel?.label ? [{ label: chosenPanels[0] }] : []),
     ...(chosenPanels.length > 1 ? chosenPanels.filter(name => !(input.panels || []).some(p => normLabel(p.label) === normLabel(name))).map(label => ({ label })) : []),
-  ] as Array<{ label: string; x?: number; y?: number; offSheet?: boolean }>;
+  ] as Array<{ label: string; x?: number; y?: number; offSheet?: boolean; exit?: Pt }>;
   const tagPanels = panelsFromCircuits(circuits);
   // Circuits that name their panel (engineer tags read from the sheet, or circuits like "B-4"
   // the model passed) get one set of home runs per panel — never a "which panel?" question.
@@ -981,16 +1024,16 @@ export async function prepareRunPlan(
   const perPanel = tagPanels.length > 0
     && (usedTags || !namedPanels.length || namedPanels.some(n => tagPanels.some(t => normLabel(t.panel) === n)));
   type PanelPlan = { label: string; point: Pt | null; offSheet: boolean; candidates: Array<{ text: string; point: Pt }>; circuits: PlannedCircuit[]; riser?: PanelRiser };
-  const resolvePanel = (label: string, given?: { x?: number; y?: number; offSheet?: boolean }): Omit<PanelPlan, 'circuits'> => {
+  const resolvePanel = (label: string, given?: { x?: number; y?: number; offSheet?: boolean; exit?: Pt }): Omit<PanelPlan, 'circuits'> => {
     // Where the user put the panel on the page wins over any coordinates in the arguments.
     const placed = userPanels.get(normPanelLabel(label)) || (userPanels.size === 1 && !label ? [...userPanels.values()][0] : undefined);
-    if (placed) return { label, point: placed, offSheet: false, candidates: [] };
-    if (given?.offSheet) return { label, point: null, offSheet: true, candidates: [] };
+    if (placed && !input.reviewPanelLocations) return { label, point: placed, offSheet: userExits.has(normPanelLabel(label)), candidates: [] };
+    if (given?.offSheet) return { label, point: !input.reviewPanelLocations && given.exit && (!opts.strict || asked.has('*') || asked.has(normPanelLabel(label))) ? toDisplay(given.exit) : null, offSheet: true, candidates: [] };
     // Strict: a model-typed spot for a panel the user hasn't placed isn't trusted — ask instead.
-    if (opts.strict && !card.has('panels') && !card.has('panel') && given) given = { ...given, x: undefined, y: undefined };
-    if (typeof given?.x === 'number' && typeof given?.y === 'number') return { label, point: toDisplay({ x: given.x, y: given.y }), offSheet: false, candidates: [] };
+    if (opts.strict && !asked.has('*') && !asked.has(normPanelLabel(label)) && given) given = { ...given, x: undefined, y: undefined };
+    if (!input.reviewPanelLocations && typeof given?.x === 'number' && typeof given?.y === 'number') return { label, point: toDisplay({ x: given.x, y: given.y }), offSheet: false, candidates: [] };
     const candidates = label ? findPanelLabel(page, zones, label) : [];
-    return { label, point: candidates.length === 1 ? candidates[0].point : null, offSheet: false, candidates };
+    return { label, point: !input.reviewPanelLocations && candidates.length === 1 ? candidates[0].point : null, offSheet: false, candidates };
   };
   let panelPlans: PanelPlan[];
   if (perPanel) {
@@ -1049,7 +1092,7 @@ export async function prepareRunPlan(
   const userKeepClear: Obstacle[] = [...lockedZones, ...newZones];
 
   const missing: RunInputNeeded['missing'] = [];
-  const needLocation = panelPlans.filter(p => !p.point && !p.offSheet);
+  const needLocation = panelPlans.filter(p => !p.point);
   if (needLocation.length) missing.push('panel_location');
   if (!perPanel && needLocation.length && !panelPlans[0].label) missing.push('panel_label');
   // Which panel: the circuit tags printed on this sheet first, then the panel schedules.
@@ -1093,13 +1136,14 @@ export async function prepareRunPlan(
       page: input.page,
       missing,
       panelLabel: panelPlans[0].label || undefined,
+      panelOffSheet: panelPlans[0].offSheet,
       panels: perPanel
-        ? panelPlans.flatMap((p, index) => (!p.point && !p.offSheet
-          ? [{ label: p.label, index, circuits: p.circuits.map(c => c.id), candidates: p.candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })), scheduled: scheduleNames.includes(p.label) }]
+        ? panelPlans.flatMap((p, index) => (!p.point
+          ? [{ label: p.label, index, circuits: p.circuits.map(c => c.id), candidates: p.candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })), scheduled: scheduleNames.includes(p.label), offSheet: p.offSheet }]
           : []))
         : [],
       panelArgs: perPanel
-        ? panelPlans.map(p => ({ label: p.label, ...(p.point ? toPct(p.point) : {}), ...(p.offSheet ? { offSheet: true } : {}) }))
+        ? panelPlans.map(p => ({ label: p.label, ...(p.point ? (p.offSheet ? { exit: toPct(p.point) } : toPct(p.point)) : {}), ...(p.offSheet ? { offSheet: true } : {}) }))
         : [],
       candidates: perPanel ? [] : panelPlans[0].candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })),
       panelNames: missing.includes('panel_label') ? panelSuggestions.map(r => r.name) : [],
@@ -1545,11 +1589,10 @@ function anchorsFor(run: PlannedRun, anchorByPoint: Map<string, string>): { star
 
 const normPanelLabel = (t?: string) => (t || '').toUpperCase().replace(/^PANEL(?:BOARD)?\s*/, '').replace(/[^A-Z0-9]/g, '');
 
-/** Same keep-clear zone: the boxes overlap by more than a quarter of the smaller one. */
+/** Only near-identical boxes are duplicates; overlapping areas can extend a keep-clear zone. */
 function sameBox(p: Box, q: Box): boolean {
-  const ix = Math.max(0, Math.min(p.x + p.width, q.x + q.width) - Math.max(p.x, q.x));
-  const iy = Math.max(0, Math.min(p.y + p.height, q.y + q.height) - Math.max(p.y, q.y));
-  return ix * iy > 0.25 * Math.min(p.width * p.height, q.width * q.height);
+  return Math.abs(p.x - q.x) < 0.1 && Math.abs(p.y - q.y) < 0.1
+    && Math.abs(p.width - q.width) < 0.1 && Math.abs(p.height - q.height) < 0.1;
 }
 
 function keepoutMarker(box: Box, label: string, identity: PageGeometry, pageNumber: number, docMax: number, ftPerPt: number, userZone: boolean, approximate = false): RectangleMarkup {

@@ -20,4 +20,11 @@ describe('question-card pick coordinates', () => {
     expect(p.y).toBeCloseTo(777.6, 0);
     expect(canvasPointToPagePct({ x: -5, y: H * 2 }, W, H)).toEqual({ xPct: 0, yPct: 100 });
   });
+
+  it('preserves fine panel placement instead of rounding to a tenth of a percent', () => {
+    const raw = { x: 3001.123, y: 1602.456 };
+    const restored = pagePctToCanvasPoint(canvasPointToPagePct(raw, W, H), W, H);
+    expect(Math.abs(restored.x - raw.x)).toBeLessThan(0.03);
+    expect(Math.abs(restored.y - raw.y)).toBeLessThan(0.03);
+  });
 });

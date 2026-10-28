@@ -42,6 +42,7 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
   const fields = useMemo(() => clarification.fields || [], [clarification.fields]);
   const [answers, setAnswers] = useState<Record<string, ClarificationFieldAnswer>>(() => initialAnswers(fields));
   const [submitting, setSubmitting] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
   const pickRequest = useDrawingPickStore(state => state.request);
   const pins = useDrawingPickStore(state => state.pins);
   const pickedAreas = useDrawingPickStore(state => state.areas);
@@ -56,7 +57,7 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
       if (!pin) continue;
       setAnswers(prev => {
         const current = prev[field.id]?.point;
-        if (current && current.xPct === pin.xPct && current.yPct === pin.yPct && current.page === pin.page) return prev;
+        if (current && current.xPct === pin.xPct && current.yPct === pin.yPct && current.page === pin.page && current.documentId === pin.documentId) return prev;
         return { ...prev, [field.id]: { point: { documentId: pin.documentId, page: pin.page, xPct: pin.xPct, yPct: pin.yPct }, label: `Picked on page ${pin.page}` } };
       });
     }
@@ -89,11 +90,13 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
   }, [fields, keyPrefix, isPending]);
 
   useEffect(() => () => {
-    // Leaving the card mid-pick: stop point picks. Area mode stays on (the pill on the drawing
-    // has Done) so a re-render of the chat never cuts off marking more boxes.
+    // An unmounted card cannot own the drawing. Normal re-renders don't run this cleanup.
     const state = useDrawingPickStore.getState();
-    if (state.request?.key.startsWith(keyPrefix) && state.request.mode !== 'area') state.cancel();
+    if (state.request?.key.startsWith(keyPrefix)) state.cancel();
   }, [keyPrefix]);
+  useEffect(() => {
+    if (!isPending) useDrawingPickStore.getState().clearPins(keyPrefix);
+  }, [isPending, keyPrefix]);
 
   if (!isPending) {
     const answered = clarification.answer?.fields || {};
@@ -111,6 +114,7 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
   }
 
   const setAnswer = (fieldId: string, answer: ClarificationFieldAnswer | undefined) => {
+    if (fields.some(f => f.id === fieldId && f.kind === 'point')) useDrawingPickStore.getState().clearPin(`${keyPrefix}${fieldId}`);
     setAnswers(prev => {
       const next = { ...prev };
       if (answer) next[fieldId] = answer;
@@ -120,8 +124,14 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
   };
 
   const startPick = (field: ClarificationField, mode: 'point' | 'area' = 'point') => {
+    setPickError(null);
     const canvas = useCanvasStore.getState();
-    const documentId = field.documentId && canvas.pdfDocuments[field.documentId] ? field.documentId : canvas.activeDocId || undefined;
+    // Never silently redirect a card for a closed document to the active tab.
+    const documentId = field.documentId || canvas.activeDocId || undefined;
+    if (!documentId || !canvas.pdfDocuments[documentId]) {
+      setPickError('Reopen the drawing this card refers to, then try again. No point was placed on another document.');
+      return;
+    }
     if (field.page) openAssistantFocus({ documentId, page: field.page, label: field.pickLabel });
     // Rotation-aware click → page percent needs the page geometry.
     if (documentId) void ensureCachedPageGeometry(documentId, field.page || canvas.getCurrentPage() || 1).catch(() => undefined);
@@ -129,32 +139,34 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
       key: `${keyPrefix}${field.id}`,
       label: field.pickLabel || field.prompt,
       documentId,
-      page: field.page,
+      page: field.page || canvas.getCurrentPage() || 1,
       mode,
     });
   };
 
-  const complete = fieldsComplete(fields, answers);
+  const complete = fieldsComplete(fields, answers) && !pickRequest?.key.startsWith(keyPrefix);
   const submit = () => {
     if (!complete || submitting) return;
     setSubmitting(true);
+    const submitted = { ...answers };
     // Optional area fields left empty: answer "none" so the tool doesn't ask again.
     for (const field of fields) {
-      if (field.kind === 'area' && !answers[field.id]) answers[field.id] = { areas: [] };
+      if (field.kind === 'area' && !submitted[field.id]) submitted[field.id] = { areas: [] };
     }
     useDrawingPickStore.getState().clearPins(keyPrefix);
     window.dispatchEvent(new CustomEvent('bidveraai:clarification', {
       detail: {
         clarificationId: clarification.id,
-        selectedValues: fields.map(field => answers[field.id]?.value).filter((v): v is string => !!v),
-        displayText: fieldAnswersDisplayText(fields, answers),
-        fields: answers,
+        selectedValues: fields.map(field => submitted[field.id]?.value).filter((v): v is string => !!v),
+        displayText: fieldAnswersDisplayText(fields, submitted),
+        fields: submitted,
       } satisfies ClarificationAnswerDetail,
     }));
   };
 
   return (
     <div className="mt-3 space-y-3">
+      {pickError && <p role="alert" className="text-xs text-destructive">{pickError}</p>}
       {fields.map((field, index) => {
         const answer = answers[field.id];
         const pickKey = `${keyPrefix}${field.id}`;

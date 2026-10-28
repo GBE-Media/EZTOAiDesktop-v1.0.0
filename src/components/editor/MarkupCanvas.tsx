@@ -7,6 +7,7 @@ import type { ToolType } from '@/types/editor';
 import { useProductStore } from '@/store/productStore';
 import { productHighlight } from '@/lib/productHighlight';
 import { takeoffColor } from '@/lib/takeoffColors';
+import { openAssistantFocus } from '@/lib/openCitation';
 
 /** Count markers for a product share its color (same key the AI uses for fixture types). */
 function productMarkerColor(productId: string): { strokeColor: string; fillColor: string } {
@@ -49,7 +50,7 @@ import {
   computeLengthMeasurement,
 } from '@/lib/measurementValues';
 import { pageCalibrationToRenderPixelsPerUnit } from '@/services/ai/placement/pageCalibration';
-import { useDrawingPickStore } from '@/store/drawingPickStore';
+import { pickMatchesPage, useDrawingPickStore } from '@/store/drawingPickStore';
 import { canvasBoxToPagePct, canvasPointToPagePct, pagePctToCanvasPoint } from '@/lib/pickCoords';
 
 const EMPTY_MARKUPS: CanvasMarkup[] = [];
@@ -255,9 +256,12 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const pickPins = useDrawingPickStore(state => state.pins);
   const pickAreas = useDrawingPickStore(state => state.areas);
   /** Box being dragged for an "areas to keep clear" question (doc points). */
-  const [areaDrag, setAreaDrag] = useState<{ start: Point; current: Point; key: string } | null>(null);
-  const isPicking = !!pickRequest && (!pickRequest.documentId || pickRequest.documentId === activeDocId);
-  const isPanMode = activeTool === 'pan' && !isPicking;
+  const [areaDrag, setAreaDrag] = useState<{ start: Point; current: Point; key: string; documentId: string | null; page: number } | null>(null);
+  const isPicking = pickMatchesPage(pickRequest, activeDocId, currentPage);
+  const isPanMode = activeTool === 'pan' && !pickRequest;
+  useEffect(() => {
+    setAreaDrag(drag => drag && (drag.key !== pickRequest?.key || drag.documentId !== activeDocId || drag.page !== currentPage) ? null : drag);
+  }, [pickRequest?.key, activeDocId, currentPage]);
   // Prefer per-page PageCalibration; fall back to legacy document-wide scale.
   const { scale: measureScale, unit: measureUnit } = getScaleForPage(currentPage);
 
@@ -1790,6 +1794,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   };
 
   const handleMouseDown = (e: MouseEvent<HTMLCanvasElement>) => {
+    if (pickRequest && !isPicking) return;
     if (countMenu) {
       setCountMenu(null);
     }
@@ -1797,6 +1802,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     // Keep-clear boxes are drawn with pointer capture (handleAreaPointer*), not mouse events.
     if (isPicking && pickRequest?.mode === 'area') return;
     if (isPicking) {
+      if (e.button !== 0) return;
       // Answering an AI question: "click the panel on the drawing".
       useDrawingPickStore.getState().complete({
         documentId: activeDocId || undefined,
@@ -2027,6 +2033,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   };
 
   const handleMouseMove = (e: MouseEvent<HTMLCanvasElement>) => {
+    if (pickRequest) return;
     const rawPoint = getMousePosition(e);
     if (areaDrag) return;
     // Only apply snapping when "Snap to Objects" is enabled
@@ -2279,7 +2286,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     e.stopPropagation();
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* capture is best effort */ }
     const point = getMousePosition(e as unknown as MouseEvent<HTMLCanvasElement>);
-    setAreaDrag({ start: point, current: point, key: pickRequest.key });
+    setAreaDrag({ start: point, current: point, key: pickRequest.key, documentId: activeDocId, page: currentPage });
   };
   const handleAreaPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     if (!areaDrag) return;
@@ -2292,6 +2299,8 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
     const drag = areaDrag;
     setAreaDrag(null);
     if (e.type === 'pointercancel') return;
+    if (drag.documentId !== activeDocId || drag.page !== currentPage
+      || useDrawingPickStore.getState().request?.key !== drag.key) return;
     const end = getMousePosition(e as unknown as MouseEvent<HTMLCanvasElement>);
     const box = canvasBoxToPagePct(drag.start, end, width, height);
     const x1 = box.xPct;
@@ -2693,12 +2702,20 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         }}
       />
 
-      {isPicking && pickRequest && createPortal(
+      {pickRequest && createPortal(
         <div className="pointer-events-none fixed left-1/2 top-16 z-[9999] -translate-x-1/2">
           <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-violet-500/50 bg-popover/95 px-4 py-2 text-sm shadow-xl backdrop-blur">
             <span className="h-2 w-2 animate-pulse rounded-full bg-violet-500" />
-            <span className="text-foreground">{pickRequest.label}</span>
-            {pickRequest.mode === 'area' ? (
+            <span className="text-foreground">{isPicking ? pickRequest.label : `This pick belongs on page ${pickRequest.page || 1} of the requested drawing.`}</span>
+            {!isPicking ? (
+              <>
+                <button type="button" className="text-xs underline" onClick={() => {
+                  if (pickRequest.documentId && !useCanvasStore.getState().pdfDocuments[pickRequest.documentId]) return;
+                  openAssistantFocus({ documentId: pickRequest.documentId, page: pickRequest.page || 1 });
+                }}>Return to drawing</button>
+                <button type="button" className="text-xs underline" onClick={() => useDrawingPickStore.getState().cancel()}>Cancel</button>
+              </>
+            ) : pickRequest.mode === 'area' ? (
               <>
                 <span className="text-xs tabular-nums text-muted-foreground">
                   {(pickAreas[pickRequest.key] || []).length} marked · drag another box · click a box to remove it

@@ -28,7 +28,7 @@ import { useCanvasStore } from '@/store/canvasStore';
 import { getAssistantTool } from '../tools/registry';
 import { runLengthFt } from './overlay';
 import { buildRunInputQuestion, createSuggestRunsTool, KEEPOUT_COLOR, RUN_COLOR, panelNameCandidates, prepareRunPlan, resetRunDecisions, specWiringMethod, type RunInputNeeded } from './suggestRunsTool';
-import { applyFieldAnswers, formatFieldAnswersForModel, type AskUserRequest } from '../agent/askUser';
+import { applyFieldAnswers, clearPinnedResumes, formatFieldAnswersForModel, type AskUserRequest } from '../agent/askUser';
 import { createPageGeometry, docToRender, renderToDoc as renderToDocHelper } from '../placement/coords';
 import type { PolygonMarkup } from '@/types/markup';
 
@@ -50,12 +50,18 @@ function circuitsFromTags() {
 
 /** The user answers the card in the app (pins the answer, like the chat drawer does). */
 function answerCard(ask: AskUserRequest, answers: Record<string, unknown>) {
-  formatFieldAnswersForModel({ fields: ask.fields, resume: ask.resume } as never, answers as never);
+  formatFieldAnswersForModel({ fields: ask.fields, resume: ask.resume } as never, answers as never, 'r1');
   return applyFieldAnswers(ask.resume!.args, ask.resume!.apply, answers as never);
 }
 
+const runContext = () => ({
+  runId: 'r1', messageId: 'm1', addApproval: vi.fn(), signal: new AbortController().signal,
+  getActiveDocument: () => ({ id: DOC, currentPage: 4, totalPages: 4 }),
+});
+
 beforeEach(() => {
   resetRunDecisions();
+  clearPinnedResumes();
   useCanvasStore.setState(state => ({
     ...state,
     activeDocId: DOC,
@@ -146,8 +152,8 @@ describe('suggest_runs tool', () => {
       const ask = buildRunInputQuestion(needed, { page: 4, circuits: lumped });
       expect(ask.fields[0].id).toBe('panel_loc_0');
       expect(ask.fields[0].options?.some(o => o.value === 'flag:offSheet')).toBe(true);
-      const args = applyFieldAnswers(ask.resume!.args, ask.resume!.apply, { panel_loc_0: { point: { page: 4, xPct: 83, yPct: 52 } } });
-      expect(args).toMatchObject({ panels: [{ label: 'LP', x: 83, y: 52 }] });
+      const args = applyFieldAnswers(ask.resume!.args, ask.resume!.apply, { panel_loc_0: { point: { page: 4, xPct: 83, yPct: 65 } } });
+      expect(args).toMatchObject({ panels: [{ label: 'LP', x: 83, y: 65 }] });
       const again = await prepareRunPlan(args as never);
       if ('needs' in again) throw new Error(again.message);
       const homeRuns = again.markups.map(r => r.markup).filter(m => m.aiRun?.kind === 'homerun');
@@ -186,7 +192,7 @@ describe('suggest_runs tool', () => {
 
   it('produces doc-coordinate run markups on a rotated sheet that land on the devices', async () => {
     const circuits = circuitsFromTags();
-    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     if ('needs' in result) throw new Error(result.message);
     const runs = result.markups.map(r => r.markup).filter(m => m.type === 'polyline') as PolygonMarkup[];
     const homeRuns = runs.filter(m => m.aiRun?.kind === 'homerun');
@@ -203,17 +209,17 @@ describe('suggest_runs tool', () => {
         expect(display.x).toBeLessThanOrEqual(W + 1);
       }
     }
-    // Home runs end at the panel (display 83 %, 52 %).
+    // An in-building destination (83 %, 65 %); the old 83 %, 52 % was in white space.
     const end = docToRender(homeRuns[0].points[homeRuns[0].points.length - 1], geometry);
     const start = docToRender(homeRuns[0].points[0], geometry);
-    const nearPanel = [start, end].some(p => Math.hypot(p.x - 0.83 * W, p.y - 0.52 * H) < 0.05 * W);
+    const nearPanel = [start, end].some(p => Math.hypot(p.x - 0.83 * W, p.y - 0.65 * H) < 0.05 * W);
     expect(nearPanel).toBe(true);
     expect(result.modelSummary.code).toBeTruthy();
   });
 
   it('draws visible light-blue runs: branch arcs fixture to fixture, footage stays consistent on edit', async () => {
     const circuits = circuitsFromTags();
-    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     if ('needs' in result) throw new Error(result.message);
     const all = result.markups.map(r => r.markup);
     // Opacity is 0–100: every run-plan markup must be fully visible (was 1 = invisible).
@@ -242,7 +248,7 @@ describe('suggest_runs tool', () => {
     const first = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval: vi.fn() } as never, { page: 4, panel: { label: 'ZZQ-9' }, circuits } as never);
     expect(first.askUser!.fields.map(f => f.id)).toEqual(expect.arrayContaining(['panel_location', 'wiring_method']));
     const args = answerCard(first.askUser!, {
-      panel_location: { point: { page: 4, xPct: 83, yPct: 52 } },
+      panel_location: { point: { page: 4, xPct: 83, yPct: 65 } },
       wiring_method: { value: 'EMT', label: 'EMT' },
     });
     const addApproval = vi.fn();
@@ -280,7 +286,7 @@ describe('suggest_runs tool', () => {
   it('commits the user\'s keep-clear boxes to the page at once; the model can\'t shift or add copies', async () => {
     const circuits = circuitsFromTags();
     const zonePct = { x: 10, y: 10, width: 8, height: 6 };
-    const base = { page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true };
+    const base = { page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true };
     const first = await prepareRunPlan({ ...base, keepClear: [zonePct], keepClearConfirmed: true } as never, { strict: true, fromCard: true, cardKeys: ['keepClear', 'keepClearConfirmed', 'panel', 'wiringMethodConfirmed'] });
     if ('needs' in first) throw new Error(first.message);
     const zones = () => (useCanvasStore.getState().getMarkupsByPage(DOC)[4] || []).filter(m => m.aiRun?.kind === 'keepout');
@@ -337,7 +343,7 @@ describe('runs follow the placed fixtures', () => {
       ...state,
       pdfDocuments: { [DOC]: { ...state.pdfDocuments[DOC], markupsByPage: { 4: markers } } } as never,
     }));
-    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [] } as never);
+    const result = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [] } as never);
     if ('needs' in result) throw new Error(result.message);
     const branches = result.markups.map(r => r.markup).filter(m => m.type === 'polyline' && (m as PolygonMarkup).aiRun?.kind === 'branch') as PolygonMarkup[];
     expect(branches.length).toBeGreaterThan(0);
@@ -377,7 +383,7 @@ describe('runs follow the placed fixtures', () => {
     const circuits = circuitsFromTags();
     const geometry = createPageGeometry({ pageNumber: 4, docWidth: H, docHeight: W, rotationDeg: 90, renderScale: 1 });
     const zonePct = { x: 10, y: 10, width: 8, height: 6 };
-    const first = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [zonePct], keepClearConfirmed: true } as never);
+    const first = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [zonePct], keepClearConfirmed: true } as never);
     if ('needs' in first) throw new Error(first.message);
     const zone = first.markups.map(r => r.markup).find(m => m.aiRun?.kind === 'keepout')!;
     expect(zone.locked).toBe(true);
@@ -393,10 +399,10 @@ describe('runs follow the placed fixtures', () => {
       ...state,
       pdfDocuments: { [DOC]: { ...state.pdfDocuments[DOC], markupsByPage: { 4: [zone] } } } as never,
     }));
-    const second = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [{ ...zonePct, x: 10.4 }] } as never);
+    const second = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [{ ...zonePct, x: 10.4 }] } as never, { strict: true, fromCard: true, cardKeys: ['wiringMethodConfirmed'] });
     if ('needs' in second) throw new Error(second.message);
     expect(second.markups.some(r => r.markup.aiRun?.kind === 'keepout')).toBe(false);
-    const again = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 52 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
+    const again = await prepareRunPlan({ page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     expect('needs' in again && (again as RunInputNeeded).missing?.includes('keep_clear')).toBe(false);
   });
 
@@ -409,8 +415,125 @@ describe('runs follow the placed fixtures', () => {
     }, { keep_clear: { areas: [{ xPct: 12.345, yPct: 40.5, wPct: 5, hPct: 4, page: 4 }] } } as never);
     const out = withPinnedAnswers({ page: 4, documentId: DOC, keepClear: [{ x: 12, y: 41, width: 5, height: 4 }], settings: { wiringMethod: 'EMT' } });
     expect((out.keepClear as Array<{ x: number }>)[0].x).toBeCloseTo(12.345, 2);
-    expect(out.settings).toEqual({ wiringMethod: 'EMT' });
+    expect(out.settings).toBeUndefined(); // Unanswered model additions don't alter the paused request.
     // Used once: a later, unrelated call isn't overridden.
     expect(withPinnedAnswers({ page: 4, keepClear: [] }).keepClear).toEqual([]);
+  });
+
+  it('asks for and remembers the exact off-sheet continuation instead of inventing an exit', async () => {
+    const tool = createSuggestRunsTool();
+    const ctx = runContext();
+    const base = { page: 4, panel: { label: 'LP', offSheet: true }, circuits: circuitsFromTags() };
+    const first = await tool.execute(ctx as never, base as never);
+    const location = first.askUser!.fields!.find(f => f.kind === 'point')!;
+    expect(location.prompt).toContain('leave this plan');
+    expect(first.askUser!.resume!.apply[location.id]).toMatch(/\.exit$/);
+    const ready = await tool.execute(ctx as never, answerCard(first.askUser!, {
+      [location.id]: { point: { documentId: DOC, page: 4, xPct: 83, yPct: 65 } },
+      wiring_method: { value: 'EMT' }, keep_clear: { areas: [] },
+    }) as never);
+    expect(ready.status).toBe('approval-required');
+    const markers = useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4];
+    expect(markers.filter(m => m.aiRun?.userPlaced)).toHaveLength(1);
+    expect(markers[0].aiRun).toMatchObject({ offSheet: true, panel: 'LP' });
+    const before = JSON.stringify(markers);
+    const again = await tool.execute(ctx as never, base as never);
+    expect(again.status).toBe('approval-required');
+    expect(JSON.stringify(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4])).toBe(before);
+  });
+
+  it('keeps three user-selected panels through reruns and asks before re-picking them', async () => {
+    const tool = createSuggestRunsTool();
+    const ctx = runContext();
+    const labels = ['A', 'B', 'C'];
+    const base = {
+      page: 4, panelLabels: labels, reviewPanelLocations: true,
+      circuits: circuitsFromTags().slice(0, 3).map((c, i) => ({ ...c, id: `${labels[i]}-1` })),
+    };
+    const first = await tool.execute(ctx as never, base as never);
+    const locs = first.askUser!.fields!.filter(f => f.kind === 'point');
+    expect(locs).toHaveLength(3);
+    const answers = Object.fromEntries(locs.map((f, i) => [f.id, { point: { documentId: DOC, page: 4, xPct: 82 + i * 0.5, yPct: 65 } }]));
+    const ready = await tool.execute(ctx as never, answerCard(first.askUser!, { ...answers, wiring_method: { value: 'MC' }, keep_clear: { areas: [] } }) as never);
+    expect(ready.status).toBe('approval-required');
+    const markers = useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4];
+    expect(markers.filter(m => m.aiRun?.userPlaced).map(m => m.aiRun?.panel).sort()).toEqual(labels);
+    const before = JSON.stringify(markers);
+    const again = await tool.execute(ctx as never, { ...base, reviewPanelLocations: false } as never);
+    expect(again.status).toBe('approval-required');
+    expect(JSON.stringify(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4])).toBe(before);
+    const review = await tool.execute(ctx as never, base as never);
+    expect(review.askUser!.fields!.filter(f => f.kind === 'point')).toHaveLength(3);
+    expect(JSON.stringify(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4])).toBe(before);
+  });
+
+  it('stops an impossible destination with a review card, without offering unsafe runs', async () => {
+    const tool = createSuggestRunsTool();
+    const ctx = runContext();
+    const first = await tool.execute(ctx as never, { page: 4, panel: { label: 'LP' }, reviewPanelLocations: true, circuits: circuitsFromTags() } as never);
+    const loc = first.askUser!.fields!.find(f => f.kind === 'point')!;
+    const result = await tool.execute(ctx as never, answerCard(first.askUser!, {
+      [loc.id]: { point: { documentId: DOC, page: 4, xPct: 83, yPct: 52 } },
+      wiring_method: { value: 'EMT' }, keep_clear: { areas: [] },
+    }) as never);
+    expect(result.output).toMatchObject({ needs: 'routing_review', placed: 0 });
+    expect(result.askUser?.fields?.[0].id).toBe('routing_review');
+    expect(ctx.addApproval).not.toHaveBeenCalled();
+  });
+
+  it('retains overlapping keep-clear boxes rather than shrinking their protected union', async () => {
+    const tool = createSuggestRunsTool();
+    const ctx = runContext();
+    const first = await tool.execute(ctx as never, {
+      page: 4, panel: { label: 'LP' }, reviewPanelLocations: true, circuits: circuitsFromTags(),
+      keepClear: [10, 14].map(x => ({ x, y: 10, width: 8, height: 6 })),
+    } as never);
+    expect(first.askUser!.fields!.some(f => f.id === 'keep_clear')).toBe(true);
+    const loc = first.askUser!.fields!.find(f => f.kind === 'point')!;
+    const result = await tool.execute(ctx as never, answerCard(first.askUser!, {
+      [loc.id]: { point: { documentId: DOC, page: 4, xPct: 83, yPct: 65 } },
+      wiring_method: { value: 'EMT' },
+      keep_clear: { areas: [10, 14].map(xPct => ({ documentId: DOC, page: 4, xPct, yPct: 10, wPct: 8, hPct: 6 })) },
+    }) as never);
+    expect(result.status, result.summary).toBe('approval-required');
+    expect(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4].filter(m => m.aiRun?.kind === 'keepout')).toHaveLength(2);
+  });
+
+  it('does not plan runs when saving card inputs fails', async () => {
+    const tool = createSuggestRunsTool();
+    const ctx = runContext();
+    const first = await tool.execute(ctx as never, { page: 4, panel: { label: 'LP' }, reviewPanelLocations: true, circuits: circuitsFromTags() } as never);
+    const loc = first.askUser!.fields!.find(f => f.kind === 'point')!;
+    const save = vi.spyOn(useCanvasStore.getState(), 'addAIMarkupBatch').mockReturnValueOnce({ ok: false, placed: 0, reason: 'Source document closed' });
+    try {
+      const result = await tool.execute(ctx as never, answerCard(first.askUser!, {
+        [loc.id]: { point: { documentId: DOC, page: 4, xPct: 83, yPct: 65 } },
+        wiring_method: { value: 'EMT' }, keep_clear: { areas: [] },
+      }) as never);
+      expect(result.output).toMatchObject({ needs: 'document' });
+      expect(result.summary).toContain('Could not save your drawing inputs');
+      expect(ctx.addApproval).not.toHaveBeenCalled();
+      expect(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4] || []).toEqual([]);
+    } finally { save.mockRestore(); }
+  });
+
+  it('rejects a stale preview after the user changes a panel input', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
+    const tool = createSuggestRunsTool();
+    const ctx = runContext();
+    const first = await tool.execute(ctx as never, { page: 4, panel: { label: 'LP' }, reviewPanelLocations: true, circuits: circuitsFromTags() } as never);
+    const loc = first.askUser!.fields!.find(f => f.kind === 'point')!;
+    await tool.execute(ctx as never, answerCard(first.askUser!, {
+      [loc.id]: { point: { documentId: DOC, page: 4, xPct: 83, yPct: 65 } },
+      wiring_method: { value: 'EMT' }, keep_clear: { areas: [] },
+    }) as never);
+    const approval = ctx.addApproval.mock.calls[0][0];
+    const doc = useCanvasStore.getState().pdfDocuments[DOC];
+    const before = doc.markupsByPage[4].map(m => ({ ...m, label: `${m.label} changed` }));
+    useCanvasStore.setState({ pdfDocuments: { [DOC]: { ...doc, markupsByPage: { 4: before } } } });
+    const { placeSuggestedRuns } = await import('../placement/handleApprovalDecision');
+    expect(placeSuggestedRuns(approval)).toMatchObject({ status: 'failed', placed: 0, error: expect.stringContaining('changed after this preview') });
+    expect(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4]).toEqual(before);
+    vi.unstubAllGlobals();
   });
 });

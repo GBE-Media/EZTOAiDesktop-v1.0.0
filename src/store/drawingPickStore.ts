@@ -12,6 +12,11 @@ export interface DrawingPickRequest {
   mode?: 'point' | 'area';
 }
 
+export function pickMatchesPage(request: DrawingPickRequest | null, documentId: string | null | undefined, page: number): boolean {
+  return !!request && (!request.documentId || request.documentId === documentId)
+    && (!request.page || request.page === page);
+}
+
 interface DrawingPickState {
   request: DrawingPickRequest | null;
   /** Pins already picked (shown on the drawing until the card is answered). */
@@ -20,14 +25,14 @@ interface DrawingPickState {
   areas: Record<string, PickedArea[]>;
   start: (request: DrawingPickRequest) => void;
   complete: (point: PickedPoint) => void;
-  /** Add a dragged box; area mode stays on so the user can mark several. */
-  /** Append a box. `key` pins it to the box session that started the drag (request may have moved on). */
+  /** Add to the originating, still-active area session. Ending a card cannot resurrect it. */
   addArea: (area: PickedArea, key?: string) => void;
   clearAreas: (key: string) => void;
   /** Seed AI-drafted boxes once (no-op if the user already has areas for this key). */
   seedAreas: (key: string, areas: PickedArea[]) => void;
   removeArea: (key: string, index: number) => void;
   cancel: () => void;
+  clearPin: (key: string) => void;
   clearPins: (keyPrefix: string) => void;
 }
 
@@ -35,18 +40,24 @@ export const useDrawingPickStore = create<DrawingPickState>((set, get) => ({
   request: null,
   pins: {},
   areas: {},
-  start: request => set({ request }),
+  start: request => set(state => ({
+    request,
+    // Redo starts a fresh point; a stale pin must not overwrite a new choice on the card.
+    pins: request.mode === 'area' ? state.pins : Object.fromEntries(Object.entries(state.pins).filter(([key]) => key !== request.key)),
+  })),
   complete: point => {
     const request = get().request;
-    if (!request) return;
+    if (!request || !pickMatchesPage(request, point.documentId, point.page) || request.mode === 'area') return;
     set(state => ({
       request: null,
       pins: { ...state.pins, [request.key]: { ...point, label: request.label } },
     }));
   },
   addArea: (area, explicitKey) => {
-    const key = explicitKey || get().request?.key;
-    if (!key) return;
+    const request = get().request;
+    const key = explicitKey || request?.key;
+    if (!key || request?.key !== key || request.mode !== 'area'
+      || !pickMatchesPage(request, area.documentId, area.page)) return;
     set(state => ({ areas: { ...state.areas, [key]: [...(state.areas[key] || []), area] } }));
   },
   // Keep the key (empty list) so AI-drafted boxes aren't re-seeded after the user clears them.
@@ -56,6 +67,10 @@ export const useDrawingPickStore = create<DrawingPickState>((set, get) => ({
     areas: { ...state.areas, [key]: (state.areas[key] || []).filter((_, i) => i !== index) },
   })),
   cancel: () => set({ request: null }),
+  clearPin: key => set(state => ({
+    pins: Object.fromEntries(Object.entries(state.pins).filter(([k]) => k !== key)),
+    request: state.request?.key === key ? null : state.request,
+  })),
   clearPins: keyPrefix => set(state => ({
     pins: Object.fromEntries(Object.entries(state.pins).filter(([key]) => !key.startsWith(keyPrefix))),
     areas: Object.fromEntries(Object.entries(state.areas).filter(([key]) => !key.startsWith(keyPrefix))),
