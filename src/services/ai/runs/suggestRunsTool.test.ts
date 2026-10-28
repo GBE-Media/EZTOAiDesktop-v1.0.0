@@ -86,6 +86,104 @@ beforeEach(() => {
   }));
 });
 
+describe('complete count coverage', () => {
+  const markerStyle = { strokeColor: '#000', fillColor: '#000', strokeWidth: 1, opacity: 100 };
+  function placeCounts() {
+    const circuits = circuitsFromTags();
+    const markers = analysisItems.map(item => ({
+      id: `cm_${item.id}`, type: 'count-marker', page: 4,
+      x: item.location.x / 100 * W * BASE_RENDER_SCALE,
+      y: item.location.y / 100 * H * BASE_RENDER_SCALE,
+      aiLinkedItemId: item.id, number: 1, label: 'A', style: markerStyle, locked: false, author: 'AI', createdAt: '',
+    }));
+    useCanvasStore.setState(state => ({
+      pdfDocuments: { [DOC]: { ...state.pdfDocuments[DOC], markupsByPage: { 4: markers } } } as never,
+    }));
+    return { circuits, markers };
+  }
+
+  it('includes every linked marker when the model passes only a subset of fixtures', async () => {
+    const { circuits, markers } = placeCounts();
+    const shortened = circuits.slice(0, 2).map(c => ({ ...c, itemIds: c.itemIds.slice(0, 1) }));
+    const result = await prepareRunPlan({
+      page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits: shortened,
+      settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [],
+    } as never);
+    if ('needs' in result) throw new Error(result.message);
+    expect(result.coverage.total).toBe(markers.length);
+    expect(result.coverage.fixtures.map(f => f.id).sort()).toEqual(markers.map(m => m.id).sort());
+    expect(result.coverage.fixtures.every(f => f.circuitIds.length > 0)).toBe(true);
+    expect(result.coverage.complete).toBe(true);
+    expect(result.coverage.connected).toBe(markers.length);
+  });
+
+  it('keeps stale-linked and hand counts, excludes review candidates, and reports invalid locations', async () => {
+    const { circuits, markers } = placeCounts();
+    const hand = { ...markers[0], id: 'hand-count', aiLinkedItemId: undefined, x: markers[0].x + 20 };
+    const stale = { ...markers[1], id: 'stale-count', aiLinkedItemId: 'old-analysis-id', x: markers[1].x + 20 };
+    const review = { ...markers[2], id: 'review-only', reviewMarker: true };
+    const invalid = { ...markers[3], id: 'bad-location', x: NaN };
+    useCanvasStore.setState(state => ({
+      pdfDocuments: { [DOC]: { ...state.pdfDocuments[DOC], markupsByPage: { 4: [...markers, hand, stale, review, invalid] } } } as never,
+    }));
+    const result = await prepareRunPlan({
+      page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits,
+      settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [],
+    } as never);
+    if ('needs' in result) throw new Error(result.message);
+    expect(result.coverage.total).toBe(markers.length + 3);
+    expect(result.coverage.fixtures.find(f => f.id === hand.id)?.status).toBe('connected');
+    expect(result.coverage.fixtures.find(f => f.id === stale.id)?.status).toBe('connected');
+    expect(result.coverage.fixtures.some(f => f.id === review.id)).toBe(false);
+    expect(result.coverage.fixtures.find(f => f.id === invalid.id)?.status).toBe('missing_location');
+    expect(result.coverage.complete).toBe(false);
+    expect(result.summaryLines[0]).toContain('INCOMPLETE');
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} });
+    const { placeSuggestedRuns } = await import('../placement/handleApprovalDecision');
+    const { runInputSnapshot } = await import('./runInputSnapshot');
+    const placed = placeSuggestedRuns({
+      id: 'partial', toolId: 'suggest_runs', runId: 'run', messageId: 'message', status: 'pending',
+      title: 'Suggested runs', description: 'Partial layout', undoable: true, createdAt: '',
+      payload: {
+        documentId: DOC, page: 4, markups: result.markups,
+        inputSnapshot: runInputSnapshot(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4]), coverage: result.coverage,
+      },
+    });
+    expect(placed.status).toBe('partial');
+    expect(placed.coverage?.unresolved).toBeGreaterThan(0);
+    expect(placed.error).toContain('Do not report this layout as complete');
+  });
+
+  it('asks a popup card before assigning untagged omitted counts, ignoring model self-confirmation', async () => {
+    const { circuits } = placeCounts();
+    const result = await prepareRunPlan({
+      page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits: circuits.slice(0, 2),
+      autoCircuits: { useCircuitTags: false }, unassignedAction: 'propose',
+      settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [],
+    } as never, { strict: true });
+    expect('needs' in result && result.needs).toBe('input');
+    const needed = result as RunInputNeeded;
+    expect(needed.missing).toContain('circuit_assignment');
+    const card = buildRunInputQuestion(needed, { page: 4 });
+    expect(card.fields.find(f => f.id === 'circuit_assignment')?.options?.map(o => o.value)).toEqual(['propose', 'review']);
+    expect(card.resume?.apply.circuit_assignment).toBe('unassignedAction');
+  });
+
+  it('lets the card leave unassigned counts visibly unresolved instead of guessing their circuit', async () => {
+    const { circuits } = placeCounts();
+    const result = await prepareRunPlan({
+      page: 4, panel: { label: 'LP', x: 83, y: 65 }, circuits: circuits.slice(0, 2),
+      autoCircuits: { useCircuitTags: false }, unassignedAction: 'review',
+      settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true, keepClear: [],
+    } as never);
+    if ('needs' in result) throw new Error(result.message);
+    expect(result.coverage.total).toBe(analysisItems.length);
+    expect(result.coverage.unresolved).toBeGreaterThan(0);
+    expect(result.coverage.fixtures.filter(f => f.status === 'unassigned')).toHaveLength(result.coverage.unresolved);
+    expect(result.summaryLines.join(' ')).toContain('left unresolved at your request');
+  });
+});
+
 describe('suggest_runs tool', () => {
   it('asks for the panel location when the label is not on the sheet', async () => {
     const result = await prepareRunPlan({ page: 4, panel: { label: 'ZZQ-9' }, circuits: circuitsFromTags(), settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
@@ -236,8 +334,11 @@ describe('suggest_runs tool', () => {
     const branches = runs.filter(m => m.aiRun?.kind === 'branch');
     expect(branches.length).toBeGreaterThan(0);
     for (const b of branches) {
-      expect(b.aiRun?.curve).toBe(true);
-      expect(b.points).toHaveLength(3);
+      // Fixture strings are arcs; shared-home-run collectors use the safe routed polyline.
+      if (!b.aiRun?.runId.endsWith('-collector')) {
+        expect(b.aiRun?.curve).toBe(true);
+        expect(b.points).toHaveLength(3);
+      } else expect(b.points.length).toBeGreaterThanOrEqual(2);
       expect(b.aiRun?.footageFactor ?? 1).toBeGreaterThanOrEqual(1);
       // Recomputing an untouched branch gives the same footage.
       expect(Math.abs(runLengthFt(b.points, b.aiRun!) - b.aiRun!.lengthFt)).toBeLessThan(0.3);
@@ -361,7 +462,8 @@ describe('runs follow the placed fixtures', () => {
       const s = byId.get(anchors.start!)!;
       expect(Math.hypot(b.points[0].x - s.x, b.points[0].y - s.y)).toBeLessThan(0.5);
       const e = byId.get(anchors.end!)!;
-      expect(Math.hypot(b.points[2].x - e.x, b.points[2].y - e.y)).toBeLessThan(0.5);
+      const end = b.points[b.points.length - 1];
+      expect(Math.hypot(end.x - e.x, end.y - e.y)).toBeLessThan(0.5);
     }
     const homeRuns = result.markups.map(r => r.markup).filter(m => (m as PolygonMarkup).aiRun?.kind === 'homerun') as PolygonMarkup[];
     expect(homeRuns.some(h => h.aiRun?.anchors?.start)).toBe(true);

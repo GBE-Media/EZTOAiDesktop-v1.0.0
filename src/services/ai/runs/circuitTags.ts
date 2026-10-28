@@ -107,6 +107,8 @@ export function circuitsFromTags(
     breakerAmps?: number;
     /** Panels named in the project's panel schedules (allows names like "E" or "P"). */
     knownPanels?: string[];
+    /** Recovery must not guess a missing count's circuit from its neighbour alone. */
+    inferUntagged?: boolean;
   },
 ): { circuits: Array<PlannedCircuit & { panel: string; itemIds: string[] }>; coverage: number; untagged: TaggedDevice[] } {
   const size = Math.max(page.pageWidth, page.pageHeight);
@@ -130,7 +132,7 @@ export function circuitsFromTags(
   }
   const taggedCount = devices.length - untagged.length;
   const leftover: TaggedDevice[] = [];
-  if (byId.size) {
+  if (byId.size && options.inferUntagged !== false) {
     for (const device of untagged) {
       let best: { id: string; dist: number } | null = null;
       for (const [id, row] of byId) {
@@ -161,7 +163,7 @@ export function circuitsFromTags(
   return {
     circuits,
     coverage: devices.length ? taggedCount / devices.length : 0,
-    untagged: byId.size ? leftover : untagged,
+    untagged: byId.size && options.inferUntagged !== false ? leftover : untagged,
   };
 }
 

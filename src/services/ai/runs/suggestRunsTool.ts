@@ -27,6 +27,7 @@ import {
 import { insideBox, tightenToDrawing, viewOffset } from './viewRegistration';
 import { CANVAS_SCALE, fromCanvas, isLegacyRunMarkup, markupBoxToPlan, toCanvas, upgradeLegacyRunMarkup } from './runFrame';
 import { auditRuns } from './runAudit';
+import { auditRunCoverage, type RunCoverage, type RunTarget } from './runCoverage';
 import { circuitsFromTags, panelNamesFromSchedules, panelsFromCircuits, panelsTaggedOnSheet, parseCircuitTag, readCircuitTags, suggestPanels } from './circuitTags';
 import { materialTotals, runAssembly, type RunAssembly } from './runMaterials';
 import { getLatestFullPageAnalysis, itemIsUnresolvedForCounts } from '../agent/pageAnalysisCache';
@@ -76,6 +77,7 @@ export const suggestRunsSchema = z.object({
   })).optional().describe('Several panels (circuit tags like "B-4" → panel B). Omit — the tool reads the tags and asks for locations.'),
   scaleChoice: z.enum(['printed', 'calibration']).optional().describe('Set by the card when the page calibration and the printed plan scale disagree.'),
   wiringMethodConfirmed: z.boolean().optional().describe('Set by the card answer only. The material counts as decided only after the user picked it on the card (asked for every layout); a spec/drawing method is just the recommendation in settings.wiringMethod.'),
+  unassignedAction: z.enum(['propose', 'review']).optional().describe('Card decision for omitted counts with no printed circuit: create proposed circuits or leave explicitly unresolved.'),
   panelLabels: z.array(z.string()).optional().describe('Panels the user picked on the card for these home runs (several allowed). Circuits are split between them by the circuit tags / nearest tagged fixtures.'),
   keepClear: z.array(z.object({
     x: z.number().min(0).max(100),
@@ -168,8 +170,10 @@ export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestR
           markups: prepared.markups,
           ...(prepared.legacyUpgradeIds ? { legacyUpgradeIds: prepared.legacyUpgradeIds } : {}),
           summary: prepared.summaryLines,
+          coverage: prepared.coverage,
         },
-        description: input.description || `Place ${prepared.homeRuns} suggested home run${prepared.homeRuns === 1 ? '' : 's'} on page ${input.page}`,
+        description: `${prepared.coverage.complete ? '' : 'Partial layout: '}${prepared.coverage.connected}/${prepared.coverage.total} counts connected. `
+          + (input.description || `Place ${prepared.homeRuns} suggested home run${prepared.homeRuns === 1 ? '' : 's'} on page ${input.page}`),
       });
       context.addApproval(approval);
       return {
@@ -190,6 +194,7 @@ type Prepared =
     /** Old-frame user zones / panels re-saved (by these replacement copies) on placement. */
     legacyUpgradeIds?: string[];
     homeRuns: number;
+    coverage: RunCoverage;
     summaryLines: string[];
     modelSummary: Record<string, unknown>;
   }
@@ -202,7 +207,8 @@ export interface RunInputNeeded {
   message: string;
   documentId: string;
   page: number;
-  missing: Array<'panel_location' | 'panel_label' | 'wiring_method' | 'keep_clear' | 'fixture_load' | 'scale'>;
+  missing: Array<'panel_location' | 'panel_label' | 'wiring_method' | 'keep_clear' | 'fixture_load' | 'scale' | 'circuit_assignment'>;
+  unassignedCount?: number;
   /** Page calibration and the plan's printed scale disagree: which one sets the footage. */
   scaleConflict?: { printed: string; calibration: string };
   panelLabel?: string;
@@ -353,6 +359,17 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
       ],
       recommended: '40',
       placeholder: 'Or type the VA, e.g. 52',
+    });
+  }
+  if (needed.missing.includes('circuit_assignment')) {
+    apply.circuit_assignment = 'unassignedAction';
+    fields.push({
+      id: 'circuit_assignment', kind: 'choice',
+      prompt: `${needed.unassignedCount || 0} omitted count(s) have no printed circuit assignment. How should I handle them?`,
+      options: [
+        { id: 'propose_circuits', label: 'Create separate proposed circuits for review', value: 'propose' },
+        { id: 'review_circuits', label: 'Leave unresolved and highlight these counts', value: 'review' },
+      ],
     });
   }
   if (needed.missing.includes('keep_clear')) {
@@ -768,13 +785,23 @@ export async function prepareRunPlan(
   // works in page display points — see runFrame.ts.
   const markerByItem = new Map<string, { id: string; pt: Pt }>();
   const handPlaced: Array<{ id: string; pt: Pt }> = [];
+  const targets: RunTarget[] = [];
+  const markerById = new Map<string, Pt>();
+  const hasCountMarkers = (canvas.getMarkupsByPage(docId)[input.page] || []).some(m => m.type === 'count-marker');
   for (const m of canvas.getMarkupsByPage(docId)[input.page] || []) {
     if (m.type !== 'count-marker') continue;
+    // Review candidates aren't accepted counts, even if they have an analysis link.
+    if ((m as { reviewMarker?: boolean }).reviewMarker) continue;
     const linked = (m as { aiLinkedItemId?: string }).aiLinkedItemId;
     const x = (m as { x?: number }).x;
     const y = (m as { y?: number }).y;
-    if (typeof x !== 'number' || typeof y !== 'number') continue;
+    if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+      targets.push({ id: m.id, markerId: m.id, itemId: linked });
+      continue;
+    }
     const pt = fromCanvas({ x, y });
+    targets.push({ id: m.id, markerId: m.id, itemId: linked, point: pt });
+    markerById.set(m.id, pt);
     if (!linked) {
       // A fixture the user counted by hand: it gets wired like any other.
       if (!(m as { reviewMarker?: boolean }).reviewMarker) handPlaced.push({ id: m.id, pt });
@@ -790,6 +817,14 @@ export async function prepareRunPlan(
     if (itemsById.has(linked)) continue;
     markerByItem.delete(linked);
     handPlaced.push(marker);
+  }
+  if (!hasCountMarkers) {
+    targets.push(...analysisItems.filter(item => !itemIsUnresolvedForCounts(item, legendCodes).unresolved)
+      .map(item => ({
+        id: item.id, itemId: item.id,
+        ...(!item.locationMissing && item.location && Number.isFinite(item.location.x) && Number.isFinite(item.location.y)
+          ? { point: toDisplay(item.location) } : {}),
+      })));
   }
   // The user's own inputs live on the page: the keep-clear boxes they drew and the panels they
   // clicked are committed (locked) the moment they answer the card, and every later run reads
@@ -860,6 +895,11 @@ export async function prepareRunPlan(
 
   const anchorByPoint = new Map<string, string>();
   const devicePoint = (id: string): Pt | null => {
+    const placed = markerById.get(id);
+    if (placed) {
+      anchorByPoint.set(pointKey(placed), id);
+      return placed;
+    }
     const marker = markerByItem.get(id);
     if (marker) {
       anchorByPoint.set(pointKey(marker.pt), marker.id);
@@ -873,7 +913,7 @@ export async function prepareRunPlan(
     }
     // The count is on the print: a fixture whose marker the user deleted gets no run. Only a
     // page with no count markers at all falls back to the analysis locations.
-    if (markerByItem.size || handPlaced.length) return null;
+    if (hasCountMarkers) return null;
     const item = itemsById.get(id);
     if (!item || item.locationMissing || !item.location) return null;
     return toDisplay(item.location);
@@ -897,15 +937,9 @@ export async function prepareRunPlan(
 
   // The engineer's circuit tags ("B-4" next to a fixture = panel B, circuit 4) beat any grouping
   // the model guessed (e.g. every fixture on one circuit).
-  const poolIds = [
-    ...(input.circuits?.some(c => c.itemIds?.length)
-      ? input.circuits.flatMap(c => c.itemIds || [])
-      : input.autoCircuits?.itemIds?.length
-        ? input.autoCircuits.itemIds
-        : analysisItems.filter(item => !itemIsUnresolvedForCounts(item, legendCodes).unresolved).map(item => item.id)),
-    // Fixtures the user counted by hand on this page are wired too, whatever the model listed.
-    ...handPlaced.map(h => h.id),
-  ];
+  // Model lists describe grouping, never the accounting scope. Every accepted count on this
+  // page must survive the pipeline, including linked counts omitted by a shortened tool call.
+  const poolIds = targets.map(t => t.id);
   const poolDevices = [...new Set(poolIds)].flatMap(id => {
     const point = devicePoint(id);
     return point ? [{ point, itemId: id }] : [];
@@ -948,22 +982,33 @@ export async function prepareRunPlan(
       useCircuitTags: useTags,
     });
   }
-  // A hand-counted fixture the circuits above don't reach joins the circuit of its nearest fixture.
+  // Repair omissions from explicit model circuits as well as auto-grouping. Printed tags are
+  // evidence; proximity alone isn't permission to attach an omitted count to any circuit.
   const wired = new Set(circuits.flatMap(c => c.devices.map(pointKey)));
-  for (const h of handPlaced) {
-    if (wired.has(pointKey(h.pt)) || !circuits.length) continue;
-    let best: PlannedCircuit | null = null; let bestD = Infinity;
-    for (const c of circuits) for (const d of c.devices) {
-      const dist = Math.hypot(d.x - h.pt.x, d.y - h.pt.y);
-      if (dist < bestD) { bestD = dist; best = c; }
-    }
-    if (!best) continue;
-    devicePoint(h.id);
-    const perDevice = best.loadVA && best.devices.length ? best.loadVA / best.devices.length : undefined;
-    best.devices = [...best.devices, h.pt];
-    if (perDevice) best.loadVA = perDevice * best.devices.length;
-    wired.add(pointKey(h.pt));
+  const missed = poolDevices.filter(d => !wired.has(pointKey(d.point)));
+  const recovered = useTags
+    ? circuitsFromTags(missed, page, { ...loadDefaults, knownPanels: scheduleNames, inferUntagged: false })
+    : { circuits: [], untagged: missed };
+  for (const taggedCircuit of recovered.circuits) {
+    const existing = circuits.find(c => c.id === taggedCircuit.id);
+    if (!existing) { circuits.push(taggedCircuit); continue; }
+    const n = taggedCircuit.devices.length;
+    const va = existing.loadVA && existing.devices.length ? existing.loadVA / existing.devices.length : loadDefaults.vaPerDevice;
+    existing.devices.push(...taggedCircuit.devices);
+    if (existing.loadAmps != null) {
+      existing.loadAmps += n * va / (existing.voltage * (existing.phase === 3 ? Math.sqrt(3) : 1));
+    } else existing.loadVA = (existing.loadVA || (existing.devices.length - n) * va) + n * va;
   }
+  const proposed = autoCircuit(recovered.untagged.map(d => d.point), page, {
+    ...loadDefaults, breakerAmps: input.autoCircuits?.breakerAmps ?? 20, useCircuitTags: false,
+  });
+  const confirmedUnassigned = !opts.strict || card.has('unassignedAction');
+  proposed.forEach((c, i) => {
+    if (confirmedUnassigned && input.unassignedAction === 'review') return;
+    let id = `PROPOSED-${i + 1}`;
+    while (circuits.some(other => other.id === id)) id += '-new';
+    circuits.push({ ...c, id, label: id });
+  });
   if (!circuits.length) {
     return {
       needs: 'devices',
@@ -1177,6 +1222,7 @@ export async function prepareRunPlan(
   const hasLoad = input.autoCircuits?.vaPerDevice != null
     || (input.circuits?.length && input.circuits.every(c => c.loadVA != null || c.vaPerDevice != null || c.loadAmps != null));
   if (!hasLoad) missing.push('fixture_load');
+  if (proposed.length && !confirmedUnassigned) missing.push('circuit_assignment');
   // Footage must not depend on which scale happened to win: when the page calibration and the
   // plan's printed scale disagree by more than 5%, the estimator picks.
   const scales = runScales(docId, input.page, page, zones, circuits.flatMap(c => c.devices));
@@ -1193,6 +1239,7 @@ export async function prepareRunPlan(
       documentId: docId,
       page: input.page,
       missing,
+      unassignedCount: recovered.untagged.length,
       panelLabel: panelPlans[0].label || undefined,
       panelOffSheet: panelPlans[0].offSheet,
       panels: perPanel
@@ -1325,6 +1372,27 @@ export async function prepareRunPlan(
     floorViews: viewBoxes.length > 1 ? viewBoxes : undefined,
     footprint,
   });
+  // Geometry is a hard gate: a line across white space or a keep-clear zone is not a connection.
+  const audit = auditRuns(plan.runs, {
+    ftPerPt,
+    floorViews: viewBoxes.length > 1 ? viewBoxes : undefined,
+    keepClear: userKeepClear.map(z => ({ label: z.label, box: z.box })),
+    pageMax: Math.max(W, H),
+    footprint,
+  });
+  const unsafeIds = new Set(audit.unsafeRunIds);
+  // If any piece of a shared circuit is unsafe, suppress that circuit's whole connected group.
+  // Repeat to include circuits sharing a home run with one already rejected.
+  const rejectedCircuits = new Set(plan.runs.filter(r => unsafeIds.has(r.id)).flatMap(r => r.circuitIds));
+  for (let size = -1; size !== rejectedCircuits.size;) {
+    size = rejectedCircuits.size;
+    for (const run of plan.runs) {
+      if (run.circuitIds.some(id => rejectedCircuits.has(id))) run.circuitIds.forEach(id => rejectedCircuits.add(id));
+    }
+  }
+  plan.runs = plan.runs.filter(r => !r.circuitIds.some(id => rejectedCircuits.has(id)));
+  plan.blockedCircuits = [...new Set([...(plan.blockedCircuits || []), ...rejectedCircuits])];
+  const coverage = auditRunCoverage(targets, circuits, plan.runs, plan.panels, plan.blockedCircuits);
   const markups = buildRunMarkups(plan, circuits, settings, geometry, input.page, anchorByPoint, new Set(userPanels.keys()));
   // Keep-clear zones / panels saved by an older version sit in the old frame (drawn off from
   // where the user put them). Placing this layout re-saves them where they belong.
@@ -1336,15 +1404,12 @@ export async function prepareRunPlan(
   }
   const materials = materialTotals(plan.runs.map(run => ({ assembly: run.assembly, lengthFt: run.lengthFt })));
   const homeRuns = plan.runs.filter(r => r.kind === 'homerun');
-  const audit = auditRuns(plan.runs, {
-    ftPerPt,
-    floorViews: viewBoxes.length > 1 ? viewBoxes : undefined,
-    keepClear: userKeepClear.map(z => ({ label: z.label, box: z.box })),
-    pageMax: Math.max(W, H),
-    footprint,
-  });
   const codeLine = `${code.summary}${location ? ` Project: ${location.text}.` : ''}`;
   const summaryLines = [
+    `${coverage.complete ? 'Coverage complete' : 'INCOMPLETE layout'}: ${coverage.connected}/${coverage.total} counts connected; ${coverage.unresolved} unresolved.`,
+    ...(proposed.length ? [input.unassignedAction === 'review'
+      ? `${recovered.untagged.length} count(s) left unresolved at your request; no circuit assignment was guessed.`
+      : `${recovered.untagged.length} omitted count(s) have no printed circuit assignment. ${proposed.length} separate proposed circuit(s) were created for review, not attached to a neighbouring circuit.`] : []),
     codeLine,
     ...homeRuns.map(r => `${r.label} · ≈${Math.round(r.lengthFt)} ft · VD ${Math.max(...r.sizing.map(s => s.vdPct)).toFixed(1)}%`),
     ...(plan.obstacles.length ? [`Routed around: ${[...new Set(plan.obstacles.map(o => o.label))].join(', ')}`] : []),
@@ -1360,8 +1425,13 @@ export async function prepareRunPlan(
     markups,
     ...(legacyUpgradeIds.length ? { legacyUpgradeIds } : {}),
     homeRuns: homeRuns.length,
+    coverage,
     summaryLines,
     modelSummary: {
+      coverage,
+      coverageInstruction: coverage.complete
+        ? 'Every counted fixture has a verified drawn connection to its panel or continuation.'
+        : 'This layout is INCOMPLETE. State the connected/total counts and the unresolved fixture reasons. Use ask_user for clarification; never call this a complete layout or move existing panels/keep-clear zones without permission.',
       ...(plan.blockedCircuits?.length ? { notRouted: plan.blockedCircuits, notRoutedNote: 'These circuits had no clear path and were not drawn. Tell the user which ones and offer to adjust their keep-clear zones or panel location; never invent a route.' } : {}),
       code: { ...code, location, adoptionDataChecked: NEC_ADOPTION_CHECKED },
       scale: scaleSource,
