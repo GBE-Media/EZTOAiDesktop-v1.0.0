@@ -40,9 +40,21 @@ describe('drawing-card pick lifecycle', () => {
     const store = useDrawingPickStore.getState();
     store.start({ ...request, key: 'card:zones', mode: 'area' });
     store.addArea({ ...point, wPct: 4, hPct: 3 });
-    store.seedAreas('other:zones', [{ ...point, wPct: 1, hPct: 1 }]);
+    store.acceptSuggestions('other:zones', [{ ...point, wPct: 1, hPct: 1 }]);
     store.clearPins('card:');
     expect(useDrawingPickStore.getState().request).toBeNull();
     expect(Object.keys(useDrawingPickStore.getState().areas)).toEqual(['other:zones']);
+  });
+
+  it('AI-suggested boxes are only an answer once the user adds them', () => {
+    const store = useDrawingPickStore.getState();
+    const sug = [{ ...point, wPct: 2, hPct: 2, label: 'STAIR 1' }, { ...point, xPct: point.xPct + 10, wPct: 2, hPct: 2, label: 'ELEV' }];
+    store.setSuggestions('card2:zones', sug);
+    expect(useDrawingPickStore.getState().areas['card2:zones']).toBeUndefined();
+    store.acceptSuggestions('card2:zones', [sug[0]]);
+    store.acceptSuggestions('card2:zones', [sug[0]]);
+    expect(useDrawingPickStore.getState().areas['card2:zones']).toHaveLength(1);
+    store.clearPins('card2:');
+    expect(useDrawingPickStore.getState().suggestions['card2:zones']).toBeUndefined();
   });
 });

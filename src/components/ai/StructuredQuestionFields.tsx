@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, LocateFixed, MousePointerClick, RotateCcw, SquareDashed, X } from 'lucide-react';
+import { Check, LocateFixed, MousePointerClick, Plus, RotateCcw, SquareDashed, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { openAssistantFocus } from '@/lib/openCitation';
 import { useCanvasStore } from '@/store/canvasStore';
-import { useDrawingPickStore } from '@/store/drawingPickStore';
+import { sameArea, useDrawingPickStore } from '@/store/drawingPickStore';
 import { ensureCachedPageGeometry } from '@/services/ai/placement/cachedCountMarkers';
 import { describeFieldAnswer, fieldAnswersDisplayText, fieldsComplete } from '@/services/ai/agent/askUser';
 import type { ClarificationField, ClarificationFieldAnswer, ClarificationRequest } from '@/types/assistant';
@@ -14,12 +14,12 @@ import type { ClarificationAnswerDetail } from './QuestionCard';
 function initialAnswers(fields: ClarificationField[]): Record<string, ClarificationFieldAnswer> {
   const out: Record<string, ClarificationFieldAnswer> = {};
   for (const field of fields) {
+    // Multi-selects start with the recommended set checked (the user confirms or edits it).
+    // Single choices (e.g. the run material) are never pre-picked: the user always chooses;
+    // the recommendation is only marked on its option.
     if (field.kind === 'choice' && field.multi && field.recommended) {
       const picked = (field.options || []).filter(o => multiValues(field.recommended).includes(o.value));
       if (picked.length) out[field.id] = multiAnswer(picked);
-    } else if (field.kind === 'choice' && field.recommended) {
-      const option = field.options?.find(o => o.value === field.recommended);
-      if (option) out[field.id] = { value: option.value, label: option.label };
     }
   }
   return out;
@@ -48,6 +48,21 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
   const pickedAreas = useDrawingPickStore(state => state.areas);
   const isPending = clarification.status === 'pending';
   const keyPrefix = `${clarification.id}:`;
+
+  // The card was reopened after a failed step: bring back what the user answered so one click
+  // retries it (the boxes go back on the drawing too).
+  useEffect(() => {
+    if (!isPending || !submitting) return;
+    setSubmitting(false);
+    const prev = clarification.answer?.fields;
+    if (!prev) return;
+    setAnswers(prev);
+    for (const field of fields) {
+      const areas = field.kind === 'area' ? prev[field.id]?.areas : undefined;
+      if (areas?.length) useDrawingPickStore.getState().acceptSuggestions(`${keyPrefix}${field.id}`, areas);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPending]);
 
   // A point picked on the drawing lands in the pick store; copy it into this card's answers.
   useEffect(() => {
@@ -79,12 +94,13 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
     }
   }, [fields, keyPrefix, pickedAreas]);
 
-  // AI-drafted keep-clear boxes: pre-marked on the drawing; the user keeps, removes or adds.
+  // AI-drafted keep-clear boxes: shown faintly on the drawing as suggestions. Only the ones the
+  // user adds count; an untouched suggestion is never sent as the user's keep-clear area.
   useEffect(() => {
     if (!isPending) return;
     for (const field of fields) {
       if (field.kind === 'area' && field.suggestedAreas?.length) {
-        useDrawingPickStore.getState().seedAreas(`${keyPrefix}${field.id}`, field.suggestedAreas);
+        useDrawingPickStore.getState().setSuggestions(`${keyPrefix}${field.id}`, field.suggestedAreas);
       }
     }
   }, [fields, keyPrefix, isPending]);
@@ -272,6 +288,33 @@ export function StructuredQuestionFields({ clarification }: { clarification: Cla
                     ))}
                   </div>
                 )}
+                {(() => {
+                  const open = (field.suggestedAreas || []).filter(sug => !(answer?.areas || []).some(a => sameArea(a, sug)));
+                  if (!open.length) return null;
+                  return (
+                    <div className="space-y-1">
+                      <div className="text-[11px] text-muted-foreground">Suggested from the room labels — add the ones that apply:</div>
+                      <div className="flex flex-wrap gap-1">
+                        {open.map((sug, i) => (
+                          <button
+                            key={`sug-${i}-${sug.xPct}-${sug.yPct}`}
+                            type="button"
+                            disabled={submitting}
+                            className="inline-flex items-center gap-1 rounded-md border border-dashed border-amber-500/50 px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-amber-500/10 hover:text-foreground"
+                            onClick={() => useDrawingPickStore.getState().acceptSuggestions(pickKey, [sug])}
+                          >
+                            <Plus className="h-3 w-3" />{sug.label || 'Keep clear'}
+                          </button>
+                        ))}
+                        {open.length > 1 && (
+                          <button type="button" className={chip(false)} disabled={submitting} onClick={() => useDrawingPickStore.getState().acceptSuggestions(pickKey, open)}>
+                            <Plus className="mr-1 inline h-3 w-3 align-[-2px]" />Add all
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {picking ? (
                     <>

@@ -75,7 +75,7 @@ export const suggestRunsSchema = z.object({
     exit: pointSchema.optional(),
   })).optional().describe('Several panels (circuit tags like "B-4" → panel B). Omit — the tool reads the tags and asks for locations.'),
   scaleChoice: z.enum(['printed', 'calibration']).optional().describe('Set by the card when the page calibration and the printed plan scale disagree.'),
-  wiringMethodConfirmed: z.boolean().optional().describe('Set by the card answer only. The material counts as decided only after the user picked it on the card (remembered per document); a spec/drawing method is just the pre-selected recommendation in settings.wiringMethod.'),
+  wiringMethodConfirmed: z.boolean().optional().describe('Set by the card answer only. The material counts as decided only after the user picked it on the card (asked for every layout); a spec/drawing method is just the recommendation in settings.wiringMethod.'),
   panelLabels: z.array(z.string()).optional().describe('Panels the user picked on the card for these home runs (several allowed). Circuits are split between them by the circuit tags / nearest tagged fixtures.'),
   keepClear: z.array(z.object({
     x: z.number().min(0).max(100),
@@ -155,7 +155,9 @@ export function createSuggestRunsTool(): AssistantToolDefinition<typeof suggestR
         };
       }
       if ('needs' in prepared) {
-        const askUser = prepared.needs === 'input' ? buildRunInputQuestion(prepared as RunInputNeeded, rawInput as Record<string, unknown>) : undefined;
+        const askUser = prepared.needs === 'input'
+          ? buildRunInputQuestion(prepared as RunInputNeeded, rawInput as Record<string, unknown>, fromCard ? cardKeys : [])
+          : undefined;
         return { status: 'completed', summary: prepared.message, output: prepared, ...(askUser ? { askUser } : {}) };
       }
       const approval = createApproval(definition, context, {
@@ -239,7 +241,12 @@ function circuitPreview(ids: string[]): string {
 }
 
 /** Build the structured card for missing run inputs (resumes suggest_runs with the answers). */
-export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<string, unknown>): AskUserRequest {
+/**
+ * `confirmed`: card keys the user already answered earlier in this layout (e.g. the material on the
+ * first card). They ride along in the next card's resume args, so a follow-up card (a panel spot)
+ * never re-asks them, and nothing outside the card chain can mark them answered.
+ */
+export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<string, unknown>, confirmed: readonly string[] = []): AskUserRequest {
   const fields: ClarificationField[] = [];
   const apply: Record<string, string> = { wiring_method: 'settings.wiringMethod', keep_clear: 'keepClear' };
   const label = needed.panelLabel;
@@ -276,7 +283,8 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
     apply.panel_label = 'panel.label';
   }
   const offSheetOption = { id: 'off_sheet', label: 'On another sheet', value: 'flag:offSheet' };
-  if (needed.panels.length) {
+  // The panel set is being confirmed on this card: each chosen panel's spot is asked next.
+  if (needed.panels.length && !multiPanel) {
     for (const panel of needed.panels) {
       const id = `panel_loc_${panel.index}`;
       apply[id] = `panels.${panel.index}${panel.offSheet ? '.exit' : ''}`;
@@ -322,7 +330,7 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
     fields.push({
       id: 'wiring_method',
       kind: 'choice',
-      prompt: 'What should the runs be installed in? (I pre-selected what the prints / specs point to)',
+      prompt: 'What should the runs be installed in? (I marked what the prints / specs point to)',
       options: (Object.keys(WIRING_LABELS) as WiringMethodValue[]).map(value => ({
         id: `wm_${value}`,
         label: WIRING_LABELS[value],
@@ -353,7 +361,7 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
       id: 'keep_clear',
       kind: 'area',
       prompt: suggested.length
-        ? `I drafted ${suggested.length} keep-clear area${suggested.length === 1 ? '' : 's'} from the room labels (${[...new Set(suggested.map(a => a.label))].slice(0, 4).join(', ')}). Remove any that are wrong and drag boxes for any I missed`
+        ? `I drafted ${suggested.length} keep-clear area${suggested.length === 1 ? '' : 's'} from the room labels (${[...new Set(suggested.map(a => a.label))].slice(0, 4).join(', ')}). Add the ones that apply and drag boxes for any I missed — only the areas you add are kept clear`
         : 'Mark areas to keep runs out of — elevators, stairs, shafts',
       documentId: needed.documentId,
       page: needed.page,
@@ -395,6 +403,7 @@ export function buildRunInputQuestion(needed: RunInputNeeded, rawArgs: Record<st
       toolId: 'suggest_runs',
       args: {
         ...rawArgs,
+        cardConfirmed: [...new Set(confirmed)],
         reviewPanelLocations: false,
         documentId: needed.documentId,
         page,
@@ -420,9 +429,10 @@ export function pinnedAnswers(modelInput: Record<string, unknown>, runId?: strin
   if (!pinned) return none;
   // Carry the entire original request, including fixture VA and circuit selections.
   // Only paths actually answered on this card confer user-confirmed provenance.
-  const { answeredPaths: rawPaths, ...out } = pinned;
+  const { answeredPaths: rawPaths, cardConfirmed: rawConfirmed, ...out } = pinned;
   const paths = Array.isArray(rawPaths) ? rawPaths.map(String) : [];
-  const keys = paths.map(p => p.split(/[.#]/)[0]);
+  // Keys answered on this card plus the ones carried from earlier cards of the same layout.
+  const keys = [...paths.map(p => p.split(/[.#]/)[0]), ...(Array.isArray(rawConfirmed) ? rawConfirmed.map(String) : [])];
   if (paths.includes('settings.wiringMethod')) keys.push('wiringMethodConfirmed');
   const askedPanels = paths.flatMap(path => {
     if (path === 'panel' || path === 'panel.exit') return [(out.panel as { label?: string } | undefined)?.label || '*'];
@@ -440,9 +450,9 @@ export function pinnedAnswers(modelInput: Record<string, unknown>, runId?: strin
 }
 
 /**
- * What the user already decided, per document: the wiring method they picked on a card and the
- * pages where they confirmed the keep-clear zones (none needed). Later runs reuse these instead
- * of the model's guess; a different method from the model re-asks with it pre-selected.
+ * What the user last decided, per document: the wiring method they picked (only ever the
+ * recommendation on the next layout's card, which always asks) and the pages where they
+ * confirmed the keep-clear zones (none needed).
  */
 const userDecisions = new Map<string, { wiringMethod?: WiringMethodValue; keepClearPages: Set<number> }>();
 function decisionsFor(docId: string) {
@@ -706,11 +716,12 @@ export async function prepareRunPlan(
     const picked = input.settings?.wiringMethod as WiringMethodValue | undefined;
     const materialAnswered = card.has('wiringMethodConfirmed') && input.wiringMethodConfirmed && picked;
     // Persist the answer only after any drawing-input commit below succeeds.
+    // The material is always asked on a card for each layout; the last pick is only the default.
     if (!materialAnswered) {
-      if (decided.wiringMethod && (!picked || picked === decided.wiringMethod)) {
-        input.wiringMethodConfirmed = true;
+      input.wiringMethodConfirmed = false;
+      if (decided.wiringMethod && !picked) {
         input.settings = { ...(input.settings || {}), wiringMethod: decided.wiringMethod } as SuggestRunsInput['settings'];
-      } else input.wiringMethodConfirmed = false;
+      }
     }
     if (!card.has('keepClear')) {
       modelKeepClear = input.keepClear?.length ? input.keepClear : undefined;
@@ -1136,13 +1147,18 @@ export async function prepareRunPlan(
   const missing: RunInputNeeded['missing'] = [];
   const needLocation = panelPlans.filter(p => !p.point);
   if (needLocation.length) missing.push('panel_location');
-  if (!perPanel && needLocation.length && !panelPlans[0].label) missing.push('panel_label');
   // Which panel: the circuit tags printed on this sheet first, then the panel schedules.
   const sheetTagPanels = panelsTaggedOnSheet(page.textItems, scheduleNames);
   const panelSuggestions = suggestPanels(
     [...new Set([...panelsFromCircuits(circuits).map(r => r.panel), ...sheetTagPanels.map(r => r.panel)])],
     scheduleNames,
   );
+  if (!perPanel && needLocation.length && !panelPlans[0].label) missing.push('panel_label');
+  // Tagged circuits name some panels, but the sheet / schedules list more (e.g. Panel C has no
+  // counted fixture yet): confirm the set on a card before asking where each one is.
+  const panelSetOpen = perPanel && needLocation.length > 0 && !chosenPanels.length && !card.has('panelLabels')
+    && panelSuggestions.some(r => !tagPanels.some(t => normPanel(t.panel) === normPanel(r.name)));
+  if (panelSetOpen) missing.push('panel_label');
   const panelHint = [
     sheetTagPanels.length
       ? `Circuit tags on this sheet: ${sheetTagPanels.slice(0, 3).map(r => `${r.examples.join(', ')}${r.tags > r.examples.length ? '…' : ''} (panel ${r.panel})`).join('; ')}.`
@@ -1190,8 +1206,8 @@ export async function prepareRunPlan(
       candidates: perPanel ? [] : panelPlans[0].candidates.slice(0, 6).map(c => ({ text: c.text, ...toPct(c.point) })),
       panelNames: missing.includes('panel_label') ? panelSuggestions.map(r => r.name) : [],
       // More than one panel is tagged on the sheet or listed in the schedules: multi-select.
-      panelMulti: missing.includes('panel_label') && panelSuggestions.length > 1
-        && (sheetTagPanels.length > 1 || panelsFromCircuits(circuits).length > 1),
+      panelMulti: panelSetOpen || (missing.includes('panel_label') && panelSuggestions.length > 1
+        && (sheetTagPanels.length > 1 || panelsFromCircuits(circuits).length > 1)),
       panelRecommended: [...new Set([...panelsFromCircuits(circuits).map(r => r.panel), ...sheetTagPanels.map(r => r.panel)])],
       panelHint: missing.includes('panel_label') ? panelHint : undefined,
       recommendedWiring: input.settings?.wiringMethod || specMethod,

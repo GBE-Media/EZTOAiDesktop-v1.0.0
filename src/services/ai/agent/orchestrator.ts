@@ -198,15 +198,29 @@ export async function resumeTaskAfterClarification(
     // user's answer — appending to the earlier message hid new cards above the answer.
     store.updateMessage(options.clarification.messageId, { isLoading: false });
     const followUpMessageId = store.addMessage({ role: 'assistant', content: '', isLoading: true });
-    const result = await resumeAgentAfterClarification({
-      messageId: followUpMessageId,
-      runId: options.clarification.runId,
-      clarification: options.clarification,
-      answer: options.answer,
-      toolContext: options.toolContext,
-      onStatus: options.onStatus,
-      model: options.model,
-    });
+    // The saved session is kept until the resumed run finishes: if it fails, reopen the card
+    // so one click retries it from the same state.
+    const reopen = () => {
+      if (!options.toolContext?.signal?.aborted) {
+        useAIChatStore.getState().resolveClarification(options.clarification.id, 'pending', options.answer);
+      }
+    };
+    let result: Awaited<ReturnType<typeof resumeAgentAfterClarification>>;
+    try {
+      result = await resumeAgentAfterClarification({
+        messageId: followUpMessageId,
+        runId: options.clarification.runId,
+        clarification: options.clarification,
+        answer: options.answer,
+        toolContext: options.toolContext,
+        onStatus: options.onStatus,
+        model: options.model,
+      });
+    } catch (error) {
+      reopen();
+      throw error;
+    }
+    if (result.status === 'failed' && result.errorCode !== 'SESSION_EXPIRED') reopen();
     return {
       runId: result.runId,
       messageId: result.messageId,

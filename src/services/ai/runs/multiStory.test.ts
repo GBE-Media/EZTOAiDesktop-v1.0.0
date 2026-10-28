@@ -84,6 +84,18 @@ describe('panel from circuit tags and schedules', async () => {
     expect(readCircuitTags(items).map(t => t.id).sort()).toEqual(['B-4', 'B-6', 'B-8']);
     expect(panelsTaggedOnSheet(items)[0]).toMatchObject({ panel: 'B', tags: 3 });
   });
+  it('keeps a scheduled panel with a single tag on the sheet (Panel C), drops a stray unscheduled one', () => {
+    const items = [
+      { str: 'A-1', x: 100, y: 50, width: 14, height: 8 },
+      { str: 'A-3', x: 200, y: 50, width: 14, height: 8 },
+      { str: 'C-2', x: 300, y: 50, width: 14, height: 8 },
+      { str: 'Q-7', x: 400, y: 50, width: 14, height: 8 },
+    ];
+    const panels = panelsTaggedOnSheet(items, ['A', 'B', 'C']).map(r => r.panel);
+    expect(panels).toContain('A');
+    expect(panels).toContain('C');
+    expect(panelsTaggedOnSheet(items).map(r => r.panel)).not.toContain('Q');
+  });
   it('does not read spec words as panel names', () => {
     expect(panelNamesFromSchedules(['PANEL LABEL SHALL BE ENGRAVED', 'PANEL DOOR IN DOOR', 'PANEL: B', 'PANELBOARD H1', 'PNL LP-1'])).toEqual(['B', 'H1', 'LP-1']);
   });
