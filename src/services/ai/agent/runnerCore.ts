@@ -435,10 +435,7 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
     const status = useAIChatStore.getState().runs[options.runId]?.status;
     if (status !== 'waiting-approval' && status !== 'waiting-clarification' && status !== 'running') {
       releaseAssistantRunController(options.runId);
-      if (status === 'failed') {
-        // Drop the half-run copy; the saved (parked) one is what a retry resumes.
-        sessions.delete(options.runId);
-      } else clearAgentSession(options.runId);
+      if (status === 'completed') clearAgentSession(options.runId);
     }
   }
 }
@@ -546,7 +543,7 @@ export async function resumeAgentAfterClarification(
     const status = useAIChatStore.getState().runs[options.runId]?.status;
     if (status !== 'waiting-approval' && status !== 'waiting-clarification' && status !== 'running') {
       releaseAssistantRunController(options.runId);
-      if (status === 'failed') {
+      if (status === 'error') {
         // Drop the half-run copy; the saved (parked) one is what a retry resumes.
         sessions.delete(options.runId);
       } else clearAgentSession(options.runId);
