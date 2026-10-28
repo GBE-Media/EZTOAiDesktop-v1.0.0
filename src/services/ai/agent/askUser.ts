@@ -94,12 +94,17 @@ export function sanitizeClarificationFields(raw: unknown): ClarificationField[] 
 /** Is every required field answered? */
 export function fieldsComplete(fields: ClarificationField[], answers: Record<string, ClarificationFieldAnswer>): boolean {
   return fields.every(field => {
-    if (field.optional) return true;
     const answer = answers[field.id];
-    if (!answer) return false;
-    if (field.kind === 'point') return !!answer.point || !!str(answer.value);
-    if (field.kind === 'area') return !!answer.areas?.length || !!str(answer.value);
-    return !!str(answer.value);
+    if (!answer) return !!field.optional;
+    const matches = (point: PickedPoint) => Number.isFinite(point.xPct) && Number.isFinite(point.yPct)
+      && point.xPct >= 0 && point.xPct <= 100 && point.yPct >= 0 && point.yPct <= 100
+      && point.page > 0 && (!field.page || point.page === field.page)
+      && (!field.documentId || point.documentId === field.documentId);
+    if (field.kind === 'point') return answer.point ? matches(answer.point) : !!field.optional || !!str(answer.value);
+    if (field.kind === 'area') return answer.areas
+      ? (field.optional || answer.areas.length > 0) && answer.areas.every(a => matches(a) && a.wPct > 0 && a.hPct > 0 && a.xPct + a.wPct <= 100.001 && a.yPct + a.hPct <= 100.001)
+      : !!str(answer.value);
+    return !!field.optional || !!str(answer.value);
   });
 }
 
@@ -135,6 +140,16 @@ function setPath(target: Record<string, unknown>, path: string, value: unknown):
     cursor = cursor[part] as Record<string, unknown>;
   }
   cursor[parts[parts.length - 1]] = value;
+}
+
+function unsetPath(target: Record<string, unknown>, path: string): void {
+  const parts = path.split('.');
+  let cursor = target;
+  for (const part of parts.slice(0, -1)) {
+    if (!cursor[part] || typeof cursor[part] !== 'object') return;
+    cursor = cursor[part] as Record<string, unknown>;
+  }
+  delete cursor[parts[parts.length - 1]];
 }
 
 /**
@@ -175,12 +190,18 @@ export function applyFieldAnswers(
       continue;
     }
     if (answer.point) {
+      // A re-pick must undo the mutually exclusive "on another sheet" choice.
+      unsetPath(merged, `${path}.offSheet`);
       setPath(merged, `${path}.x`, round3(answer.point.xPct));
       setPath(merged, `${path}.y`, round3(answer.point.yPct));
       continue;
     }
     const value = str(answer.value);
     if (value.startsWith('flag:')) {
+      if (value === 'flag:offSheet') {
+        unsetPath(merged, `${path}.x`);
+        unsetPath(merged, `${path}.y`);
+      }
       setPath(merged, `${path}.${value.slice(5)}`, true);
       continue;
     }
@@ -204,17 +225,28 @@ function round1(value: number): number {
  * / picked (keep-clear boxes, panel spots) is used to the decimal, never a re-typed copy.
  */
 const pinnedResumes = new Map<string, Record<string, unknown>>();
+const resumeKey = (toolId: string, runId?: string) => JSON.stringify([runId || '', toolId]);
 
-export function takePinnedResume(toolId: string): Record<string, unknown> | undefined {
-  const pinned = pinnedResumes.get(toolId);
-  pinnedResumes.delete(toolId);
+export function takePinnedResume(
+  toolId: string,
+  runId?: string,
+  matches: (args: Record<string, unknown>) => boolean = () => true,
+): Record<string, unknown> | undefined {
+  const key = resumeKey(toolId, runId);
+  const pinned = pinnedResumes.get(key);
+  // A call for a different page must not consume the pending answer.
+  if (!pinned || !matches(pinned)) return undefined;
+  pinnedResumes.delete(key);
   return pinned;
 }
+
+export function clearPinnedResumes(): void { pinnedResumes.clear(); }
 
 /** Lines appended to the conversation when the user answers a structured card. */
 export function formatFieldAnswersForModel(
   clarification: Pick<ClarificationRequest, 'fields' | 'resume'>,
   answers: Record<string, ClarificationFieldAnswer>,
+  runId?: string,
 ): string[] {
   const fields = clarification.fields || [];
   const lines: string[] = [];
@@ -235,7 +267,12 @@ export function formatFieldAnswersForModel(
   }
   if (clarification.resume) {
     const merged = applyFieldAnswers(clarification.resume.args, clarification.resume.apply, answers);
-    pinnedResumes.set(clarification.resume.toolId, merged);
+    const answeredPaths = Object.entries(clarification.resume.apply)
+      .filter(([id]) => fields.some(f => f.id === id) && answers[id] !== undefined)
+      .map(([, path]) => path);
+    if (clarification.resume.toolId === 'suggest_runs') {
+      pinnedResumes.set(resumeKey(clarification.resume.toolId, runId), { ...merged, answeredPaths });
+    }
     lines.push(`Now call ${clarification.resume.toolId} with exactly these arguments: ${JSON.stringify(merged)}`);
   }
   return lines;

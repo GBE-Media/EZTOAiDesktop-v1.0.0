@@ -10,6 +10,7 @@ import { executePlaceMarkupsApproval } from './executePlaceMarkupsApproval';
 import { bindTakeoffProducts, describeBoundProducts, type BoundProduct } from '../catalog/bindTakeoffProducts';
 import { resumeTaskAfterApproval } from '../agent';
 import { resolveApprovalTarget, suggestedRunMarkups } from './approvalTarget';
+import { runInputSnapshot } from '../runs/runInputSnapshot';
 
 const inFlightApprovals = new Set<string>();
 
@@ -206,6 +207,12 @@ export async function handleApprovalDecision(
 export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarkups>[0]): { status: 'completed' | 'failed'; placed: number; error?: string; products?: BoundProduct[]; productsSummary?: string } {
   const rows = suggestedRunMarkups(approval);
   if ('error' in rows) return { status: 'failed', placed: 0, error: rows.error };
+  const payload = approval.payload as { inputSnapshot?: string; page?: number } | undefined;
+  const snapshot = payload?.inputSnapshot;
+  const inputPage = Number(payload?.page);
+  if (typeof snapshot === 'string' && snapshot !== runInputSnapshot(
+    useCanvasStore.getState().pdfDocuments[rows.docId]?.markupsByPage[inputPage] || [],
+  )) return { status: 'failed', placed: 0, error: 'The panel locations, keep-clear zones or count markers changed after this preview. Regenerate the suggested runs before placing them; the current layout was left unchanged.' };
   // Each run's footage goes to a product (conduit + wire / cable per foot as components).
   const markups = rows.markups.map(row => ({ page: row.page, markup: { ...row.markup } as CanvasMarkup }));
   const products = bindTakeoffProducts(markups);
@@ -217,15 +224,16 @@ export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarku
   // A new layout replaces the previous suggested runs on that page (no stacked duplicates).
   // Keep-clear zones and user-placed panels stay locked where the user put them.
   const pages = [...new Set(markups.map(m => m.page))];
+  const replaceIdsByPage: Record<number, string[]> = {};
   for (const page of pages) {
     const state = useCanvasStore.getState();
     const old = (state.getMarkupsByPage(rows.docId)[page] || [])
       // The user's keep-clear zones and the panels they clicked stay exactly where they are.
       .filter(m => m.aiRun && m.aiRun.kind !== 'keepout' && !m.aiRun.userPlaced)
       .map(m => m.id);
-    if (old.length) state.deleteMarkups(page, old);
+    replaceIdsByPage[page] = old;
   }
-  const result = useCanvasStore.getState().addAIMarkupBatch(markups, false);
+  const result = useCanvasStore.getState().addAIMarkupBatch(markups, false, { documentId: rows.docId, replaceIdsByPage });
   if (!result.ok) return { status: 'failed', placed: 0, error: result.reason || 'Could not place runs' };
   return {
     status: 'completed',

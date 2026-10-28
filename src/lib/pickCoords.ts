@@ -9,7 +9,7 @@
 export interface PagePct { xPct: number; yPct: number }
 
 const clampPct = (v: number) => (Number.isFinite(v) ? Math.max(0, Math.min(100, v)) : 0);
-const round1 = (v: number) => Math.round(v * 10) / 10;
+const round1 = (v: number) => Math.round(v * 1000) / 1000;
 
 export function canvasPointToPagePct(point: { x: number; y: number }, width: number, height: number): PagePct {
   if (!(width > 0) || !(height > 0)) return { xPct: 0, yPct: 0 };

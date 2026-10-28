@@ -257,6 +257,7 @@ interface CanvasActions {
   addAIMarkupBatch: (
     markups: Array<{ page: number; markup: CanvasMarkup }>,
     pending?: boolean,
+    options?: { documentId?: string; replaceIdsByPage?: Record<number, string[]> },
   ) => {
     ok: boolean;
     placed: number;
@@ -1508,13 +1509,17 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     get().addMarkup(page, aiMarkup);
   },
   
-  addAIMarkupBatch: (markups, pending = true) => {
+  addAIMarkupBatch: (markups, pending = true, options = {}) => {
     const state = get();
-    if (!state.activeDocId) {
+    const docId = options.documentId || state.activeDocId;
+    if (!docId) {
       return { ok: false, placed: 0, reason: 'No active document' };
     }
+    if (docId !== state.activeDocId) {
+      return { ok: false, placed: 0, reason: 'The source document is no longer active. Reopen it and retry.' };
+    }
     
-    const docData = state.pdfDocuments[state.activeDocId];
+    const docData = state.pdfDocuments[docId];
     if (!docData) {
       return { ok: false, placed: 0, reason: 'No active document' };
     }
@@ -1543,6 +1548,12 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
 
     // Group markups by page
     const markupsByPage = { ...docData.markupsByPage };
+    const replaced: CanvasMarkup[] = [];
+    for (const page of affectedPages) {
+      const ids = new Set(options.replaceIdsByPage?.[page] || []);
+      replaced.push(...(markupsByPage[page] || []).filter(m => ids.has(m.id)));
+      markupsByPage[page] = (markupsByPage[page] || []).filter(m => !ids.has(m.id));
+    }
     const placed: Array<{ page: number; markup: CanvasMarkup }> = [];
     
     for (const { page, markup } of markups) {
@@ -1576,19 +1587,23 @@ export const useCanvasStore = create<CanvasState & CanvasActions>((set, get) => 
     set({
       pdfDocuments: {
         ...state.pdfDocuments,
-        [state.activeDocId]: {
+        [docId]: {
           ...docData,
           markupsByPage,
         },
       },
+      selectedMarkupIds: docId === state.activeDocId
+        ? state.selectedMarkupIds.filter(id => !replaced.some(m => m.id === id))
+        : state.selectedMarkupIds,
     });
     
-    useEditorStore.getState().updateDocument(state.activeDocId, { modified: true });
+    useEditorStore.getState().updateDocument(docId, { modified: true });
+    replaced.forEach(m => useProductStore.getState().unlinkMeasurementByMarkupId(m.id));
 
     // Mirror manual count/measure: productId on markup → productStore measurement link.
     attachProductsForPlacedMarkups(
       placed.filter(({ markup }) => !markup.reviewMarker),
-      state.activeDocId,
+      docId,
     );
     return { ok: true, placed: placed.length, markups: placed };
   },

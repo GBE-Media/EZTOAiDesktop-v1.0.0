@@ -1,4 +1,5 @@
 import './testGlobals';
+vi.mock('./tools/registerAll', () => ({ registerAllAgentTools: vi.fn() }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { assistantDb } from '@/db/assistantDb';
@@ -15,9 +16,42 @@ import {
   fieldsComplete,
   formatFieldAnswersForModel,
   sanitizeClarificationFields,
+  takePinnedResume,
+  clearPinnedResumes,
 } from './askUser';
 
 describe('structured question fields', () => {
+  beforeEach(() => { clearPinnedResumes(); });
+  it('clears mutually exclusive off-sheet and in-plan coordinates when a choice changes', () => {
+    expect(applyFieldAnswers({ panel: { label: 'A', x: 10, y: 20 } }, { loc: 'panel' }, { loc: { value: 'flag:offSheet' } }))
+      .toEqual({ panel: { label: 'A', offSheet: true } });
+    expect(applyFieldAnswers({ panel: { label: 'A', offSheet: true } }, { loc: 'panel' }, { loc: { point: { page: 1, xPct: 12, yPct: 23 } } }))
+      .toEqual({ panel: { label: 'A', x: 12, y: 23 } });
+  });
+
+  it('isolates card answers by run and does not consume a mismatched page', () => {
+    const fields = sanitizeClarificationFields([{ id: 'load', kind: 'text', prompt: 'Fixture VA?' }]);
+    for (const [run, page, value] of [['a', 4, '42'], ['b', 5, '75']] as const) {
+      formatFieldAnswersForModel({
+        fields, resume: { toolId: 'suggest_runs', args: { page, keepClear: [{ x: 1, y: 1, w: 2, h: 2 }] }, apply: { load: 'autoCircuits.vaPerDevice#num' } },
+      }, { load: { value } }, run);
+    }
+    expect(takePinnedResume('suggest_runs', 'a', args => args.page === 5)).toBeUndefined();
+    const a = takePinnedResume('suggest_runs', 'a');
+    expect(a).toMatchObject({ page: 4, autoCircuits: { vaPerDevice: 42 }, answeredPaths: ['autoCircuits.vaPerDevice#num'] });
+    expect(a?.answeredPaths).not.toContain('keepClear');
+    expect(takePinnedResume('suggest_runs', 'b')).toMatchObject({ page: 5, autoCircuits: { vaPerDevice: 75 } });
+    expect(takePinnedResume('suggest_runs', 'a')).toBeUndefined();
+  });
+
+  it('rejects picks on the wrong document or page and invalid coordinates', () => {
+    const fields = sanitizeClarificationFields([{ id: 'loc', kind: 'point', prompt: 'Where?', page: 4, documentId: 'doc' }]);
+    for (const point of [
+      { page: 5, documentId: 'doc', xPct: 5, yPct: 5 },
+      { page: 4, documentId: 'other', xPct: 5, yPct: 5 },
+      { page: 4, documentId: 'doc', xPct: NaN, yPct: 5 },
+    ]) expect(fieldsComplete(fields, { loc: { point } })).toBe(false);
+  });
   it('keeps valid fields and drops malformed ones', () => {
     const fields = sanitizeClarificationFields([
       { id: 'panel', kind: 'point', prompt: 'Where is panel LP?', page: 93, pickLabel: 'Click panel LP' },
@@ -71,6 +105,46 @@ describe('tool-driven question cards pause and resume the run', () => {
     clearAgentSessionMemoryForTests();
     await assistantDb.agentSessions.clear();
     useAIChatStore.setState({ messages: [], runs: {}, approvals: {}, clarifications: {} } as never);
+  });
+
+  it('resumes suggest_runs before consulting the model, with every original argument intact', async () => {
+    const execute = vi.fn(async (_ctx: unknown, input: Record<string, unknown>) => input.autoCircuits
+      ? { status: 'completed' as const, summary: 'Ready', output: input }
+      : {
+        status: 'completed' as const, summary: 'Need load',
+        askUser: {
+          question: 'Fixture VA?',
+          fields: [{ id: 'load', kind: 'text' as const, prompt: 'VA per fixture?' }],
+          resume: { toolId: 'suggest_runs', args: { page: 4, documentId: 'doc', panel: { label: 'A', x: 10.123, y: 50.456 } }, apply: { load: 'autoCircuits.vaPerDevice#num' } },
+        },
+      });
+    registerAssistantTool({
+      id: 'suggest_runs', title: 'Test run planner', description: 'test', risk: 'read', requiresConfirmation: false,
+      undoable: false, schema: z.object({}).passthrough(), execute,
+    } as never);
+    const ctx = createAgentToolContext({ runId: 'direct-run', messageId: 'direct-msg', trade: 'electrical', placeMarkups: () => ({ placed: 0 }) });
+    useAIChatStore.setState({ runs: { 'direct-run': { id: 'direct-run', messageId: 'direct-msg', conversationId: 's', status: 'running', summary: 'runs', steps: [], startedAt: new Date().toISOString() } } } as never);
+    const first = await runPrimaryAgentLoop({
+      session: { runId: 'direct-run', messageId: 'direct-msg', messages: [{ role: 'user', content: 'Suggest runs' }], toolHistory: [], actionsTaken: [], contextText: '' } as never,
+      toolContext: ctx,
+      model: { complete: async () => ({ type: 'tool_calls', toolCalls: [{ id: 'first', name: 'suggest_runs', arguments: { page: 4 } }] }) },
+    });
+    expect(first.status).toBe('needs_clarification');
+    const complete = vi.fn<ModelAdapter['complete']>(async () => {
+      expect(execute).toHaveBeenCalledTimes(2);
+      return { type: 'final', message: 'Ready' };
+    });
+    const resumed = await resumeTaskAfterClarification({
+      clarification: first.clarificationRequest!,
+      answer: { selectedValues: [], fields: { load: { value: '42' } }, displayText: '42 VA' },
+      toolContext: ctx, model: { complete },
+    });
+    expect(resumed.status).toBe('completed');
+    expect(execute.mock.calls[1][1]).toEqual({
+      page: 4, documentId: 'doc', panel: { label: 'A', x: 10.123, y: 50.456 }, autoCircuits: { vaPerDevice: 42 },
+    });
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(takePinnedResume('suggest_runs', 'direct-run')).toBeUndefined();
   });
 
   it('parks on askUser and resumes with the merged arguments', async () => {

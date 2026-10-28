@@ -22,7 +22,7 @@ import {
   emitClarificationQuestion,
   labelForAgentStatus,
 } from './clarification';
-import { formatFieldAnswersForModel, type AskUserRequest } from './askUser';
+import { applyFieldAnswers, formatFieldAnswersForModel, takePinnedResume, type AskUserRequest } from './askUser';
 import { proseQuestionToCard } from './proseQuestion';
 import {
   deleteExpiredAgentSessions,
@@ -487,7 +487,7 @@ export async function resumeAgentAfterClarification(
     answerLines.push(`Freeform: ${options.answer.freeform.trim()}`);
   }
   if (options.answer.fields && (options.clarification.fields?.length || options.clarification.resume)) {
-    answerLines.push(...formatFieldAnswersForModel(options.clarification, options.answer.fields));
+    answerLines.push(...formatFieldAnswersForModel(options.clarification, options.answer.fields, options.runId));
   }
 
   emitAgentTrace(options.runId, 'request', {
@@ -503,10 +503,30 @@ export async function resumeAgentAfterClarification(
   await deleteDurableAgentSession(options.runId);
 
   try {
+    // Run-input cards resume the original tool directly through the normal execution loop.
+    // The model must not retype coordinates, omit a load answer, or ask the same question again.
+    const resume = options.clarification.resume;
+    const model = options.model || createJsonToolModelAdapter();
+    let resumePending = resume?.toolId === 'suggest_runs' && !!options.answer.fields;
     const result = await runPrimaryAgentLoop({
       session,
       toolContext,
-      model: options.model || createJsonToolModelAdapter(),
+      model: {
+        complete: async args => {
+          if (resumePending && resume && options.answer.fields) {
+            resumePending = false;
+            return {
+              type: 'tool_calls',
+              toolCalls: [{
+                id: `resume_${options.clarification.id}_${crypto.randomUUID()}`,
+                name: resume.toolId,
+                arguments: applyFieldAnswers(resume.args, resume.apply, options.answer.fields),
+              }],
+            };
+          }
+          return model.complete(args);
+        },
+      },
       maxSteps: options.maxSteps ?? MAX_STEPS,
       onStatus: options.onStatus,
     });
@@ -515,6 +535,7 @@ export async function resumeAgentAfterClarification(
     }
     return result;
   } finally {
+    takePinnedResume('suggest_runs', options.runId);
     const status = useAIChatStore.getState().runs[options.runId]?.status;
     if (status !== 'waiting-approval' && status !== 'waiting-clarification' && status !== 'running') {
       releaseAssistantRunController(options.runId);

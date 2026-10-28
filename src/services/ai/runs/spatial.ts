@@ -324,12 +324,8 @@ export class OrthoRouter {
       }
     }
     if (found < 0) {
-      // No clear path: of the two L-shapes, take the one through the fewest blocked cells
-      // (keep-clear zones / off-plan white space), never a blind diagonal.
-      const a = [from, { x: to.x, y: from.y }, to];
-      const b = [from, { x: from.x, y: to.y }, to];
-      const path = this.blockedAlong(b) < this.blockedAlong(a) ? b : a;
-      return { path, bends: 1, wallCrossings: 0, ok: false };
+      // Never manufacture a drawable route through a keep-clear zone / off-plan white space.
+      return { path: [], bends: 0, wallCrossings: 0, ok: false };
     }
     const cells: number[] = [];
     for (let s = found; s >= 0; s = prev[s]) cells.push(s >> 2);
@@ -340,7 +336,11 @@ export class OrthoRouter {
       const x = c % this.gw; const y = (c - x) / this.gw;
       return { x: (x + 0.5) * this.cell, y: (y + 0.5) * this.cell };
     });
-    const path = simplifyOrthogonal([from, ...snapEnds(pts, from, to), to]);
+    let path = simplifyOrthogonal([from, ...snapEnds(pts, from, to), to]);
+    // Endpoint alignment can cut a corner that A* avoided. Fall back to the actual cell path,
+    // not to an unchecked L-shape. Keep the user's exact destination, or fail without moving it.
+    if (this.blockedAlong(path)) path = simplifyOrthogonal([from, ...pts, to]);
+    if (this.blockedAlong(path)) return { path: [], bends: 0, wallCrossings: 0, ok: false };
     return { path, bends: Math.max(0, path.length - 2), wallCrossings, ok: true };
   }
 

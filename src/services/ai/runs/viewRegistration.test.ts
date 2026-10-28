@@ -69,12 +69,12 @@ describe('layout self-check', () => {
   });
 });
 
-describe('router fallback', () => {
-  it('takes the L-shape that avoids a keep-clear box instead of cutting through it', () => {
+describe('blocked routing', () => {
+  it('returns no drawable fallback when a destination is walled in', () => {
     // Box sits on the "across then down" leg; target walled in so no clean route exists.
     const router = new OrthoRouter({ width: 400, height: 400, segments: [], obstacles: [{ x: 250, y: 30, width: 100, height: 60 }, { x: 330, y: 280, width: 70, height: 10 }, { x: 330, y: 280, width: 10, height: 120 }, { x: 330, y: 390, width: 70, height: 10 }] });
     const route = router.route({ x: 20, y: 60 }, { x: 370, y: 340 });
-    const viaCorner = route.path[1];
-    expect(viaCorner.y > 200 || route.ok).toBe(true);
+    expect(route.ok).toBe(false);
+    expect(route.path).toEqual([]);
   });
 });
