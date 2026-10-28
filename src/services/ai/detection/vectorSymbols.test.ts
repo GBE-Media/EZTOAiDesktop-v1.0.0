@@ -80,3 +80,23 @@ describe('drawn-symbol check for counts', () => {
     expect(refineDetectionsWithSymbols(items, [], W, H).items).toBe(items);
   });
 });
+
+describe('drawn-symbol additions stay stable', () => {
+  // 81 identical troffers in a grid; the vision pass confirmed only some of them.
+  const spots: Array<[number, number]> = [];
+  for (let r = 0; r < 9; r += 1) for (let c = 0; c < 9; c += 1) spots.push([100 + c * 120, 100 + r * 90]);
+  const comps = buildSymbolComponents(spots.flatMap(([x, y]) => troffer(x, y)));
+  const run = (seeds: number) => refineDetectionsWithSymbols(
+    spots.slice(0, seeds).map(([x, y], i) => item(`v${i}`, x, y)), comps, W, H,
+  ).items.length;
+
+  it('one more confirmed fixture never jumps the total', () => {
+    expect(run(47)).toBe(81);
+    expect(run(48)).toBe(81);
+    expect(run(30)).toBe(81);
+  });
+
+  it('adds nothing when look-alikes far outnumber confirmed fixtures', () => {
+    expect(run(5)).toBe(5);
+  });
+});

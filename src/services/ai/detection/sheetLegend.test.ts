@@ -35,6 +35,11 @@ const indexed = (p: number, extra: Partial<IndexedPageRecord>): IndexedPageRecor
   lines: [], kind: 'drawing', needsOcr: false, ...extra,
 } as IndexedPageRecord);
 
+rebindCachedPages('fp_msu', 'doc_msu', 'MSU.pdf', [
+  { ...indexed(2, { sheetNumber: 'E001', sheetTitle: 'ELECTRICAL COVER SHEET', text: 'ELECTRICAL SYMBOLS' }), docId: 'doc_msu', docFp: 'fp_msu' },
+  { ...indexed(9, { sheetNumber: 'E002', sheetTitle: 'ELECTRICAL LEGEND', text: 'ELECTRICAL LEGEND LIGHT FIXTURE SCHEDULE' }), docId: 'doc_msu', docFp: 'fp_msu' },
+  { ...indexed(10, { sheetNumber: 'E100', sheetTitle: 'LIGHTING PLAN', text: 'CONTROLS. SEE SHEET E001 FOR LUMINAIRE SCHEDULE AND LIGHTING' }), docId: 'doc_msu', docFp: 'fp_msu' },
+]);
 rebindCachedPages('fp_full', 'doc_full', 'FULL-PLANSET-REV1.pdf', [
   indexed(12, { sheetNumber: 'M-2.1', sheetTitle: 'MECHANICAL SCHEDULES', text: 'EQUIPMENT SCHEDULE' }),
   indexed(92, { sheetNumber: 'E-2.1', sheetTitle: 'ELECTRICAL LEGEND AND SCHEDULES', text: 'ELECTRICAL LEGEND LIGHT FIXTURE SCHEDULE' }),
@@ -57,14 +62,21 @@ describe('schedule table reader', () => {
     expect(codes).not.toContain('DMX');
   });
 
-  it('returns nothing (not manufacturer names) when the MARK column holds symbols', () => {
-    const codes = parseScheduleTables(fixture('library_EL201').textItems).map(e => e.typeCode);
+  it('reads the Library EL-201 schedule, whose marks are left-aligned under a centred MARK header', () => {
+    const entries = parseScheduleTables(fixture('library_EL201').textItems);
+    const codes = entries.map(e => e.typeCode);
+    expect(codes).toEqual(expect.arrayContaining(['A', 'B', 'B1', 'C', 'D', 'E2', 'H', 'J', 'JE', 'M', 'X2C']));
     expect(codes).not.toContain('OCL');
     expect(codes).not.toContain('HALO');
+    expect(entries.find(e => e.typeCode === 'E2')?.description).toContain('METALUX');
   });
 });
 
 describe('cross-sheet legend', () => {
+  it('follows "SEE SHEET E001 FOR LUMINAIRE SCHEDULE" to that sheet (MSU E100)', () => {
+    expect(findLegendPages('doc_msu', 10)[0]).toBe(2);
+  });
+
   it('finds the electrical legend/schedule sheet for a plan sheet', () => {
     expect(findLegendPages('doc_full', 93)[0]).toBe(92);
     expect(findLegendPages('doc_full', 94)[0]).toBe(92);

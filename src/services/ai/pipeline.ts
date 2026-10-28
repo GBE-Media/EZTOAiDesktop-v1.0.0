@@ -24,6 +24,7 @@ import {
 import { isScannedDocument, performOcr } from '@/lib/ocrEngine';
 import { z } from 'zod';
 import { anchorDetectionsToTextTags, findTypeTagAnchors } from './detection/textTagAnchors';
+import { getCachedVision, setCachedVision, visionCacheEnabled, visionCacheKey } from './visionResultCache';
 import type {
   TradeType,
   BlueprintAnalysisResult,
@@ -381,6 +382,15 @@ async function requestStructuredAnalysis(
   page: number
 ): Promise<BlueprintAnalysisResult> {
   const aiService = getAIService();
+  // Same image + prompt + model → same answer: reuse it, so re-counting a sheet never drifts.
+  const useCache = visionCacheEnabled()
+    && typeof aiService.getModelForStage === 'function'
+    && !(typeof aiService.isVisionTrialActive === 'function' && aiService.isVisionTrialActive());
+  const cacheKey = useCache
+    ? await visionCacheKey({ image: imageBase64, prompt, model: aiService.getModelForStage('vision'), trade, page }).catch(() => null)
+    : null;
+  const hit = cacheKey ? getCachedVision(cacheKey) : null;
+  if (hit) return hit;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const response = await aiService.analyzeBlueprint(
@@ -392,7 +402,10 @@ async function requestStructuredAnalysis(
     );
     const parsed = parseJsonResponse(response.content);
     const normalized = normalizeAnalysis(parsed, page, trade);
-    if (normalized) return normalized;
+    if (normalized) {
+      if (cacheKey) setCachedVision(cacheKey, normalized);
+      return normalized;
+    }
   }
 
   throw new Error(`Vision model returned invalid structured data for page ${page}`);
@@ -592,69 +605,53 @@ export function reconcileTileDetections(
     return a.id.localeCompare(b.id);
   });
 
-  const parent = located.map((_, index) => index);
-  const find = (index: number): number => {
-    if (parent[index] !== index) parent[index] = find(parent[index]);
-    return parent[index];
-  };
-  const union = (a: number, b: number) => {
-    const pa = find(a);
-    const pb = find(b);
-    if (pa !== pb) parent[pa] = pb;
-  };
-
-  for (let i = 0; i < located.length; i += 1) {
-    const left = located[i];
-    const leftPoint = pagePoint(left, pageWidth, pageHeight);
-    if (!leftPoint) continue;
-    let nearestIdx = -1;
-    let nearestDist = Infinity;
-    for (let j = 0; j < located.length; j += 1) {
-      if (i === j) continue;
-      const right = located[j];
-      if (left.sourceTileId && right.sourceTileId && left.sourceTileId === right.sourceTileId) continue;
-      const rightPoint = pagePoint(right, pageWidth, pageHeight);
-      if (!rightPoint) continue;
-      const dist = Math.hypot(leftPoint.x - rightPoint.x, leftPoint.y - rightPoint.y);
-      // Two tiles seeing the same symbol don't always agree on its type; when one of them couldn't
-      // classify it, it is still one fixture (not two).
-      const same = sameLegendIdentity(left, right)
-        || (dist < TILE_MERGE_RADIUS_PT && (isUnclassified(left) || isUnclassified(right)));
-      if (!same) continue;
-      if (dist < OWNER_LINK_RADIUS_PT && dist < nearestDist) {
-        nearestDist = dist;
-        nearestIdx = j;
-      }
-    }
-    if (nearestIdx >= 0) union(i, nearestIdx);
-  }
-
+  // One tile never reports the same fixture twice, so a merged group holds at most one detection
+  // per tile. Closest same-type pairs merge first; a same-spot pair that the tiles labelled
+  // differently (or one couldn't classify) is still one fixture. No chaining across neighbours.
+  const points = located.map(item => pagePoint(item, pageWidth, pageHeight));
   const regions = [...regionById.values()];
   const cellW = regions[0]?.ownership.width || pageWidth;
   const cellH = regions[0]?.ownership.height || pageHeight;
-  const cols = Math.max(1, Math.round(pageWidth / Math.max(1, cellW)));
-  const rows = Math.max(1, Math.round(pageHeight / Math.max(1, cellH)));
   const vertexRadius = 0.6 * 72;
-  for (let row = 0; row <= rows; row += 1) {
-    for (let col = 0; col <= cols; col += 1) {
-      const vx = col * cellW;
-      const vy = row * cellH;
-      const nearVertex: number[] = [];
-      located.forEach((item, index) => {
-        const point = pagePoint(item, pageWidth, pageHeight);
-        if (!point) return;
-        if (Math.hypot(point.x - vx, point.y - vy) <= vertexRadius) nearVertex.push(index);
-      });
-      for (let i = 0; i < nearVertex.length; i += 1) {
-        for (let j = i + 1; j < nearVertex.length; j += 1) {
-          const left = located[nearVertex[i]];
-          const right = located[nearVertex[j]];
-          if (left.sourceTileId && right.sourceTileId && left.sourceTileId === right.sourceTileId) continue;
-          if (!sameLegendIdentity(left, right)) continue;
-          union(nearVertex[i], nearVertex[j]);
-        }
+  const vertexOf = (pt: { x: number; y: number }) => {
+    const vx = Math.round(pt.x / Math.max(1, cellW)) * cellW;
+    const vy = Math.round(pt.y / Math.max(1, cellH)) * cellH;
+    return Math.hypot(pt.x - vx, pt.y - vy) <= vertexRadius ? `${vx}:${vy}` : null;
+  };
+  const vertices = points.map(pt => (pt ? vertexOf(pt) : null));
+  const pairs: Array<{ i: number; j: number; tier: number; d: number }> = [];
+  for (let i = 0; i < located.length; i += 1) {
+    const a = points[i];
+    if (!a) continue;
+    for (let j = i + 1; j < located.length; j += 1) {
+      const b = points[j];
+      if (!b) continue;
+      const left = located[i];
+      const right = located[j];
+      if (left.sourceTileId && right.sourceTileId && left.sourceTileId === right.sourceTileId) continue;
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (sameLegendIdentity(left, right)) {
+        // Corner fixtures are seen by up to four tiles, each with its own position error.
+        if (d < OWNER_LINK_RADIUS_PT || (vertices[i] && vertices[i] === vertices[j])) pairs.push({ i, j, tier: 0, d });
+      } else if (d < TILE_MERGE_RADIUS_PT) {
+        pairs.push({ i, j, tier: isUnclassified(left) || isUnclassified(right) ? 1 : 2, d });
       }
     }
+  }
+  pairs.sort((x, y) => x.tier - y.tier || x.d - y.d || x.i - y.i || x.j - y.j);
+  const parent = located.map((_, index) => index);
+  const find = (index: number): number => {
+    while (parent[index] !== index) { parent[index] = parent[parent[index]]; index = parent[index]; }
+    return index;
+  };
+  const tilesOf = located.map((item, index) => new Set([item.sourceTileId || `item:${index}`]));
+  for (const { i, j } of pairs) {
+    const ri = find(i);
+    const rj = find(j);
+    if (ri === rj) continue;
+    if ([...tilesOf[ri]].some(tile => tilesOf[rj].has(tile))) continue;
+    parent[ri] = rj;
+    for (const tile of tilesOf[ri]) tilesOf[rj].add(tile);
   }
 
   const groups = new Map<number, typeof located>();
@@ -933,10 +930,11 @@ export async function analyzePageMaximumAccuracy(options: {
         const tags = Object.entries(anchored.tagCounts).map(([code, n]) => `${code} ${n}`).join(', ');
         extraNotes.push(
           `Checked against ${anchored.anchors} type tag(s) printed on the plan (${tags}): `
-          + `${anchored.resolved} unclassified detection(s) typed from their tag, ${anchored.added} tagged fixture(s) the vision pass missed were added.`,
+          + `${anchored.resolved} unclassified detection(s) typed from their tag, ${anchored.added} tagged fixture(s) the vision pass missed were added`
+          + (anchored.demoted ? `, ${anchored.demoted} untagged detection(s) of fully-tagged types sent to review.` : '.'),
         );
       }
-      console.info('[analyzePage] type tags', { page, anchors: anchored.anchors, matched: anchored.matched, resolved: anchored.resolved, added: anchored.added });
+      console.info('[analyzePage] type tags', { page, anchors: anchored.anchors, matched: anchored.matched, resolved: anchored.resolved, added: anchored.added, demoted: anchored.demoted || 0 });
     }
   }
 
@@ -988,7 +986,7 @@ export async function analyzePageMaximumAccuracy(options: {
     extraNotes.push(`${missingLocationItems.length} detection(s) had no location and were counted as unresolved.`);
   }
   if (failedTiles.length > 0) {
-    extraNotes.push(`Tile(s) failed: ${failedTiles.join(', ')}. Counts may be incomplete.`);
+    extraNotes.unshift(`INCOMPLETE: ${failedTiles.length} detail tile(s) could not be read (${failedTiles.join(', ')}). This is not a final total — re-run the count; tiles already read are reused.`);
     countReliability = countReliability === 'high' ? 'partial' : 'low';
   }
   if (tileItems.length > 0 && overview.items.length > 0) {
@@ -1081,6 +1079,7 @@ ${JSON.stringify(items.map(item => ({
       legendTypeCodes: legendEntries.map((e) => e.typeCode),
       legendTypeCounts: legendAware.legendTypeCounts,
       countReliability,
+      ...(failedTiles.length ? { incompleteTiles: [...failedTiles].sort() } : {}),
       ...(symbolCheck ? { symbolCheck } : {}),
       countVerificationNotes: [
         ...(borrowedLegend && !borrowedLegend.ownPage ? [`Fixture types from the legend/schedule on ${borrowedLegend.sourceLabel}.`] : []),

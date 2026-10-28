@@ -488,7 +488,8 @@ async function defaultCountPageItems(
     })
     : await ensurePageGeometry(page);
   const zones = await ensurePageZones(docId, page);
-  if (cached?.analysis) {
+  // A count with unread tiles is re-read (only the failed tiles are asked again) before reuse.
+  if (cached?.analysis && !cached.analysis.incompleteTiles?.length) {
     return withResolvedAs(countItemsFromAnalysis(cached.analysis, query, {
       source: 'cache',
       pageGeometry,

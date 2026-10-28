@@ -332,7 +332,9 @@ describe('analyzePageMaximumAccuracy chain harness', () => {
     });
     const counted = await runChain({ pageWidth: 720, pageHeight: 720, regions });
     expect(counted.countReliability).toBe('partial');
-    expect(counted.verificationNotes?.some(note => /Tile\(s\) failed:.*r1c2/.test(note))).toBe(true);
+    expect(counted.verificationNotes?.some(note => /INCOMPLETE:.*r1c2/.test(note))).toBe(true);
+    expect(counted.incomplete?.failedTiles).toContain('r1c2');
+    expect(counted.message).toMatch(/^INCOMPLETE COUNT/);
     expect(counted.total).toBeGreaterThan(0);
   });
 

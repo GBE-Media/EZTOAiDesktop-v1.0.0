@@ -208,6 +208,11 @@ class AIService {
     }
   }
 
+  /** True while a model comparison is running (its calls must never come from a cache). */
+  isVisionTrialActive(): boolean {
+    return !!this.visionTrial;
+  }
+
   getAgentModels(): AgentModelsConfig {
     return { ...this.config.agentModels };
   }
