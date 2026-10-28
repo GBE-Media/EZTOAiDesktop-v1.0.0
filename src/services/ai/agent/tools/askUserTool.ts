@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { AssistantToolDefinition } from '../../tools/types';
-import { sanitizeClarificationFields } from '../askUser';
+import { MAX_CARD_FIELDS, sanitizeClarificationFields } from '../askUser';
 
 const optionSchema = z.object({
   label: z.string().min(1),
@@ -12,7 +12,8 @@ const fieldSchema = z.object({
   kind: z.enum(['choice', 'text', 'point', 'area']).describe('choice: buttons · text: typed answer · point: user clicks a spot on the drawing · area: user drags a box on the drawing.'),
   prompt: z.string().min(1).describe('The question for this step.'),
   options: z.array(optionSchema).max(6).optional().describe('choice fields: 2–6 clickable answers.'),
-  recommended: z.string().optional().describe('Value of the option you recommend (pre-selected).'),
+  recommended: z.string().optional().describe('Value of the option you recommend (marked Recommended; the user still picks).'),
+  multi: z.boolean().optional().describe('choice fields: the user may pick several options.'),
   placeholder: z.string().optional().describe('text fields (or choice fields that also accept a typed answer): hint text.'),
   documentId: z.string().optional(),
   page: z.number().int().positive().optional().describe('point/area fields: which page to pick on.'),
@@ -37,7 +38,7 @@ export function createAskUserTool(): AssistantToolDefinition {
     schema: z.object({
       question: z.string().min(1).describe('Card title — one short question.'),
       description: z.string().optional().describe('One or two lines of context: what you found and why you ask.'),
-      fields: z.array(fieldSchema).min(1).max(6),
+      fields: z.array(fieldSchema).min(1).max(MAX_CARD_FIELDS),
       documentId: z.string().optional(),
       page: z.number().int().positive().optional().describe('Page the question is about (the app jumps there).'),
     }),

@@ -415,7 +415,9 @@ export async function resumeAgentAfterApproval(options: ResumeAgentOptions): Pro
   session.pendingApprovalId = undefined;
   session.continuation = undefined;
   sessions.set(options.runId, session);
-  await deleteDurableAgentSession(options.runId);
+  // The parked record stays until the resumed run finishes: if this resume fails, the card is
+  // reopened and answering it again resumes from the same saved state (no "session expired").
+  // A new card / approval overwrites it; completing clears it.
 
   try {
     const result = await runPrimaryAgentLoop({
@@ -500,7 +502,9 @@ export async function resumeAgentAfterClarification(
   });
   session.continuation = undefined;
   sessions.set(options.runId, session);
-  await deleteDurableAgentSession(options.runId);
+  // The parked record stays until the resumed run finishes: if this resume fails, the card is
+  // reopened and answering it again resumes from the same saved state (no "session expired").
+  // A new card / approval overwrites it; completing clears it.
 
   try {
     // Run-input cards resume the original tool directly through the normal execution loop.
@@ -539,7 +543,10 @@ export async function resumeAgentAfterClarification(
     const status = useAIChatStore.getState().runs[options.runId]?.status;
     if (status !== 'waiting-approval' && status !== 'waiting-clarification' && status !== 'running') {
       releaseAssistantRunController(options.runId);
-      if (status === 'completed') clearAgentSession(options.runId);
+      if (status === 'error') {
+        // Drop the half-run copy; the saved (parked) one is what a retry resumes.
+        sessions.delete(options.runId);
+      } else clearAgentSession(options.runId);
     }
   }
 }
@@ -565,6 +572,9 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
   }
   const store = () => useAIChatStore.getState();
   let steps = 0;
+  // The model asked in prose once this run and was sent back to ask with a card.
+  let proseRetried = false;
+  let proseRemainder = '';
 
   while (steps < maxSteps) {
     if (toolContext.signal?.aborted) {
@@ -648,6 +658,20 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       // Questions always come as cards: a final answer that asks for input in prose parks the run.
       const docContext = (toolContext.getDocumentContext?.() || {}) as { page?: number };
       const prose = proseQuestionToCard(decision.message, typeof docContext.page === 'number' ? docContext.page : undefined);
+      if (prose && !proseRetried && steps < maxSteps) {
+        // One path for questions: have the model re-ask with ask_user (real choices / drawing
+        // picks) instead of turning its sentence into a generic text box.
+        proseRetried = true;
+        proseRemainder = sanitizeAssistantVisibleText(prose.remainder);
+        session.messages.push({ role: 'assistant', content: JSON.stringify(decision) });
+        session.messages.push({
+          role: 'user',
+          content: 'SYSTEM: You asked the user a question in plain text. Questions are never asked in prose. '
+            + 'Call ask_user now with that question as a card (choice fields with 2–6 options and your recommendation, '
+            + 'point/area fields for anything on the drawing, text only when nothing else fits).',
+        });
+        continue;
+      }
       if (prose) {
         session.messages.push({ role: 'assistant', content: JSON.stringify({ type: 'clarify', message: prose.ask.question, fields: prose.ask.fields.map(f => f.id) }) });
         session.continuation = { kind: 'agent', waitingFor: 'clarification' };
@@ -886,7 +910,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
       return finishWith(session, {
         status: 'needs_clarification',
         finalStatus: 'needs_clarification',
-        assistantMessage: sanitizeAssistantVisibleText(decision.assistantText) || pendingAsk.question,
+        assistantMessage: sanitizeAssistantVisibleText(decision.assistantText) || proseRemainder || pendingAsk.question,
         clarifyingQuestions: [pendingAsk.question],
         clarificationRequest: clarification,
       });

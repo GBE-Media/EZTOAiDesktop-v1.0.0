@@ -82,7 +82,9 @@ export function panelsTaggedOnSheet(textItems: TextLike[], knownPanels?: string[
     if (row.examples.length < 4 && !row.examples.includes(tag.id)) row.examples.push(tag.id);
     rows.set(tag.panel, row);
   }
-  return [...rows.values()].filter(r => r.tags >= 2).sort((a, b) => b.tags - a.tags);
+  // One stray match isn't a panel, unless the panel schedules list it (Panel C with one tag).
+  const known = new Set((knownPanels || []).map(n => n.toUpperCase()));
+  return [...rows.values()].filter(r => r.tags >= 2 || known.has(r.panel.toUpperCase())).sort((a, b) => b.tags - a.tags);
 }
 
 export interface TaggedDevice {

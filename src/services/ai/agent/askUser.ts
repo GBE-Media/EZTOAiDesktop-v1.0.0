@@ -21,6 +21,8 @@ export interface AskUserRequest {
 }
 
 const KINDS = new Set(['choice', 'point', 'text', 'area']);
+/** Steps on one model-written card; the ask_user schema uses the same limit. */
+export const MAX_CARD_FIELDS = 6;
 
 function str(value: unknown): string {
   return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim();
@@ -46,7 +48,7 @@ function parsePoint(raw: unknown): PickedPoint | undefined {
   };
 }
 
-/** Validate model/tool supplied fields (drops anything malformed, caps at 5). */
+/** Validate model/tool supplied fields (drops anything malformed; up to 6, as the ask_user schema allows). */
 export function sanitizeClarificationFields(raw: unknown): ClarificationField[] {
   if (!Array.isArray(raw)) return [];
   const out: ClarificationField[] = [];
@@ -86,7 +88,7 @@ export function sanitizeClarificationFields(raw: unknown): ClarificationField[] 
       ...(obj.optional === true ? { optional: true } : {}),
       ...(str(obj.placeholder) ? { placeholder: str(obj.placeholder) } : {}),
     });
-    if (out.length >= 5) break;
+    if (out.length >= MAX_CARD_FIELDS) break;
   }
   return out;
 }

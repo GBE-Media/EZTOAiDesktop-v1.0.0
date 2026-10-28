@@ -6,7 +6,7 @@ import { useProductStore } from '@/store/productStore';
 import { createAgentToolContext } from './createToolContext';
 import { clearAgentSessionMemoryForTests } from './runner';
 import { runPrimaryAgentLoop } from './runnerCore';
-import { applyFieldAnswers } from './askUser';
+import { applyFieldAnswers, sanitizeClarificationFields } from './askUser';
 import { proseQuestionToCard } from './proseQuestion';
 import { createAskUserTool } from './tools/askUserTool';
 import type { ModelAdapter } from './modelAdapter';
@@ -43,6 +43,7 @@ describe('prose questions become cards', () => {
   it('parks the run with a card instead of finishing on a prose question', async () => {
     const ctx = createAgentToolContext({ runId: 'run-prose', messageId: 'msg-prose', trade: 'electrical', placeMarkups: () => ({ placed: 0 }) });
     const complete = vi.fn<ModelAdapter['complete']>()
+      .mockResolvedValueOnce({ type: 'final', message: 'I need the panel. Which panel do these fixtures feed?' })
       .mockResolvedValueOnce({ type: 'final', message: 'I need the panel. Which panel do these fixtures feed?' });
     useAIChatStore.setState({ runs: { 'run-prose': { id: 'run-prose', messageId: 'msg-prose', conversationId: 's', status: 'running', summary: 'runs', steps: [], startedAt: new Date().toISOString() } } } as never);
     const result = await runPrimaryAgentLoop({
@@ -53,6 +54,39 @@ describe('prose questions become cards', () => {
     expect(result.status).toBe('needs_clarification');
     expect(result.clarificationRequest?.fields?.[0].kind).toBe('text');
     expect(result.clarificationRequest?.question).toContain('Which panel');
+    // It was first sent back once to ask with a real card.
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends a prose question back once so the model asks it as a card with real choices', async () => {
+    const { registerAllAgentTools } = await import('./tools/registerAll');
+    registerAllAgentTools();
+    const ctx = createAgentToolContext({ runId: 'run-prose2', messageId: 'msg-prose2', trade: 'electrical', placeMarkups: () => ({ placed: 0 }) });
+    const complete = vi.fn<ModelAdapter['complete']>()
+      .mockResolvedValueOnce({ type: 'final', message: 'Counted 12 fixtures. Which panel do these fixtures feed?' })
+      .mockResolvedValueOnce({
+        type: 'tool_calls',
+        toolCalls: [{ id: 'ask1', name: 'ask_user', arguments: {
+          question: 'Which panel do these fixtures feed?',
+          fields: [{ id: 'panel', kind: 'choice', prompt: 'Panel', options: [{ label: 'Panel A', value: 'A' }, { label: 'Panel B', value: 'B' }], recommended: 'A' }],
+        } }],
+      });
+    useAIChatStore.setState({ runs: { 'run-prose2': { id: 'run-prose2', messageId: 'msg-prose2', conversationId: 's', status: 'running', summary: 'runs', steps: [], startedAt: new Date().toISOString() } } } as never);
+    const result = await runPrimaryAgentLoop({
+      session: { runId: 'run-prose2', messageId: 'msg-prose2', messages: [{ role: 'user', content: 'suggest runs' }], toolHistory: [], actionsTaken: [], contextText: '' } as never,
+      toolContext: ctx,
+      model: { complete },
+    });
+    expect(result.status).toBe('needs_clarification');
+    expect(result.clarificationRequest?.fields?.[0].kind).toBe('choice');
+    expect(result.clarificationRequest?.fields?.[0].options?.map(o => o.value)).toEqual(['A', 'B']);
+    // The rest of the first answer is still shown above the card.
+    expect(result.assistantMessage).toContain('Counted 12 fixtures');
+  });
+
+  it('accepts six steps on a model-written card, as its schema allows', () => {
+    const fields = Array.from({ length: 7 }, (_, i) => ({ id: `f${i}`, kind: 'text', prompt: `Step ${i}` }));
+    expect(sanitizeClarificationFields(fields)).toHaveLength(6);
   });
 
   it('ask_user returns a structured card', async () => {
@@ -119,14 +153,14 @@ describe('cards after an answer appear below it', () => {
     const first = await runPrimaryAgentLoop({
       session: { runId: 'run-follow', messageId: 'msg-first', messages: [{ role: 'user', content: 'runs' }], toolHistory: [], actionsTaken: [], contextText: '' } as never,
       toolContext: ctx,
-      model: { complete: vi.fn<ModelAdapter['complete']>().mockResolvedValueOnce({ type: 'final', message: 'Which panel feeds these fixtures?' }) },
+      model: { complete: vi.fn<ModelAdapter['complete']>().mockResolvedValue({ type: 'final', message: 'Which panel feeds these fixtures?' }) },
     });
     const card = first.clarificationRequest!;
     const resumed = await resumeTaskAfterClarification({
       clarification: card,
       answer: { selectedValues: [], displayText: 'Panel B', fields: { answer: { value: 'Panel B' } } },
       toolContext: ctx,
-      model: { complete: vi.fn<ModelAdapter['complete']>().mockResolvedValueOnce({ type: 'final', message: 'Got it. Could you point me to where panel B is on the drawing?' }) },
+      model: { complete: vi.fn<ModelAdapter['complete']>().mockResolvedValue({ type: 'final', message: 'Got it. Could you point me to where panel B is on the drawing?' }) },
     });
     expect(resumed.status).toBe('needs_clarification');
     const messages = useAIChatStore.getState().messages;
@@ -136,5 +170,36 @@ describe('cards after an answer appear below it', () => {
     expect(resumed.messageId).toBe(last.id);
     expect(last.blocks?.some(b => b.type === 'question' && b.clarificationId === resumed.clarificationRequest?.id)).toBe(true);
     expect(messages[0].blocks?.some(b => b.type === 'question' && b.clarificationId === resumed.clarificationRequest?.id)).toBeFalsy();
+  });
+
+  it('a failed resume reopens the card and keeps the saved session for the retry', async () => {
+    const { resumeTaskAfterClarification } = await import('./orchestrator');
+    clearAgentSessionMemoryForTests();
+    await assistantDb.agentSessions.clear();
+    useAIChatStore.setState({
+      messages: [{ id: 'msg-r', role: 'assistant', content: '', isLoading: true, timestamp: new Date() }],
+      runs: { 'run-retry': { id: 'run-retry', messageId: 'msg-r', conversationId: 's', status: 'running', summary: 'runs', steps: [], startedAt: new Date().toISOString() } },
+      approvals: {}, clarifications: {},
+    } as never);
+    const ctx = createAgentToolContext({ runId: 'run-retry', messageId: 'msg-r', trade: 'electrical', placeMarkups: () => ({ placed: 0 }) });
+    const first = await runPrimaryAgentLoop({
+      session: { runId: 'run-retry', messageId: 'msg-r', messages: [{ role: 'user', content: 'runs' }], toolHistory: [], actionsTaken: [], contextText: '' } as never,
+      toolContext: ctx,
+      model: { complete: vi.fn<ModelAdapter['complete']>().mockResolvedValue({ type: 'final', message: 'Which panel feeds these fixtures?' }) },
+    });
+    const card = first.clarificationRequest!;
+    const answer = { selectedValues: [], displayText: 'Panel B', fields: { answer: { value: 'Panel B' } } };
+    await expect(resumeTaskAfterClarification({
+      clarification: card, answer, toolContext: ctx,
+      model: { complete: vi.fn<ModelAdapter['complete']>().mockRejectedValue(new Error('network down')) },
+    })).rejects.toThrow('network down');
+    expect(useAIChatStore.getState().clarifications[card.id].status).toBe('pending');
+    expect(await assistantDb.agentSessions.get('run-retry')).toBeTruthy();
+    const retried = await resumeTaskAfterClarification({
+      clarification: useAIChatStore.getState().clarifications[card.id], answer, toolContext: ctx,
+      model: { complete: vi.fn<ModelAdapter['complete']>().mockResolvedValue({ type: 'final', message: 'Routing to Panel B.' }) },
+    });
+    expect(retried.status).toBe('completed');
+    expect(useAIChatStore.getState().clarifications[card.id].status).toBe('answered');
   });
 });

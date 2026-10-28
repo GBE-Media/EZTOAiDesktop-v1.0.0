@@ -50,7 +50,7 @@ import {
   computeLengthMeasurement,
 } from '@/lib/measurementValues';
 import { pageCalibrationToRenderPixelsPerUnit } from '@/services/ai/placement/pageCalibration';
-import { pickMatchesPage, useDrawingPickStore } from '@/store/drawingPickStore';
+import { pickMatchesPage, sameArea, useDrawingPickStore } from '@/store/drawingPickStore';
 import { canvasBoxToPagePct, canvasPointToPagePct, pagePctToCanvasPoint } from '@/lib/pickCoords';
 
 const EMPTY_MARKUPS: CanvasMarkup[] = [];
@@ -255,6 +255,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
   const pickRequest = useDrawingPickStore(state => state.request);
   const pickPins = useDrawingPickStore(state => state.pins);
   const pickAreas = useDrawingPickStore(state => state.areas);
+  const pickSuggestions = useDrawingPickStore(state => state.suggestions);
   /** Box being dragged for an "areas to keep clear" question (doc points). */
   const [areaDrag, setAreaDrag] = useState<{ start: Point; current: Point; key: string; documentId: string | null; page: number } | null>(null);
   const isPicking = pickMatchesPage(pickRequest, activeDocId, currentPage);
@@ -451,6 +452,27 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
         label: undefined,
       });
     }
+    // AI-suggested boxes the user hasn't added yet: faint outline only (not an answer).
+    const suggestedHere = Object.entries(pickSuggestions).flatMap(([key, list]) => list
+      .filter(sug => !(pickAreas[key] || []).some(a => sameArea(a, sug))))
+      .filter(a => a.page === currentPage && (!a.documentId || a.documentId === activeDocId));
+    if (suggestedHere.length) {
+      const s = 100 / Math.max(zoom, 10);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(217, 119, 6, 0.7)';
+      ctx.lineWidth = 1.5 * s;
+      ctx.setLineDash([3 * s, 4 * s]);
+      ctx.font = `500 ${10 * s}px Inter, sans-serif`;
+      ctx.fillStyle = 'rgba(180, 83, 9, 0.85)';
+      suggestedHere.forEach(a => {
+        const p1 = pagePctToCanvasPoint({ xPct: a.xPct, yPct: a.yPct }, width, height);
+        const p2 = pagePctToCanvasPoint({ xPct: a.xPct + a.wPct, yPct: a.yPct + a.hPct }, width, height);
+        const x = Math.min(p1.x, p2.x); const y = Math.min(p1.y, p2.y);
+        ctx.strokeRect(x, y, Math.abs(p2.x - p1.x), Math.abs(p2.y - p1.y));
+        ctx.fillText(`Suggested${a.label ? `: ${a.label}` : ''}`, x + 3 * s, y - 3 * s);
+      });
+      ctx.restore();
+    }
     if (areaRects.length) {
       const s = 100 / Math.max(zoom, 10);
       ctx.save();
@@ -622,7 +644,7 @@ export function MarkupCanvas({ width, height }: MarkupCanvasProps) {
       }
       
     }
-  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit, aiPreview, aiPreviewHoverId, showPageZones, activeDocId, currentPage, pickPins, pickAreas, areaDrag, highlightKey]);
+  }, [width, height, markups, selectedMarkupIds, hoveredMarkupId, eraserHoveredId, drawing, calibration, gridSize, snapToGrid, activeTool, defaultStyle, highlightSelection, zoom, activeSnapPoint, gridEnabled, measureScale, measureUnit, aiPreview, aiPreviewHoverId, showPageZones, activeDocId, currentPage, pickPins, pickAreas, pickSuggestions, areaDrag, highlightKey]);
 
   useEffect(() => {
     draw();

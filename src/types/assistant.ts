@@ -156,7 +156,7 @@ export interface ClarificationField {
   /** choice: buttons · point: "Show me on the drawing" · text: typed answer. */
   kind: 'choice' | 'point' | 'text' | 'area';
   options?: Array<ClarificationOption & { point?: PickedPoint }>;
-  /** Value of the option the AI recommends (pre-selected). Multi-select: comma-joined values. */
+  /** Value of the option the AI recommends (marked; single choices are never pre-picked). Multi-select: comma-joined values, pre-checked. */
   recommended?: string;
   /** Choice fields: allow several options (answer value is comma-joined, e.g. "A,B,C"). */
   multi?: boolean;
@@ -167,7 +167,7 @@ export interface ClarificationField {
   pickLabel?: string;
   optional?: boolean;
   placeholder?: string;
-  /** Area fields: AI-drafted boxes, pre-marked on the drawing for the user to keep, remove or add to. */
+  /** Area fields: AI-drafted boxes, shown as suggestions the user adds (never an answer by themselves). */
   suggestedAreas?: PickedArea[];
 }
 

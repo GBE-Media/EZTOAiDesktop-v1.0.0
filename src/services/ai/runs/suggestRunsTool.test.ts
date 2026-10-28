@@ -8,6 +8,11 @@ const fixture: ZonePageInput & { rotate: number } = JSON.parse(gunzipSync(readFi
   path.resolve(__dirname, '../../../test/fixtures/zones/otsego_E210.json.gz'),
 )).toString());
 
+const indexState = vi.hoisted(() => ({ rows: [] as Array<{ text?: string }> }));
+vi.mock('../projectIndex/store', async importOriginal => {
+  const actual = await importOriginal<typeof import('../projectIndex/store')>();
+  return { ...actual, allIndexedPages: () => (indexState.rows.length ? indexState.rows : actual.allIndexedPages()) };
+});
 vi.mock('../detection/pageZones', async importOriginal => {
   const actual = await importOriginal<typeof import('../detection/pageZones')>();
   return {
@@ -60,6 +65,7 @@ const runContext = () => ({
 });
 
 beforeEach(() => {
+  indexState.rows = [];
   resetRunDecisions();
   clearPinnedResumes();
   useCanvasStore.setState(state => ({
@@ -105,10 +111,11 @@ describe('suggest_runs tool', () => {
     const again = await tool.execute({ runId: 'r1', messageId: 'm1', addApproval } as never, args as never);
     expect(again.status).toBe('approval-required');
     expect(again.askUser).toBeUndefined();
-    // The pick is remembered for this document: a later run with the same method doesn't ask…
-    const later = await tool.execute({ runId: 'r2', messageId: 'm2', addApproval: vi.fn() } as never, { page: 4, circuits, settings: { wiringMethod: 'MC' }, wiringMethodConfirmed: true } as never);
-    expect(later.status).toBe('approval-required');
-    // …and the model can't swap it on its own: a different method asks again, pre-selected.
+    // A later layout always asks the material again on its card; the last pick is the default.
+    const later = await tool.execute({ runId: 'r2', messageId: 'm2', addApproval: vi.fn() } as never, { page: 4, circuits, wiringMethodConfirmed: true } as never);
+    const laterField = later.askUser?.fields.find(f => f.id === 'wiring_method');
+    expect(laterField?.recommended).toBe('MC');
+    // …and the model's own pick is only a recommendation too.
     const swapped = await tool.execute({ runId: 'r3', messageId: 'm3', addApproval: vi.fn() } as never, { page: 4, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never);
     expect(swapped.askUser?.fields.find(f => f.id === 'wiring_method')?.recommended).toBe('EMT');
   });
@@ -263,7 +270,7 @@ describe('suggest_runs tool', () => {
     expect(approval.payload.markups.some((r: { markup: { aiRun?: { kind: string } } }) => r.markup.aiRun?.kind === 'panel')).toBe(false);
 
     // The model re-sends a different spot: the user's panel still wins.
-    const again = await prepareRunPlan({ page: 4, panel: { label: 'ZZQ-9', x: 20, y: 20 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never, { strict: true });
+    const again = await prepareRunPlan({ page: 4, panel: { label: 'ZZQ-9', x: 20, y: 20 }, circuits, settings: { wiringMethod: 'EMT' }, wiringMethodConfirmed: true } as never, { strict: true, fromCard: true, cardKeys: ['wiringMethodConfirmed'] });
     if ('needs' in again) throw new Error(again.message);
     const r = panel as unknown as { x: number; y: number; width: number; height: number };
     const centre = { x: r.x + r.width / 2, y: r.y + r.height / 2 };
@@ -297,7 +304,7 @@ describe('suggest_runs tool', () => {
     const before = JSON.stringify(zones()[0]);
     // The model re-types the zone a little off (and adds one): nothing new lands on the page,
     // the user's zone stays exactly where it was, and no card asks again.
-    const second = await prepareRunPlan({ ...base, keepClear: [{ ...zonePct, x: 11.5 }, { x: 60, y: 60, width: 5, height: 5 }] } as never, { strict: true });
+    const second = await prepareRunPlan({ ...base, keepClear: [{ ...zonePct, x: 11.5 }, { x: 60, y: 60, width: 5, height: 5 }] } as never, { strict: true, fromCard: true, cardKeys: ['wiringMethodConfirmed'] });
     if ('needs' in second) throw new Error(second.message);
     expect(second.markups.some(r => r.markup.aiRun?.kind === 'keepout')).toBe(false);
     expect(zones()).toHaveLength(1);
@@ -437,8 +444,10 @@ describe('runs follow the placed fixtures', () => {
     expect(markers.filter(m => m.aiRun?.userPlaced)).toHaveLength(1);
     expect(markers[0].aiRun).toMatchObject({ offSheet: true, panel: 'LP' });
     const before = JSON.stringify(markers);
+    // A rerun asks only the material again (a new layout); the exit point is never re-asked or moved.
     const again = await tool.execute(ctx as never, base as never);
-    expect(again.status).toBe('approval-required');
+    expect(again.askUser!.fields.map(f => f.id)).toEqual(['wiring_method']);
+    expect(again.askUser!.fields[0].recommended).toBe('EMT');
     expect(JSON.stringify(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4])).toBe(before);
   });
 
@@ -460,7 +469,7 @@ describe('runs follow the placed fixtures', () => {
     expect(markers.filter(m => m.aiRun?.userPlaced).map(m => m.aiRun?.panel).sort()).toEqual(labels);
     const before = JSON.stringify(markers);
     const again = await tool.execute(ctx as never, { ...base, reviewPanelLocations: false } as never);
-    expect(again.status).toBe('approval-required');
+    expect(again.askUser!.fields.map(f => f.id)).toEqual(['wiring_method']);
     expect(JSON.stringify(useCanvasStore.getState().pdfDocuments[DOC].markupsByPage[4])).toBe(before);
     const review = await tool.execute(ctx as never, base as never);
     expect(review.askUser!.fields!.filter(f => f.kind === 'point')).toHaveLength(3);
@@ -594,5 +603,27 @@ describe('runs follow the placed fixtures', () => {
     for (const r of runs) {
       for (const p of [r.points[0], r.points[r.points.length - 1]]) expect(Math.hypot(p.x - gone.x, p.y - gone.y)).toBeGreaterThan(1);
     }
+  });
+
+  it('per-panel layouts confirm the panel set first when the schedules list a panel the tags miss', async () => {
+    indexState.rows = [{ text: 'PANEL: A\nPANEL: B\nPANEL: C' }];
+    const tool = createSuggestRunsTool();
+    const ctx = runContext();
+    const circuits = circuitsFromTags().slice(0, 2).map((c, i) => ({ ...c, id: `${['A', 'B'][i]}-1` }));
+    const out = await tool.execute(ctx as never, { page: 4, circuits } as never);
+    const fields = out.askUser!.fields;
+    const panelField = fields.find(f => f.id === 'panel_label')!;
+    expect(panelField.multi).toBe(true);
+    expect(panelField.options!.map(o => o.value)).toEqual(expect.arrayContaining(['A', 'B', 'C']));
+    // The locations are asked on the next card, for the panels the user keeps.
+    expect(fields.some(f => f.kind === 'point')).toBe(false);
+    expect(fields.some(f => f.id === 'wiring_method')).toBe(true);
+    const next = await tool.execute(ctx as never, answerCard(out.askUser!, {
+      panel_label: { value: 'A,B', label: 'Panel A, Panel B' }, wiring_method: { value: 'EMT' },
+    }) as never);
+    const nextFields = next.askUser!.fields;
+    expect(nextFields.filter(f => f.kind === 'point')).toHaveLength(2);
+    // Already answered on the first card: not asked again.
+    expect(nextFields.some(f => f.id === 'wiring_method' || f.id === 'panel_label')).toBe(false);
   });
 });
