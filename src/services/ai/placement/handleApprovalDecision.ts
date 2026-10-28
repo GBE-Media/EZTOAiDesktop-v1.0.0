@@ -207,9 +207,10 @@ export async function handleApprovalDecision(
 export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarkups>[0]): { status: 'completed' | 'failed'; placed: number; error?: string; products?: BoundProduct[]; productsSummary?: string } {
   const rows = suggestedRunMarkups(approval);
   if ('error' in rows) return { status: 'failed', placed: 0, error: rows.error };
-  const payload = approval.payload as { inputSnapshot?: string; page?: number } | undefined;
+  const payload = approval.payload as { inputSnapshot?: string; page?: number; legacyUpgradeIds?: string[] } | undefined;
   const snapshot = payload?.inputSnapshot;
   const inputPage = Number(payload?.page);
+  const legacyUpgrades = new Set(Array.isArray(payload?.legacyUpgradeIds) ? payload.legacyUpgradeIds : []);
   if (typeof snapshot === 'string' && snapshot !== runInputSnapshot(
     useCanvasStore.getState().pdfDocuments[rows.docId]?.markupsByPage[inputPage] || [],
   )) return { status: 'failed', placed: 0, error: 'The panel locations, keep-clear zones or count markers changed after this preview. Regenerate the suggested runs before placing them; the current layout was left unchanged.' };
@@ -229,7 +230,9 @@ export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarku
     const state = useCanvasStore.getState();
     const old = (state.getMarkupsByPage(rows.docId)[page] || [])
       // The user's keep-clear zones and the panels they clicked stay exactly where they are.
-      .filter(m => m.aiRun && m.aiRun.kind !== 'keepout' && !m.aiRun.userPlaced)
+      .filter(m => m.aiRun && ((m.aiRun.kind !== 'keepout' && !m.aiRun.userPlaced)
+        // Saved by an older version in the wrong frame: swapped for the re-saved copy in this batch.
+        || (page === inputPage && legacyUpgrades.has(m.id))))
       .map(m => m.id);
     replaceIdsByPage[page] = old;
   }

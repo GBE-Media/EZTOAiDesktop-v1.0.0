@@ -156,6 +156,33 @@ describe('suggested runs on a real sheet (Otsego E210)', () => {
     }
   });
 
+  it('routes every circuit it can and lists (never draws) one that is walled in', () => {
+    const scale = findViewScale(page, zones, circuits.flatMap(c => c.devices))!;
+    // A fixture boxed in on all four sides by the user's keep-clear zones (none covers it).
+    const target = circuits.find(c => c.devices.length >= 3)!;
+    const d = target.devices[0];
+    const t = 3; const r = 10;
+    const ring = [
+      { x: d.x - r, y: d.y - r, width: 2 * r, height: t },
+      { x: d.x - r, y: d.y + r - t, width: 2 * r, height: t },
+      { x: d.x - r, y: d.y - r, width: t, height: 2 * r },
+      { x: d.x + r - t, y: d.y - r, width: t, height: 2 * r },
+    ].map((box, i) => ({ kind: 'opening' as const, label: `Keep clear ${i + 1}`, box }));
+    const near = (p: { x: number; y: number }) => Math.abs(p.x - d.x) <= r + 10 && Math.abs(p.y - d.y) <= r + 10;
+    // Its circuit has fixtures outside the ring: the string can't reach them.
+    const trapped = { ...target, devices: [d, ...target.devices.slice(1).filter(p => !near(p))] };
+    expect(trapped.devices.length).toBeGreaterThan(1);
+    const others = circuits.filter(c => c !== target).map(c => ({ ...c, devices: c.devices.filter(p => !near(p)) })).filter(c => c.devices.length);
+    const plan = planRuns({
+      page, zones, panel: { x: 0.83 * W, y: 0.65 * H }, panelLabel: 'LP', circuits: [trapped, ...others],
+      settings: DEFAULT_RUN_SETTINGS, ftPerPt: scale.ftPerPt, scaleSource: scale.text, extraObstacles: ring, keepClearConfirmed: true,
+    });
+    expect(plan.blockedCircuits).toEqual([trapped.id]);
+    expect(plan.runs.some(run => run.circuitIds.includes(trapped.id))).toBe(false);
+    expect(plan.runs.filter(run => run.kind === 'homerun').length).toBeGreaterThan(0);
+    expect(plan.warnings.some(w => w.startsWith('Not routed') && w.includes(trapped.id))).toBe(true);
+  });
+
   it('auto-groups devices by printed circuit tags', () => {
     const devices = circuits.flatMap(c => c.devices.map(d => ({ x: d.x, y: d.y + 4 })));
     const grouped = autoCircuit(devices, page, {

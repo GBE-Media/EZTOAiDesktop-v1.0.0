@@ -28,6 +28,11 @@ describe('multi-story risers', () => {
     expect(up.direction).toBe('up');
     // Riser footage survives a manual edit of the run.
     expect(runLengthFt([{ x: 0, y: 0 }, { x: 10, y: 0 }], { ftPerPt: 1, riserFt: 12 })).toBe(22);
+    // Two views of the same floor: a horizontal continuation, never a 12 ft riser.
+    const same = riserBetween(level1, level2, { x: 100, y: 150 }, floorLevel('FIRST FLOOR DEMOLITION PLAN'), floorLevel('FIRST FLOOR LIGHTING PLAN'), 12);
+    expect(same.levels).toBe(0);
+    expect(same.ft).toBe(0);
+    expect(riserText('A', same)).toMatch(/same floor/);
   });
 });
 

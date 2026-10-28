@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildFootprint, footprintContains, outsideShare, snapInside } from './footprint';
+import { buildFootprint, dashedChains, footprintContains, outsideShare, snapInside } from './footprint';
 import { OrthoRouter } from './spatial';
 import { auditRuns } from './runAudit';
 import { buildSymbolComponents } from '../detection/vectorSymbols';
@@ -90,5 +90,39 @@ describe('building footprint', () => {
       expect(inside / total, name).toBeGreaterThan(0.2);
       expect(inside / total, name).toBeLessThan(0.92);
     }
+  });
+
+  it('leaves dashed grid lines out of the outline even without a recognised bubble', () => {
+    const s: number[] = [];
+    // Dash-dot grid line down the sheet: 9 pt dashes, 4 pt gaps.
+    for (let y = 100; y < 700; y += 13) s.push(600, y, 600, y + 9);
+    // A wall with one door gap: two long pieces, not a dashed chain.
+    s.push(300, 100, 300, 380, 300, 410, 300, 700);
+    const dashed = dashedChains(s, s.length / 4);
+    const dashCount = Math.ceil(600 / 13);
+    expect(dashed.size).toBe(dashCount);
+    expect(dashed.has(dashCount)).toBe(false);
+    expect(dashed.has(dashCount + 1)).toBe(false);
+  });
+
+  it('keeps runs off the white space where the outline will not close (line-work fallback)', () => {
+    const s: number[] = [];
+    // An open plan: no exterior wall, just fixtures (small squares) spread over one area.
+    for (let x = 300; x <= 430; x += 26) for (let y = 300; y <= 420; y += 24) {
+      s.push(x, y, x + 6, y, x + 6, y, x + 6, y + 6, x + 6, y + 6, x, y + 6, x, y + 6, x, y);
+    }
+    const open = buildFootprint(s, W, H, [view])!;
+    expect(open).toBeTruthy();
+    expect(open.approxViews?.length).toBe(1);
+    expect(footprintContains(open, { x: 365, y: 360 })).toBe(true);
+    expect(footprintContains(open, { x: 700, y: 600 })).toBe(false);
+  });
+
+  it('a view outline drawn right at the box edge still closes (box tightened to the walls)', () => {
+    const tight = { x: 299, y: 299, width: 202, height: 162 };
+    const out = buildFootprint(sheet(), W, H, [tight])!;
+    expect(out?.maskedViews.length).toBe(1);
+    expect(out.approxViews).toBeUndefined();
+    expect(footprintContains(out, { x: 350, y: 350 })).toBe(true);
   });
 });

@@ -88,6 +88,8 @@ export type RunPlan = {
   codeRefs: string[];
   /** Per circuit: home-run fixture → load centre, feet (voltage-drop basis). */
   loadCenterFt?: Record<string, number>;
+  /** Circuits left off because no clear route exists (nothing drawn for them). */
+  blockedCircuits?: string[];
 };
 
 export type PlanRunsInput = {
@@ -229,6 +231,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
   const router = new OrthoRouter({ width: W, height: H, segments: page.segments, obstacles: obstacleBoxes, allowed, blocked, footprint: input.footprint });
 
   const runs: PlannedRun[] = [];
+  const blockedCircuits: string[] = [];
   const codeRefs = new Set<string>();
   const ed = settings.necEdition;
 
@@ -240,9 +243,11 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     const order = chainDevices(circuit.devices, input.panel);
     let branchPts = 0;
     let farthest = 0;
+    const firstLeg = runs.length;
+    let routed = true;
     for (let i = 0; i + 1 < order.length; i += 1) {
       const leg = router.route(order[i], order[i + 1]);
-      if (!leg.ok) throw new RunRoutingError([circuit.id]);
+      if (!leg.ok) { routed = false; break; }
       const len = pathLength(leg.path);
       branchPts += len;
       // Drawn like Revit wiring: an arc from fixture to fixture (bulging to one side); footage is
@@ -276,6 +281,12 @@ export function planRuns(input: PlanRunsInput): RunPlan {
         warnings: leg.ok ? [] : ['No clear path found — straight-line fallback; adjust by hand.'],
       });
     }
+    if (!routed) {
+      // One blocked circuit never sinks the rest: it's left off (no fallback line) and listed.
+      runs.splice(firstLeg);
+      blockedCircuits.push(circuit.id);
+      continue;
+    }
     farthest = branchPts;
     // Fixtures are spread along the branch: voltage drop is computed to the load centre (average
     // distance from the home-run fixture), not as if every fixture sat at the far end.
@@ -301,7 +312,13 @@ export function planRuns(input: PlanRunsInput): RunPlan {
     // Home run starts at the group's device closest to the panel.
     const startLeg = legs.reduce((best, leg) => dist(leg.homeDevice, input.panel) < dist(best.homeDevice, input.panel) ? leg : best, legs[0]);
     const route = router.route(startLeg.homeDevice, input.panel);
-    if (!route.ok) throw new RunRoutingError(group.map(c => c.id));
+    if (!route.ok) {
+      // The group's branch strings are dropped with it: nothing is drawn that can't reach the panel.
+      const ids = new Set(group.map(c => c.id));
+      for (let i = runs.length - 1; i >= 0; i -= 1) if (runs[i].kind === 'branch' && ids.has(runs[i].circuitIds[0])) runs.splice(i, 1);
+      blockedCircuits.push(...ids);
+      return;
+    }
     router.markUsed(route.path);
     const riserFt = input.riser?.ft || 0;
     const homeFt = pathLength(route.path) * input.ftPerPt + riserFt;
@@ -391,10 +408,13 @@ export function planRuns(input: PlanRunsInput): RunPlan {
       }
     }
   }
+  const withDevices = input.circuits.filter(c => c.devices.length).length;
+  if (blockedCircuits.length && blockedCircuits.length >= withDevices) throw new RunRoutingError(blockedCircuits);
+  if (blockedCircuits.length) warnings.push(`Not routed (no clear path without crossing a keep-clear zone or leaving the building): ${blockedCircuits.join(', ')}. Nothing was drawn for ${blockedCircuits.length === 1 ? 'it' : 'them'}.`);
   if (!obstacles.length) warnings.push('No elevators, shafts or stairs were labeled on this view.');
   if (input.panelOffSheet) warnings.push(`Panel ${input.panelLabel} is on another sheet: home runs stop at the plan edge; add the remaining length from that sheet.`);
   const loadCenterFt = Object.fromEntries([...circuitLegs.entries()].map(([id, leg]) => [id, round1(leg.loadCenterFt)]));
-  return { runs, obstacles, ftPerPt: input.ftPerPt, scaleSource: input.scaleSource, warnings, codeRefs: [...codeRefs], loadCenterFt };
+  return { runs, obstacles, ftPerPt: input.ftPerPt, scaleSource: input.scaleSource, warnings, codeRefs: [...codeRefs], loadCenterFt, ...(blockedCircuits.length ? { blockedCircuits } : {}) };
 }
 
 function conductorsForGroup(group: PlannedCircuit[], sizing: CircuitSizing[]): ConduitSizing['conductors'] {
