@@ -5,6 +5,8 @@ import { useAIChatStore } from '@/store/aiChatStore';
 import { useCanvasStore } from '@/store/canvasStore';
 import { useEditorStore } from '@/store/editorStore';
 import { focusAiPreview } from '@/services/ai/placement/aiPreview';
+import { openAssistantFocus } from '@/lib/openCitation';
+import type { RunCoverage } from '@/services/ai/runs/runCoverage';
 import type { ApprovalRequest } from '@/types/assistant';
 
 /** Format optional approval.preview (typed as unknown) for the card body. */
@@ -128,6 +130,16 @@ export function ApprovalCardView({
     state.documents.find(doc => doc.id === preview?.docId)?.name || preview?.docId || 'sheet');
   const previewCount = preview?.approvalId === approval.id ? preview.markups.length : 0;
   const previewPage = preview?.markups[0]?.page;
+  const runPayload = approval.toolId === 'suggest_runs'
+    ? approval.payload as { coverage?: RunCoverage; documentId?: string; page?: number } | undefined : undefined;
+  const coverage = runPayload?.coverage;
+  const unresolved = coverage?.fixtures.filter(f => f.status !== 'connected') || [];
+  const showCounts = (ids: string[]) => {
+    if (!runPayload?.page || !openAssistantFocus({ documentId: runPayload.documentId, page: runPayload.page })) return;
+    const canvas = useCanvasStore.getState();
+    canvas.clearSelection();
+    ids.forEach(id => canvas.selectMarkup(id, true));
+  };
 
   return (
     <div className="my-2 rounded-xl border border-border bg-card p-3">
@@ -135,6 +147,31 @@ export function ApprovalCardView({
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium">{approval.title}</div>
           <div className="mt-0.5 text-xs text-muted-foreground">{approval.description}</div>
+          {coverage && (
+            <div data-testid="run-coverage" className="mt-2 rounded-md border border-border bg-background/70 p-2 text-xs">
+              <div className="font-medium">{coverage.complete ? 'Coverage complete' : 'Incomplete layout'}</div>
+              <div>{coverage.total} counted · {coverage.connected} connected · {coverage.unresolved} unresolved</div>
+              {unresolved.length > 0 && (
+                <>
+                  <Button type="button" size="sm" variant="outline" className="mt-2 h-7 text-xs"
+                    onClick={() => showCounts(unresolved.flatMap(f => f.markerId ? [f.markerId] : []))}>
+                    Show unresolved counts
+                  </Button>
+                  <ul className="mt-2 max-h-36 overflow-auto space-y-1 text-[11px] text-muted-foreground">
+                    {unresolved.map(f => (
+                      <li key={f.id}>
+                        <button type="button" className="text-left hover:underline"
+                          onClick={() => showCounts(f.markerId ? [f.markerId] : [])}>
+                          {f.circuitIds.join(', ') || 'Unassigned'}: {f.reason} ({f.id})
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-2">Approving places only the safe routes shown. Unresolved counts still need attention.</p>
+                </>
+              )}
+            </div>
+          )}
           {pills.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
               {pills.map(pill => (
@@ -203,11 +240,11 @@ export function ApprovalCardView({
           <Button
             size="sm"
             className="h-7 bg-emerald-600 text-xs hover:bg-emerald-700"
-            disabled={busy}
+            disabled={busy || (!!coverage && coverage.connected === 0)}
             data-testid="approval-approve"
             onClick={() => resolve('approved')}
           >
-            <Check className="mr-1 h-3 w-3" /> {approval.executing ? 'Placing…' : 'Approve'}
+            <Check className="mr-1 h-3 w-3" /> {approval.executing ? 'Placing…' : coverage && !coverage.complete ? 'Place partial layout' : 'Approve'}
           </Button>
         </div>
       ) : (

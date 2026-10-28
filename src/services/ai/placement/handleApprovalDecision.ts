@@ -204,10 +204,10 @@ export async function handleApprovalDecision(
 }
 
 /** Commit an approved suggested-run overlay to its document (one undo step). */
-export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarkups>[0]): { status: 'completed' | 'failed'; placed: number; error?: string; products?: BoundProduct[]; productsSummary?: string } {
+export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarkups>[0]): { status: 'completed' | 'partial' | 'failed'; placed: number; error?: string; coverage?: import('../runs/runCoverage').RunCoverage; products?: BoundProduct[]; productsSummary?: string } {
   const rows = suggestedRunMarkups(approval);
   if ('error' in rows) return { status: 'failed', placed: 0, error: rows.error };
-  const payload = approval.payload as { inputSnapshot?: string; page?: number; legacyUpgradeIds?: string[] } | undefined;
+  const payload = approval.payload as { inputSnapshot?: string; page?: number; legacyUpgradeIds?: string[]; coverage?: import('../runs/runCoverage').RunCoverage } | undefined;
   const snapshot = payload?.inputSnapshot;
   const inputPage = Number(payload?.page);
   const legacyUpgrades = new Set(Array.isArray(payload?.legacyUpgradeIds) ? payload.legacyUpgradeIds : []);
@@ -239,8 +239,12 @@ export function placeSuggestedRuns(approval: Parameters<typeof suggestedRunMarku
   const result = useCanvasStore.getState().addAIMarkupBatch(markups, false, { documentId: rows.docId, replaceIdsByPage });
   if (!result.ok) return { status: 'failed', placed: 0, error: result.reason || 'Could not place runs' };
   return {
-    status: 'completed',
+    status: payload?.coverage && !payload.coverage.complete ? 'partial' : 'completed',
     placed: result.placed,
+    ...(payload?.coverage ? {
+      coverage: payload.coverage,
+      ...(!payload.coverage.complete ? { error: `Partial layout placed: ${payload.coverage.connected}/${payload.coverage.total} counts connected; ${payload.coverage.unresolved} remain unresolved. Do not report this layout as complete.` } : {}),
+    } : {}),
     ...(products.length ? { products, productsSummary: describeBoundProducts(products) } : {}),
   };
 }

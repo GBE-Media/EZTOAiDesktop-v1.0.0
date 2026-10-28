@@ -11,6 +11,8 @@ export interface RunAudit {
   checked: number;
   /** Plain-language problems, one per run/issue. */
   flagged: string[];
+  /** Geometrically unsafe runs, distinct from sizing/pairing warnings. */
+  unsafeRunIds: string[];
   /** Plain-language checks that passed. */
   passed: string[];
 }
@@ -39,6 +41,7 @@ export function auditRuns(
   options: { ftPerPt: number; floorViews?: Box[]; keepClear?: Array<{ label: string; box: Box }>; pageMax: number; footprint?: Footprint | null },
 ): RunAudit {
   const flagged: string[] = [];
+  const unsafeRunIds = new Set<string>();
   const name = (r: AuditRun) => (r.kind === 'homerun' ? r.id : `${r.id.replace(/-b\d+$/, '')} branch`);
   const pad = options.pageMax * 0.012;
   const views = (options.floorViews || []).map(v => ({ x: v.x - pad, y: v.y - pad, width: v.width + 2 * pad, height: v.height + 2 * pad }));
@@ -50,7 +53,7 @@ export function auditRuns(
     // 1. A run stays on one floor's plan (a floor change is a riser, never a line across the gap).
     if (views.length > 1 && drawn.length) {
       const home = views.findIndex(v => drawn.every(p => inBox(p, v)));
-      if (home < 0) { offPlan += 1; flagged.push(`${name(run)} leaves its floor plan (crosses white space) — move it onto the plan.`); }
+      if (home < 0) { offPlan += 1; unsafeRunIds.add(run.id); flagged.push(`${name(run)} leaves its floor plan (crosses white space) — move it onto the plan.`); }
     }
     // 1b. Inside the building: no stretch of the run out in the white space around the plan
     // (a fixture just outside an exterior wall still gets its short stub).
@@ -59,6 +62,7 @@ export function auditRuns(
       const len = pathLength(drawn) * options.ftPerPt;
       if (out > 0.02 && out * len > 3) {
         whiteSpace += 1;
+        unsafeRunIds.add(run.id);
         flagged.push(`${name(run)} runs ${Math.round(out * 100)}% outside the building (white space) — reroute it inside.`);
       }
     }
@@ -68,6 +72,7 @@ export function auditRuns(
       if (inner.width <= 0 || inner.height <= 0) continue;
       if (drawn.some((p, i) => i + 1 < drawn.length && hitsBox(p, drawn[i + 1], inner))) {
         zoneHits += 1;
+        unsafeRunIds.add(run.id);
         flagged.push(`${name(run)} passes through keep-clear zone "${zone.label}".`);
       }
     }
@@ -97,5 +102,5 @@ export function auditRuns(
     ...(!footage ? ['Home-run footage matches the drawn paths.'] : []),
     ...(branchFt.length >= 5 && !jumps ? ['No unusual fixture-to-fixture jumps.'] : []),
   ];
-  return { checked: runs.length, flagged, passed };
+  return { checked: runs.length, flagged, unsafeRunIds: [...unsafeRunIds], passed };
 }

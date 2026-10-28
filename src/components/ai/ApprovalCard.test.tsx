@@ -30,6 +30,24 @@ describe('formatApprovalPreview', () => {
 });
 
 describe('ApprovalCard handlers', () => {
+  it('shows count coverage and makes partial-layout approval explicit', () => {
+    const html = renderToStaticMarkup(<ApprovalCardView approval={{
+      ...baseApproval, toolId: 'suggest_runs', payload: {
+        documentId: 'doc', page: 1,
+        coverage: {
+          total: 2, connected: 1, unresolved: 1, complete: false,
+          fixtures: [{ id: 'missed', markerId: 'missed', status: 'blocked', circuitIds: ['B-8'], runIds: [], reason: 'No safe route.' }],
+        },
+      },
+    }} />);
+    expect(html).toContain('2 counted');
+    expect(html).toContain('1 connected');
+    expect(html).toContain('1 unresolved');
+    expect(html).toContain('Incomplete layout');
+    expect(html).toContain('Show unresolved counts');
+    expect(html).toContain('No safe route.');
+    expect(html).toContain('Place partial layout');
+  });
   it('wires Approve and Reject to the same onResolve callback used by handleApprovalDecision', () => {
     const html = renderToStaticMarkup(
       <ApprovalCardView approval={baseApproval} onResolve={() => undefined} />,

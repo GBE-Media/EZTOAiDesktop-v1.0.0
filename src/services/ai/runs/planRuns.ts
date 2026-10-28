@@ -307,18 +307,41 @@ export function planRuns(input: PlanRunsInput): RunPlan {
 
   // 2. Group circuits into home-run conduits by direction from the panel.
   const groups = groupCircuits(input.circuits.filter(c => circuitLegs.has(c.id)), input.panel, settings);
-  groups.forEach((group, index) => {
+  for (let index = 0; index < groups.length; index += 1) {
+    const group = groups[index];
     const legs = group.map(c => circuitLegs.get(c.id) as { homeDevice: Pt; branchFt: number; farthestFt: number; loadCenterFt: number });
     // Home run starts at the group's device closest to the panel.
     const startLeg = legs.reduce((best, leg) => dist(leg.homeDevice, input.panel) < dist(best.homeDevice, input.panel) ? leg : best, legs[0]);
+    // A shared home run must physically collect EVERY circuit, not merely list its ID.
+    // Route each other string to the shared start. If collection fails, try separate home
+    // runs instead; never invent a connector through a blocked area.
+    const collectors = legs.map(leg => dist(leg.homeDevice, startLeg.homeDevice) < 1e-6
+      ? null : router.route(leg.homeDevice, startLeg.homeDevice));
     const route = router.route(startLeg.homeDevice, input.panel);
-    if (!route.ok) {
+    if (!route.ok || collectors.some(leg => leg && !leg.ok)) {
+      if (group.length > 1) {
+        groups.push(...group.map(c => [c]));
+        continue;
+      }
       // The group's branch strings are dropped with it: nothing is drawn that can't reach the panel.
       const ids = new Set(group.map(c => c.id));
       for (let i = runs.length - 1; i >= 0; i -= 1) if (runs[i].kind === 'branch' && ids.has(runs[i].circuitIds[0])) runs.splice(i, 1);
       blockedCircuits.push(...ids);
-      return;
+      continue;
     }
+    collectors.forEach((leg, i) => {
+      if (!leg) return;
+      const ft = pathLength(leg.path) * input.ftPerPt;
+      legs[i] = { ...legs[i], branchFt: legs[i].branchFt + ft, farthestFt: legs[i].farthestFt + ft, loadCenterFt: legs[i].loadCenterFt + ft };
+      circuitLegs.set(group[i].id, legs[i]);
+      runs.push({
+        id: `${group[i].id}-collector`, kind: 'branch', circuitIds: [group[i].id],
+        path: leg.path, fromPt: legs[i].homeDevice, toPt: startLeg.homeDevice,
+        lengthFt: round1(ft), bendsDeg: totalBendDegrees(leg.path), wallCrossings: leg.wallCrossings,
+        label: '', note: 'Connects this circuit to the shared home run.',
+        sizing: [], vdLengthFt: 0, warnings: [],
+      });
+    });
     router.markUsed(route.path);
     const riserFt = input.riser?.ft || 0;
     const homeFt = pathLength(route.path) * input.ftPerPt + riserFt;
@@ -385,7 +408,7 @@ export function planRuns(input: PlanRunsInput): RunPlan {
       warnings: runWarnings,
     });
     warnings.push(...runWarnings.map(w => `HR${index + 1}: ${w}`));
-  });
+  }
 
   // Offset parallel conduits so they read as separate runs — but never into a keep-clear zone.
   const homeRuns = runs.filter(r => r.kind === 'homerun');
