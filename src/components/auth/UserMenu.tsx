@@ -169,7 +169,7 @@ export function UserMenu() {
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={()=>setShowBilling(true)} className="cursor-pointer">
           <CreditCard className="h-4 w-4 mr-2" />
-          Billing &amp; Users
+          Subscription &amp; Users
         </DropdownMenuItem>
         
         <DropdownMenuItem 
