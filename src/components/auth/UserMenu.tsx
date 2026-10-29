@@ -1,7 +1,7 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useTheme } from 'next-themes';
 import { useEffect, useState } from 'react';
-import { LogOut, User, ChevronDown, Moon, Sun, Download, Upload } from 'lucide-react';
+import { LogOut, User, ChevronDown, Moon, Sun, Download, Upload, CreditCard } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { TrainingMaterialDialog } from '@/components/ai/TrainingMaterialDialog';
+import { BillingPanel } from './BillingPanel';
 
 export function UserMenu() {
   const { user, signOut } = useAuth();
@@ -32,10 +33,9 @@ export function UserMenu() {
   const [updateReady, setUpdateReady] = useState(false);
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [showTrainingDialog, setShowTrainingDialog] = useState(false);
+  const [showBilling,setShowBilling] = useState(false);
 
-  if (!user) return null;
-
-  const displayName = user.email?.split('@')[0] || 'User';
+  const displayName = user?.email?.split('@')[0] || 'User';
   const isDark = theme === 'dark';
 
   useEffect(() => {
@@ -70,6 +70,14 @@ export function UserMenu() {
       cleanupError?.();
     };
   }, [toast]);
+
+  useEffect(()=>{
+    const show=()=>setShowBilling(true);
+    window.addEventListener('billing-required',show);
+    return()=>window.removeEventListener('billing-required',show);
+  },[]);
+
+  if (!user) return null;
 
   const handleCheckForUpdates = async () => {
     if (!window.electronAPI?.checkForUpdates) {
@@ -159,6 +167,10 @@ export function UserMenu() {
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={()=>setShowBilling(true)} className="cursor-pointer">
+          <CreditCard className="h-4 w-4 mr-2" />
+          Billing &amp; Users
+        </DropdownMenuItem>
         
         <DropdownMenuItem 
           onClick={signOut} 
@@ -169,6 +181,7 @@ export function UserMenu() {
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+    <BillingPanel open={showBilling} onOpenChange={setShowBilling} />
 
     {/* Update Ready Dialog */}
     <AlertDialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>

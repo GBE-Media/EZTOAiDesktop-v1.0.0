@@ -32,6 +32,9 @@ jobs:
       - name: Typecheck application
         run: npx tsc -p tsconfig.app.json --noEmit
 
+      - name: Typecheck billing and AI Edge Functions
+        run: npm run check:billing-functions
+
       - name: Run full Vitest suite
         run: npm test
 

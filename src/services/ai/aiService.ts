@@ -68,6 +68,7 @@ function isModelAccessError(message: string): boolean {
 const RETRYABLE_STATUS_CODES = new Set([400, 404, 422, 500, 502, 503]);
 
 function isRetryableProxyError(error: unknown): boolean {
+  if (error instanceof ProxyRequestError && error.status === 402) return false;
   const message = error instanceof Error ? error.message : String(error);
   if (isModelAccessError(message)) {
     return true;

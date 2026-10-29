@@ -18,6 +18,7 @@
     "bench:large": "node scripts/perfA_bench/bench_run.mjs",
     "deploy:ai-proxy": "node scripts/deploy-ai-proxy.mjs",
     "check:ai-proxy-deploy": "node scripts/check-ai-proxy-deploy.mjs",
+    "check:billing-functions": "npx --yes deno@2.9.6 check --frozen supabase/functions/billing-api/index.ts supabase/functions/billing-webhook/index.ts supabase/functions/ai-proxy/index.ts",
     "preview": "vite preview",
     "package": "npm run icons:generate && npm run build && npm run electron:build && electron-builder",
     "semantic-release": "semantic-release"
@@ -83,6 +84,7 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.13",
     "@eslint/js": "^9.32.0",
     "@semantic-release/changelog": "^6.0.3",
     "@semantic-release/git": "^10.0.1",

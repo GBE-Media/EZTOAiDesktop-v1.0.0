@@ -8,3 +8,10 @@ verify_jwt = false
 
 [functions.sync-products]
 verify_jwt = false
+
+# billing-api verifies the bearer JWT with auth.getUser; webhook verifies Stripe HMAC.
+[functions.billing-api]
+verify_jwt = false
+
+[functions.billing-webhook]
+verify_jwt = false
