@@ -11,6 +11,7 @@
 
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.38.4';
+import { reservationBound, shadowCost, shadowRate, usageTokens, validateBillingRequestShape } from '../_shared/billing-policy.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') || '';
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '';
@@ -47,6 +48,8 @@ interface AIRequest {
   responseFormat?: 'text' | 'json';
   tools?: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }>;
   toolChoice?: 'auto' | 'none' | { name: string };
+  taskId?: string;
+  feature?: string;
 }
 
 type ProxyMessage = AIRequest['messages'][number];
@@ -230,6 +233,12 @@ serve(async (req: Request) => {
 
     // Parse request body
     const body: AIRequest = await req.json();
+    try {
+      validateBillingRequestShape(body);
+    } catch (error) {
+      return new Response(JSON.stringify({error:error instanceof Error?error.message:'Invalid AI request.'}),
+        {status:400,headers:{...corsHeaders,'Content-Type':'application/json'}});
+    }
     const { provider, model, messages, temperature, maxTokens, responseFormat, tools, toolChoice } = body;
 
     // Validate required fields
@@ -268,6 +277,34 @@ serve(async (req: Request) => {
       }
     }
 
+    if (!['openai','anthropic','lovable'].includes(provider)) {
+      return new Response(JSON.stringify({error:'Unsupported provider'}),{status:400,headers:{...corsHeaders,'Content-Type':'application/json'}});
+    }
+    // Fail closed before spending if the durable ledger or entitlement check is unavailable.
+    // Deploy the additive migration BEFORE deploying this function.
+    const bound = reservationBound(body);
+    const { data: reservation, error: reserveError } = await supabase.rpc('billing_reserve_usage',{
+      p_user_id:user.id,p_provider:provider,p_model:model,p_reserve:bound.microUsd,
+      p_task_id:typeof body.taskId==='string'?body.taskId:null,
+      p_feature:typeof body.feature==='string'?body.feature:'assistant',p_bounded:bound.bounded,
+    });
+    if (reserveError || !reservation) {
+      console.error('Billing reservation failed',reserveError?.code);
+      return new Response(JSON.stringify({error:'Billing verification is temporarily unavailable. No AI request was sent.'}),{status:503,headers:{...corsHeaders,'Content-Type':'application/json'}});
+    }
+    if (!reservation.allowed) {
+      return new Response(JSON.stringify({error:reservation.message,code:reservation.code,billingRequired:true}),{status:402,headers:{...corsHeaders,'Content-Type':'application/json'}});
+    }
+    // Network failures/unknown outcomes retain the reservation for reconciliation, not free retries.
+    // AI monetary charges remain zero even when a reservation is retained.
+    const settle = async (success:boolean,input:number,output:number,shadow:number,resolved:string,details:unknown,error:string|null=null) => {
+      const result = await supabase.rpc('billing_settle_usage',{
+        p_event_id:reservation.eventId,p_success:success,p_input:input,p_output:output,p_shadow:shadow,
+        p_model:resolved,p_details:details,p_error:error,
+      });
+      if (result.error) console.error('Billing settlement requires reconciliation',reservation.eventId,result.error.code);
+    };
+
     // Make the AI request
     let aiResponse: Response;
     let tokensInput = 0;
@@ -290,20 +327,24 @@ serve(async (req: Request) => {
     const aiData = await aiResponse.json();
 
     if (!aiResponse.ok) {
+      await settle(false,0,0,0,model,null,`provider_http_${aiResponse.status}`);
       return new Response(
         JSON.stringify({ error: aiData.error?.message || 'AI provider error', details: aiData }),
         { status: aiResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Extract token usage (the Lovable gateway is OpenAI-compatible)
-    if (provider === 'openai' || provider === 'lovable') {
-      tokensInput = aiData.usage?.prompt_tokens || 0;
-      tokensOutput = aiData.usage?.completion_tokens || 0;
-    } else if (provider === 'anthropic') {
-      tokensInput = aiData.usage?.input_tokens || 0;
-      tokensOutput = aiData.usage?.output_tokens || 0;
-    }
+    // Cache input tokens also represent provider usage. No prompt/image content enters billing logs.
+    const counted = usageTokens(aiData.usage);
+    tokensInput = counted.input;
+    tokensOutput = counted.output;
+    const resolvedModel = aiData.model || model;
+    const known = !!shadowRate(resolvedModel);
+    if (tokensInput || tokensOutput) {
+      await settle(true,tokensInput,tokensOutput,
+        known?shadowCost(resolvedModel,tokensInput,tokensOutput):bound.microUsd,resolvedModel,
+        {pricing_known:known,reservation_exceeded:known && shadowCost(resolvedModel,tokensInput,tokensOutput)>bound.microUsd});
+    } // Missing usage stays reserved until manually reconciled; never report a fabricated zero.
 
     // Update usage tracking
     if (tokensInput > 0 || tokensOutput > 0) {
@@ -358,7 +399,7 @@ serve(async (req: Request) => {
   } catch (error) {
     console.error('AI Proxy error:', error);
     return new Response(
-      JSON.stringify({ error: error.message || 'Internal server error' }),
+      JSON.stringify({ error: error instanceof Error ? error.message : 'Internal server error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

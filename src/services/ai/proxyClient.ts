@@ -32,6 +32,8 @@ export interface ProxyRequest {
   responseFormat?: 'text' | 'json';
   tools?: AIToolDefinition[];
   toolChoice?: 'auto' | 'none' | { name: string };
+  taskId?: string;
+  feature?: string;
 }
 
 export interface ProxyResponse {
@@ -140,6 +142,11 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
     // Check for auth error
     if (response.status === 401) {
       throw new ProxyRequestError('Session expired. Please log in again.', response.status);
+    }
+    if (response.status === 402) {
+      // A billing block is never a model failure and must not trigger a paid fallback.
+      window.dispatchEvent(new CustomEvent('billing-required'));
+      throw new ProxyRequestError(errorData.error || 'Open Billing & Users to review your subscription.',402);
     }
 
     if (response.status === 413) {
