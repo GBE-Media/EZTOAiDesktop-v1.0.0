@@ -38,8 +38,9 @@ export function BillingPanel({
         </DialogHeader>
         <div className="space-y-3 text-sm text-muted-foreground">
           <p>
-            BidveraAi is $300 per user per month, with a 7-day free trial. AI features
-            need an active subscription or a seat on your company's account.
+            BidveraAi is $300 per user per month, with a 7-day free trial. AI usage is
+            billed at provider cost plus 20% on the monthly invoice, and is free during the
+            trial. AI features need an active subscription or a seat on your company's account.
           </p>
           <p>
             Account owners add or remove seats, update cards and cancel from Account
