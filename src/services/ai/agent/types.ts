@@ -172,6 +172,8 @@ export interface AgentModelMessage {
   name?: string;
   /** Assistant tool requests to replay as provider-native tool_calls / tool_use. */
   toolCalls?: AgentToolCallRequest[];
+  /** Images attached to this (user) message — e.g. a view_page render. */
+  images?: string[];
 }
 
 export interface AgentToolCallRequest {

@@ -39,6 +39,7 @@ import { describeResolvedDocument, resolveDocumentRef } from '../documentRef';
 import { ensurePageZones } from '../detection/pageZones';
 import type { PageZoneKind } from '../detection/pageZones';
 import { getAIService } from '../aiService';
+import { viewPage } from './viewPage';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 import {
   COMPARISON_CANDIDATE_MODEL,
@@ -715,6 +716,8 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
     }),
 
     setVisionModel: input => defaultSetVisionModel(input),
+
+    viewPage: input => viewPage(input, { signal: options.signal }),
 
     getPageLayout: async (input) => {
       const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};

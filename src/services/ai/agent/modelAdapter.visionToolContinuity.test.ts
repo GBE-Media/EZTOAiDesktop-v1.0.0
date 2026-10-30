@@ -1,6 +1,7 @@
 import './testGlobals';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AIMessage } from '../providers/types';
+import type { AgentModelMessage } from './types';
 import { projectMessagesPreservingToolFields } from '../providers/projectMessagesPreservingToolFields';
 import { toAnthropicChatMessages, toOpenAIChatMessages } from '../providers/toolMessageAdapters';
 
@@ -154,5 +155,38 @@ describe('image-backed native tool continuity (vision path)', () => {
     });
     expect(flat.some(b => b.type === 'tool_use' && b.id === 'call_abc123')).toBe(true);
     expect(flat.some(b => b.type === 'tool_result' && b.tool_use_id === 'call_abc123')).toBe(true);
+  });
+});
+
+describe('view_page images reach the model', () => {
+  beforeEach(() => {
+    visionForRole.mockReset();
+    completeForRole.mockReset();
+    visionForRole.mockResolvedValue({ content: JSON.stringify({ type: 'final', message: 'ok' }), model: 'gpt-test', toolCalls: [] });
+  });
+
+  const history = (): AgentModelMessage[] => [
+    { role: 'user', content: 'Are the markers on the lights?' },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'call_v1', name: 'view_page', arguments: { page: 2 } }] },
+    { role: 'tool', name: 'view_page', toolCallId: 'call_v1', content: '{"status":"completed"}' },
+    { role: 'user', content: '[view_page] Attached automatically', images: ['data:image/jpeg;base64,VIEW'] },
+  ];
+
+  it('uses the vision path and keeps the render after the tool result, page snapshot on the request', async () => {
+    const adapter = createJsonToolModelAdapter('primary');
+    await adapter.complete({ runId: 'r-view', messages: history(), contextText: 'ctx', imageBase64: 'data:image/png;base64,PAGE' });
+    const outbound = (visionForRole.mock.calls[0][1] as { messages: AIMessage[] }).messages;
+    expect(outbound.find(m => m.content === 'Are the markers on the lights?')?.images).toEqual(['data:image/png;base64,PAGE']);
+    expect(outbound[outbound.length - 1].images).toEqual(['data:image/jpeg;base64,VIEW']);
+    const anthropic = toAnthropicChatMessages(outbound as AIMessage[]);
+    const last = anthropic.messages[anthropic.messages.length - 1] as unknown as { content: Array<{ type: string }> };
+    expect(last.content.some(b => b.type === 'image')).toBe(true);
+  });
+
+  it('switches to vision for view_page renders even without a page snapshot', async () => {
+    const adapter = createJsonToolModelAdapter('primary');
+    await adapter.complete({ runId: 'r-view2', messages: history(), contextText: 'ctx' });
+    expect(completeForRole).not.toHaveBeenCalled();
+    expect(visionForRole).toHaveBeenCalledTimes(1);
   });
 });

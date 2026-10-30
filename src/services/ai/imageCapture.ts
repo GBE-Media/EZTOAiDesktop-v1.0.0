@@ -491,3 +491,76 @@ export async function capturePageCrop(
     crop,
   };
 }
+
+/** Longest side (px) of an image the assistant views — sharp enough for symbols and small text. */
+export const VIEW_IMAGE_MAX_PX = 2048;
+
+/**
+ * Which part of the page to render for the assistant, in 0-100 percent of the page as displayed
+ * (rotation applied). Clamped to the page; a tiny or empty region grows to at least 2% per side.
+ */
+export function normalizeViewRegion(
+  region: { x?: unknown; y?: unknown; width?: unknown; height?: unknown } | undefined | null,
+): { x: number; y: number; width: number; height: number } {
+  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+  if (!region) return { x: 0, y: 0, width: 100, height: 100 };
+  let width = Math.min(100, Math.max(2, num(region.width, 100)));
+  let height = Math.min(100, Math.max(2, num(region.height, 100)));
+  const x = Math.min(100 - width, Math.max(0, num(region.x, 0)));
+  const y = Math.min(100 - height, Math.max(0, num(region.y, 0)));
+  width = Math.min(width, 100 - x);
+  height = Math.min(height, 100 - y);
+  return { x, y, width, height };
+}
+
+/**
+ * Render just one region of a page (or the whole page) at a scale that fits VIEW_IMAGE_MAX_PX,
+ * without rasterizing the rest of the sheet — a zoomed view of a 36×24 sheet stays sharp and small.
+ */
+export async function capturePageRegionView(
+  pdfDoc: PDFDocumentProxy,
+  pageNumber: number,
+  regionPct: { x: number; y: number; width: number; height: number },
+  options: {
+    maxPx?: number;
+    quality?: number;
+    /** Draw on top of the rendered region; toPx maps page 0-100 percent to image pixels. */
+    overlay?: (ctx: CanvasRenderingContext2D, toPx: (xPct: number, yPct: number) => [number, number]) => void;
+  } = {},
+): Promise<{ base64: string; width: number; height: number; scale: number; dpi: number }> {
+  const maxPx = options.maxPx ?? VIEW_IMAGE_MAX_PX;
+  const page = await pdfDoc.getPage(pageNumber);
+  const base = page.getViewport({ scale: 1 });
+  const cropW = (regionPct.width / 100) * base.width;
+  const cropH = (regionPct.height / 100) * base.height;
+  // Never upscale past ~600 dpi; small regions are already crisp there.
+  const scale = Math.min(maxPx / Math.max(cropW, cropH), 600 / 72);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(cropW * scale));
+  canvas.height = Math.max(1, Math.round(cropH * scale));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Could not get canvas context');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const offX = (regionPct.x / 100) * viewport.width;
+  const offY = (regionPct.y / 100) * viewport.height;
+  await page.render({
+    canvasContext: ctx,
+    viewport,
+    transform: [1, 0, 0, 1, -offX, -offY],
+  } as Parameters<typeof page.render>[0]).promise;
+  if (options.overlay) {
+    options.overlay(ctx, (xPct, yPct) => [
+      (xPct / 100) * viewport.width - offX,
+      (yPct / 100) * viewport.height - offY,
+    ]);
+  }
+  return {
+    base64: canvas.toDataURL('image/jpeg', options.quality ?? 0.88),
+    width: canvas.width,
+    height: canvas.height,
+    scale,
+    dpi: Math.round(scale * 72),
+  };
+}

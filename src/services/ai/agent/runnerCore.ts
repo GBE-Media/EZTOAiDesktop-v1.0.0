@@ -37,6 +37,39 @@ export const DEFAULT_MAX_AGENT_STEPS = 12;
 const MAX_STEPS = DEFAULT_MAX_AGENT_STEPS;
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_PERSISTED_IMAGE_CHARS = 1_000_000;
+/** view_page renders kept attached in the conversation; older ones drop to their caption. */
+export const MAX_VIEW_IMAGES_IN_CONTEXT = 3;
+const VIEW_IMAGE_MESSAGE_PREFIX = '[view_page]';
+
+/**
+ * Attach view_page renders to the model's next step as a user message (tool results are text-only
+ * across providers). Older renders are detached so a long look-around stays affordable.
+ */
+export function attachViewImages(
+  messages: AgentSessionState['messages'],
+  images: Array<{ base64: string; caption: string }>,
+): void {
+  if (images.length === 0) return;
+  const kept = images.slice(-MAX_VIEW_IMAGES_IN_CONTEXT);
+  let budget = MAX_VIEW_IMAGES_IN_CONTEXT - kept.length;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (!message.images?.length || !message.content.startsWith(VIEW_IMAGE_MESSAGE_PREFIX)) continue;
+    if (budget >= message.images.length) {
+      budget -= message.images.length;
+      continue;
+    }
+    messages[i] = { ...message, images: undefined, content: `${message.content} (image no longer attached)` };
+    budget = 0;
+  }
+  messages.push({
+    role: 'user',
+    content: `${VIEW_IMAGE_MESSAGE_PREFIX} Attached automatically (not typed by the user): `
+      + kept.map(image => image.caption).join(' | ')
+      + '. Look at the image(s) and continue the task.',
+    images: kept.map(image => image.base64),
+  });
+}
 
 const sessions = new Map<string, AgentSessionState>();
 
@@ -164,7 +197,10 @@ function toPersistedSession(session: AgentSessionState): AgentSessionState {
     imageBase64: session.imageBase64 && session.imageBase64.length <= MAX_PERSISTED_IMAGE_CHARS
       ? session.imageBase64
       : undefined,
-    messages: session.messages.map(message => ({ ...message })),
+    // Page renders are re-made on demand; never written to disk.
+    messages: session.messages.map(({ images, ...message }) => (
+      images?.length ? { ...message, content: `${message.content} (image not saved)` } : { ...message }
+    )),
     actionsTaken: session.actionsTaken.map(action => ({ ...action })),
     toolHistory: session.toolHistory.map(entry => ({
       ...entry,
@@ -737,6 +773,7 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
     });
 
     let pendingAsk: AskUserRequest | null = null;
+    const viewImages: Array<{ base64: string; caption: string }> = [];
     // Several read-only tools in one batch (e.g. counting 4 pages): run them concurrently
     // (max 3 at a time); results are still recorded in the model's order below.
     const prefetched = new Map<string, Promise<AssistantToolResult>>();
@@ -886,7 +923,9 @@ export async function runPrimaryAgentLoop(options: RunPrimaryLoopOptions): Promi
         content: formatToolResultForPrompt(result),
       });
       if (result.askUser?.fields?.length && !pendingAsk) pendingAsk = result.askUser;
+      if (result.image?.base64) viewImages.push(result.image);
     }
+    attachViewImages(session.messages, viewImages);
 
     if (pendingAsk) {
       // A tool needs the user's input (e.g. where the panel is): ask with a card, mid-run.
@@ -1024,7 +1063,8 @@ function pushToolResult(
     toolId,
     title: title || getAssistantTool(toolId)?.title || toolId,
     args,
-    result,
+    // The rendered image goes to the model only — never into history, UI activity or disk.
+    result: result.image ? (({ image: _image, ...rest }) => rest)(result) : result,
     startedAt: new Date().toISOString(),
     completedAt: new Date().toISOString(),
   };

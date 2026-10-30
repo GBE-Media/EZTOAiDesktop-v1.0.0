@@ -50,7 +50,7 @@ import { getAIService } from '@/services/ai/aiService';
 import type { PipelineResult } from '@/services/ai/pipeline';
 import { summarizeCatalogForChat, summarizeMarkupsForChat } from '@/services/ai/contextSummary';
 import { cn } from '@/lib/utils';
-import { capturePageCrop, createPageImageGenerator, getOptimalScale } from '@/services/ai/imageCapture';
+import { capturePageCrop, capturePageRegionView, createPageImageGenerator, getOptimalScale, VIEW_IMAGE_MAX_PX } from '@/services/ai/imageCapture';
 import { ensureNumberedCalloutMentions } from '@/services/ai/callouts';
 import { fetchTrainingContext } from '@/services/ai/trainingService';
 import type { CanvasMarkup } from '@/types/markup';
@@ -651,13 +651,16 @@ export function AgentAssistantDrawer() {
       let agentImage = imageBase64;
       if (!agentImage && docData?.pdfDocument) {
         try {
-          const optimalScale = getOptimalScale(docData.originalPageWidth, docData.originalPageHeight);
-          const imageGenerator = createPageImageGenerator(docData.pdfDocument, {
-            scale: Math.min(optimalScale, 1.5),
-            format: 'jpeg',
-            quality: 0.85,
-          });
-          agentImage = await imageGenerator(currentPage || 1);
+          // Whole sheet at the size vision models actually read (long side 2048 px): small sheets
+          // get sharper, large sheets stop sending pixels the provider would downscale anyway.
+          // The assistant zooms with view_page when it needs detail.
+          const snapshot = await capturePageRegionView(
+            docData.pdfDocument,
+            currentPage || 1,
+            { x: 0, y: 0, width: 100, height: 100 },
+            { maxPx: VIEW_IMAGE_MAX_PX, quality: 0.85 },
+          );
+          agentImage = snapshot.base64;
           setPipelineStatus({
             isRunning: true,
             currentStage: 'vision',

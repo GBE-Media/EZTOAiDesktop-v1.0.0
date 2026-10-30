@@ -34,7 +34,9 @@ import type {
   PipelineStage,
   ChatMarkupPointer,
   SymbolCheckStats,
+  AIProviderType,
 } from './providers/types';
+import { describeCrossCheck, reconcileCrossCheck, type CrossCheckStats } from './detection/crossCheck';
 import {
   detectionPctToDocPointerFields,
   parseChatMarkupPointerRow,
@@ -379,7 +381,8 @@ async function requestStructuredAnalysis(
   imageBase64: string,
   trade: TradeType,
   prompt: string,
-  page: number
+  page: number,
+  selection?: { provider: AIProviderType; model: string },
 ): Promise<BlueprintAnalysisResult> {
   const aiService = getAIService();
   // Same image + prompt + model → same answer: reuse it, so re-counting a sheet never drifts.
@@ -387,19 +390,18 @@ async function requestStructuredAnalysis(
     && typeof aiService.getModelForStage === 'function'
     && !(typeof aiService.isVisionTrialActive === 'function' && aiService.isVisionTrialActive());
   const cacheKey = useCache
-    ? await visionCacheKey({ image: imageBase64, prompt, model: aiService.getModelForStage('vision'), trade, page }).catch(() => null)
+    ? await visionCacheKey({ image: imageBase64, prompt, model: selection?.model ?? aiService.getModelForStage('vision'), trade, page }).catch(() => null)
     : null;
   const hit = cacheKey ? getCachedVision(cacheKey) : null;
   if (hit) return hit;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const response = await aiService.analyzeBlueprint(
-      imageBase64,
-      trade,
-      attempt === 0
-        ? prompt
-        : `${prompt}\n\nREPAIR: The previous response was malformed or incomplete. Return only one valid JSON object matching the requested schema.`
-    );
+    const attemptPrompt = attempt === 0
+      ? prompt
+      : `${prompt}\n\nREPAIR: The previous response was malformed or incomplete. Return only one valid JSON object matching the requested schema.`;
+    const response = selection
+      ? await aiService.analyzeBlueprintWithModel(selection, imageBase64, trade, attemptPrompt)
+      : await aiService.analyzeBlueprint(imageBase64, trade, attemptPrompt);
     const parsed = parseJsonResponse(response.content);
     const normalized = normalizeAnalysis(parsed, page, trade);
     if (normalized) {
@@ -823,6 +825,21 @@ export async function analyzePageMaximumAccuracy(options: {
     afterConcurrentBatches: Math.ceil(bundle.tiles.length / tileConcurrency) + 1,
   });
   let completedTiles = 0;
+  // Independent second vision model on the same tiles (runs in parallel — no added wait).
+  const crossModel = typeof getAIService().getCrossCheckVisionModel === 'function'
+    ? getAIService().getCrossCheckVisionModel()
+    : null;
+  const crossResults: Array<{ region: PageTileRegion; result: BlueprintAnalysisResult }> = [];
+  const crossFailed: string[] = [];
+  const tilePrompt = (tile: (typeof bundle.tiles)[number]) => `${commonContext}\n\nDETAIL TILE ${tile.region.id}: Find every physical instance visible in this crop. ` +
+        'Return one item per physical symbol with quantity 1, center location and boundingBox in 0-100 coordinates relative to this tile, confidence, and visual evidence. ' +
+        (legendEntries.length
+          ? 'For each item include legendTypeCode (from the allowed legend list or "no_confident_match"), matchConfidence ("high"|"medium"|"low"), and matchReasoning. '
+          : '') +
+        'Do not count schedule/legend rows as installed items. '
+        + 'Never count drawing annotations as fixtures: column/row grid bubbles (a number or letter in a circle at the end of a dash-dot grid line), '
+        + 'section/detail callouts (a circle split with a sheet number like E-6), view-title bubbles, keynote hexagons/diamonds, north arrows, or text tags themselves — '
+        + 'count the fixture symbol, not the label next to it.';
   const runTile = async (tile: (typeof bundle.tiles)[number], index: number) => {
     onProgress?.(
       `Analyzing page ${page} detail tile ${index + 1}/${bundle.tiles.length}...`,
@@ -832,15 +849,7 @@ export async function analyzePageMaximumAccuracy(options: {
       const result = await withTileRetry(() => requestStructuredAnalysis(
         tile.base64,
         trade,
-        `${commonContext}\n\nDETAIL TILE ${tile.region.id}: Find every physical instance visible in this crop. ` +
-        'Return one item per physical symbol with quantity 1, center location and boundingBox in 0-100 coordinates relative to this tile, confidence, and visual evidence. ' +
-        (legendEntries.length
-          ? 'For each item include legendTypeCode (from the allowed legend list or "no_confident_match"), matchConfidence ("high"|"medium"|"low"), and matchReasoning. '
-          : '') +
-        'Do not count schedule/legend rows as installed items. '
-        + 'Never count drawing annotations as fixtures: column/row grid bubbles (a number or letter in a circle at the end of a dash-dot grid line), '
-        + 'section/detail callouts (a circle split with a sheet number like E-6), view-title bubbles, keynote hexagons/diamonds, north arrows, or text tags themselves — '
-        + 'count the fixture symbol, not the label next to it.',
+        tilePrompt(tile),
         page
       ));
       tileResults.push({ region: tile.region, result });
@@ -863,7 +872,23 @@ export async function analyzePageMaximumAccuracy(options: {
       }
     },
   );
-  await Promise.all(workers);
+  let nextCross = 0;
+  const crossWorkers = crossModel
+    ? Array.from({ length: Math.min(tileConcurrency, bundle.tiles.length) }, async () => {
+        while (nextCross < bundle.tiles.length) {
+          const tile = bundle.tiles[nextCross];
+          nextCross += 1;
+          try {
+            const result = await withTileRetry(() => requestStructuredAnalysis(tile.base64, trade, tilePrompt(tile), page, crossModel));
+            crossResults.push({ region: tile.region, result });
+          } catch (error) {
+            crossFailed.push(tile.region.id);
+            console.warn('[analyzePage] cross-check tile failed', tile.region.id, error);
+          }
+        }
+      })
+    : [];
+  await Promise.all([...workers, ...crossWorkers]);
   const overview = await finishOverview();
 
   onProgress?.(`Reconciling page ${page} detections...`, 80);
@@ -872,13 +897,39 @@ export async function analyzePageMaximumAccuracy(options: {
     if (byRegion !== 0) return byRegion;
     return a.region.id.localeCompare(b.region.id);
   });
-  const tileItems = reconcileTileDetections(tileResults, pageWidth, pageHeight);
+  let tileItems = reconcileTileDetections(tileResults, pageWidth, pageHeight);
+  // Second opinion: pair both models' detections by position before the deterministic checks.
+  // A cross-check tile that failed means its area wasn't double-read — then skip it rather than
+  // treat everything there as "seen by one model only".
+  let visionCrossCheck: CrossCheckStats | undefined;
+  const crossNotes: string[] = [];
+  if (crossModel && tileItems.length > 0) {
+    if (crossFailed.length === 0 && crossResults.length > 0) {
+      crossResults.sort((a, b) => (a.region.row * 1000 + a.region.col) - (b.region.row * 1000 + b.region.col) || a.region.id.localeCompare(b.region.id));
+      const primaryTiles = new Set(tileResults.map(({ region }) => region.id));
+      const crossItems = reconcileTileDetections(
+        crossResults.filter(({ region }) => primaryTiles.has(region.id)),
+        pageWidth,
+        pageHeight,
+      );
+      const checked = reconcileCrossCheck(tileItems, crossItems, pageWidth, pageHeight, {
+        model: crossModel.model,
+        hasLegend: legendEntries.length > 0,
+      });
+      tileItems = checked.items;
+      visionCrossCheck = checked.stats;
+      crossNotes.push(describeCrossCheck(checked.stats, legendEntries.length > 0));
+      console.info('[analyzePage] cross-check', { page, ...checked.stats });
+    } else {
+      crossNotes.push(`Second vision model check skipped on this page (${crossFailed.length} tile(s) could not be read by ${crossModel.model}).`);
+    }
+  }
   const rawItems = tileItems.length > 0 ? tileItems : overview.items;
   const locatedItems = rawItems.filter(item => !item.locationMissing);
   const missingLocationItems = rawItems.filter(item => !!item.locationMissing);
 
   // Deterministic cross-check against the type tags printed on the plan (same every run).
-  const extraNotes: string[] = [];
+  const extraNotes: string[] = [...crossNotes];
   let anchoredItems = locatedItems;
   // Grid bubbles, section callouts and view-title bubbles: never fixtures, never type tags.
   const zoneInput = visibleOnly ? null : await Promise.resolve().then(() => pdfDoc.getPage(page)).then(getZoneInputs).catch(() => null);
@@ -1081,6 +1132,7 @@ ${JSON.stringify(items.map(item => ({
       countReliability,
       ...(failedTiles.length ? { incompleteTiles: [...failedTiles].sort() } : {}),
       ...(symbolCheck ? { symbolCheck } : {}),
+      ...(visionCrossCheck ? { visionCrossCheck } : {}),
       countVerificationNotes: [
         ...(borrowedLegend && !borrowedLegend.ownPage ? [`Fixture types from the legend/schedule on ${borrowedLegend.sourceLabel}.`] : []),
         ...legendAware.verification.notes,

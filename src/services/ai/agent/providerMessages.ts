@@ -70,6 +70,7 @@ export function agentMessagesToProviderMessages(
     mapped.push({
       role: 'user',
       content: message.content ?? '',
+      ...(message.images?.length ? { images: [...message.images] } : {}),
     });
   }
 

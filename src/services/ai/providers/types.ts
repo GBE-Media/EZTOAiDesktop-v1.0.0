@@ -138,6 +138,15 @@ export interface BlueprintAnalysisResult {
   typeCounts?: Record<string, number>;
   /** Legend type codes extracted from this page (schedule/legend). */
   legendTypeCodes?: string[];
+  /** Second-opinion vision model agreement for this page's detections. */
+  visionCrossCheck?: {
+    model: string;
+    agreed: number;
+    typeConflicts: number;
+    primaryOnly: number;
+    secondOnly: number;
+    sentToReview: number;
+  };
   /** Full per-legend-type counts including zeros. */
   legendTypeCounts?: Record<string, number>;
   /** Legend-grounded reliability for per-type counts. */
@@ -203,6 +212,8 @@ export interface DetectedItem {
   locationMissing?: boolean;
   /** Shape fingerprint of the drawn symbol this detection was snapped to. */
   symbolSig?: string;
+  /** Result of the second-opinion vision model pairing for this detection. */
+  crossCheck?: 'agreed' | 'type_conflict' | 'primary_only' | 'second_only';
   /** Tile id that produced this detection, used for seam merge / ownership. */
   sourceTileId?: string;
   /**
