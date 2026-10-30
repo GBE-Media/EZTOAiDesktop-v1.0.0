@@ -14,6 +14,8 @@ export interface AssistantToolContext {
   getDocumentContext: () => unknown;
   analyzePage: (input: unknown) => Promise<unknown>;
   extractPageText: (input: unknown) => Promise<unknown>;
+  /** Render a page or zoomed region (with count markers drawn) for the model to look at. */
+  viewPage?: (input: unknown) => Promise<import('../agent/viewPage').ViewPageResult>;
   /** Count/filter detections from cached (or fresh) page analysis. */
   countPageItems?: (input: unknown) => Promise<unknown>;
   /** Count a page several times with the current and a candidate vision model and score them. */
@@ -63,6 +65,8 @@ export interface AssistantToolResult {
   citations?: import('@/types/assistant').EvidenceCitation[];
   /** Pause the run and show a structured question card (answers resume the same run). */
   askUser?: import('../agent/askUser').AskUserRequest;
+  /** Image the model looks at on its next step (kept out of the text output). */
+  image?: { base64: string; caption: string };
 }
 
 export interface AssistantToolDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {

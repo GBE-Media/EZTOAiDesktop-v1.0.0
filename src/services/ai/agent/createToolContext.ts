@@ -39,6 +39,7 @@ import { describeResolvedDocument, resolveDocumentRef } from '../documentRef';
 import { ensurePageZones } from '../detection/pageZones';
 import type { PageZoneKind } from '../detection/pageZones';
 import { getAIService } from '../aiService';
+import { viewPage } from './viewPage';
 import { useAISettingsStore } from '@/store/aiSettingsStore';
 import {
   COMPARISON_CANDIDATE_MODEL,
@@ -564,7 +565,7 @@ async function defaultCompareVisionModels(
   const current = service.getPipelineConfig().visionModel;
   const candidateModel = typeof raw.candidateModel === 'string' && raw.candidateModel.trim()
     ? raw.candidateModel.trim()
-    : (current.model === COMPARISON_CANDIDATE_MODEL ? 'openai/gpt-5.6-sol' : COMPARISON_CANDIDATE_MODEL);
+    : (current.model === COMPARISON_CANDIDATE_MODEL ? 'openai/gpt-6.1-sol' : COMPARISON_CANDIDATE_MODEL);
   const candidate = { provider: 'lovable' as const, model: candidateModel };
   const startedRevision = pdfData.contentRevision ?? 0;
   const zones = await ensurePageZones(docId, page);
@@ -715,6 +716,8 @@ export function createAgentToolContext(options: CreateAgentToolContextOptions): 
     }),
 
     setVisionModel: input => defaultSetVisionModel(input),
+
+    viewPage: input => viewPage(input, { signal: options.signal }),
 
     getPageLayout: async (input) => {
       const raw = (input && typeof input === 'object') ? input as Record<string, unknown> : {};

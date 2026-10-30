@@ -90,9 +90,9 @@ interface AISettingsState extends AISettings {
 }
 
 const DEFAULT_PIPELINE_MODELS = {
-  vision: { provider: 'lovable' as AIProviderType, model: 'openai/gpt-5.6-sol' },
-  estimation: { provider: 'anthropic' as AIProviderType, model: 'claude-opus-4-7' },
-  placement: { provider: 'lovable' as AIProviderType, model: 'openai/gpt-5.6-sol' },
+  vision: { provider: 'lovable' as AIProviderType, model: 'openai/gpt-6.1-sol' },
+  estimation: { provider: 'anthropic' as AIProviderType, model: 'claude-opus-5-5' },
+  placement: { provider: 'lovable' as AIProviderType, model: 'openai/gpt-6.1-sol' },
 };
 
 function applyPipelineModelsToService(pipelineModels: AISettings['pipelineModels']) {

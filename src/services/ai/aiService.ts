@@ -38,6 +38,7 @@ import {
 // direct OpenAI model as its last resort.
 const FALLBACK_CHAINS: Partial<Record<AIProviderType, Array<{ provider: AIProviderType; model: string }>>> = {
   lovable: [
+    { provider: 'lovable', model: 'openai/gpt-5.6-sol' },
     { provider: 'lovable', model: 'openai/gpt-5.5' },
     { provider: 'openai', model: 'gpt-4o' },
   ],
@@ -46,8 +47,8 @@ const FALLBACK_CHAINS: Partial<Record<AIProviderType, Array<{ provider: AIProvid
     { provider: 'openai', model: 'gpt-4o' },
   ],
   anthropic: [
+    { provider: 'anthropic', model: 'claude-sonnet-5-5' },
     { provider: 'anthropic', model: 'claude-sonnet-4-6' },
-    { provider: 'anthropic', model: 'claude-opus-4-7' },
   ],
 };
 
@@ -90,17 +91,22 @@ export interface AIServiceConfig {
 const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
   visionModel: {
     provider: 'lovable',
-    model: 'openai/gpt-5.6-sol',
+    model: 'openai/gpt-6.1-sol',
   },
   estimationModel: {
     provider: 'anthropic',
-    model: 'claude-opus-4-7',
+    model: 'claude-opus-5-5',
   },
   placementModel: {
     provider: 'lovable',
-    model: 'openai/gpt-5.6-sol',
+    model: 'openai/gpt-6.1-sol',
   },
 };
+
+/** Second-opinion vision model (different family from the primary GPT vision model). */
+export const CROSS_CHECK_VISION_MODEL = { provider: 'lovable' as AIProviderType, model: 'google/gemini-4-argon' };
+/** Used when the primary vision model is itself Gemini. */
+export const CROSS_CHECK_FALLBACK_VISION_MODEL = { provider: 'lovable' as AIProviderType, model: 'openai/gpt-6.1-sol' };
 
 /** A model forced for the vision stage while a model comparison runs. */
 interface VisionModelTrial {
@@ -115,6 +121,7 @@ class AIService {
   private config: AIServiceConfig;
   private initialized: boolean = false;
   private visionTrial: VisionModelTrial | null = null;
+  private crossCheckEnabled = true;
 
   constructor() {
     this.config = {
@@ -212,6 +219,46 @@ class AIService {
   /** True while a model comparison is running (its calls must never come from a cache). */
   isVisionTrialActive(): boolean {
     return !!this.visionTrial;
+  }
+
+  /** Turn the second-opinion vision pass on or off (Settings → AI). */
+  setVisionCrossCheckEnabled(enabled: boolean) {
+    this.crossCheckEnabled = enabled;
+  }
+
+  /**
+   * Independent second vision model that re-reads the same detail tiles so counts and marker
+   * positions are cross-checked. Always a different model family from the primary vision model.
+   * Returns null when turned off or while a model comparison runs (a trial must measure one model).
+   */
+  getCrossCheckVisionModel(): { provider: AIProviderType; model: string } | null {
+    if (!this.crossCheckEnabled || this.visionTrial) return null;
+    const primary = this.getStageConfig('vision').model.toLowerCase();
+    return /gemini/.test(primary)
+      ? { ...CROSS_CHECK_FALLBACK_VISION_MODEL }
+      : { ...CROSS_CHECK_VISION_MODEL };
+  }
+
+  /** Blueprint analysis with an explicit model (used by the cross-check pass). */
+  async analyzeBlueprintWithModel(
+    selection: { provider: AIProviderType; model: string },
+    imageBase64: string,
+    trade: TradeType,
+    additionalContext?: string,
+  ): Promise<AICompletionResponse> {
+    return this.visionWithSelection(selection, {
+      messages: [
+        { role: 'system', content: this.getBlueprintAnalysisPrompt(trade) },
+        {
+          role: 'user',
+          content: additionalContext || 'Analyze this blueprint and identify all relevant items, fixtures, and components.',
+          images: [imageBase64],
+        },
+      ],
+      responseFormat: 'json',
+      temperature: 0,
+      maxTokens: 16384,
+    });
   }
 
   getAgentModels(): AgentModelsConfig {

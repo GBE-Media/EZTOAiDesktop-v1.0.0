@@ -69,7 +69,7 @@ describe('strict model override', () => {
     });
     expect(sendProxyRequest.mock.calls[0][0].model).toBe('google/gemini-3.1-pro-preview');
     expect(out).toMatchObject({ result: 1, calls: 1, answeredBy: ['google/gemini-3.1-pro-preview'] });
-    expect(service.getModelForStage('vision')).toBe('openai/gpt-5.6-sol');
+    expect(service.getModelForStage('vision')).toBe('openai/gpt-6.1-sol');
   });
 
   it('does not fall back to another model when the trial model is refused', async () => {

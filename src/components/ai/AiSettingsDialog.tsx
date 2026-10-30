@@ -221,7 +221,7 @@ function ManagedModelRow({
   currentModel: { provider: AIProviderType; model: string } | undefined;
 }) {
   const provider = currentModel?.provider || 'lovable';
-  const model = currentModel?.model || 'openai/gpt-5.6-sol';
+  const model = currentModel?.model || 'openai/gpt-6.1-sol';
   const displayName = resolveModelDisplayName({ provider, model });
 
   return (

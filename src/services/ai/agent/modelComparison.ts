@@ -5,7 +5,7 @@
  */
 import type { SymbolCheckStats } from '../providers/types';
 
-export const COMPARISON_CANDIDATE_MODEL = 'google/gemini-3.1-pro-preview';
+export const COMPARISON_CANDIDATE_MODEL = 'google/gemini-4-argon';
 
 export interface ComparisonRun {
   typeCounts?: Record<string, number>;

@@ -6,6 +6,7 @@
 /** Models that reject any explicit temperature (only the API default is allowed). */
 const TEMPERATURE_FIXED_DEFAULT_PATTERNS: RegExp[] = [
   /^(openai\/)?gpt-5(\b|[.-])/i,
+  /^(openai\/)?gpt-6(\b|[.-])/i,
   /^(openai\/)?o1(\b|[.-])/i,
   /^(openai\/)?o3(\b|[.-])/i,
   /^(openai\/)?o4(\b|[.-])/i,

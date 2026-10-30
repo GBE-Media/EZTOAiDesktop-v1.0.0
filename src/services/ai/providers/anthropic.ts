@@ -19,6 +19,26 @@ const ANTHROPIC_VERSION = '2023-06-01';
 
 const ANTHROPIC_MODELS: AIModelInfo[] = [
   {
+    id: 'claude-opus-5-5',
+    name: 'Claude Opus 5.5',
+    provider: 'anthropic',
+    capabilities: ['text', 'vision', 'code', 'reasoning'],
+    contextWindow: 1000000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.004, output: 0.02 },
+  },
+  {
+    id: 'claude-sonnet-5-5',
+    name: 'Claude Sonnet 5.5',
+    provider: 'anthropic',
+    capabilities: ['text', 'vision', 'code', 'reasoning'],
+    contextWindow: 1000000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.002, output: 0.01 },
+  },
+  {
     id: 'claude-opus-4-7',
     name: 'Claude Opus 4.7',
     provider: 'anthropic',
@@ -51,7 +71,7 @@ const ANTHROPIC_MODELS: AIModelInfo[] = [
 ];
 
 /** Default Anthropic model ID — must remain in ANTHROPIC_MODELS. */
-export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-4-7';
+export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5-5';
 
 export { ANTHROPIC_MODELS };
 export class AnthropicProvider implements AIProvider {

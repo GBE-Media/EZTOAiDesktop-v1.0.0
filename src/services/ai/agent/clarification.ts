@@ -129,6 +129,7 @@ export function labelForAgentStatus(status: string, detail?: string): string {
   if (status === 'running_tool' && detail) {
     const id = String(detail);
     if (id === 'get_page_layout') return 'Finding the drawing area…';
+    if (id === 'view_page') return 'Looking at the drawing…';
     if (id === 'count_page_items') return 'Counting fixtures…';
     if (id === 'analyze_page') return 'Reading the sheet…';
     if (id === 'place_markups' || id === 'propose_callouts') return 'Preparing markers…';

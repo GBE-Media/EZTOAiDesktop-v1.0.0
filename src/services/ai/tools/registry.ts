@@ -154,6 +154,50 @@ const coreTools: AssistantToolDefinition[] = [
     }),
   },
   {
+    id: 'view_page',
+    title: 'Look at the drawing',
+    description:
+      'Look at a sheet yourself: renders a page — or a zoomed region of it — as a sharp image you see on your next step. '
+      + 'Use it to read details, schedules, notes and title blocks on any page (not just the current one), to zoom into '
+      + 'dense areas before counting or placing, and to check that count markers sit on their symbols (existing count '
+      + 'markers are drawn as numbered rings: red = placed, amber = review). region is in 0-100 percent of the page '
+      + '(x, y = top-left). Or pass center as a DocPoint (e.g. a marker x/y from count_page_items) with sizePt for a '
+      + 'close-up. Zoom in (region ≤ 25% wide) when symbols or text are small. Each view costs a vision call — look '
+      + 'only where it changes your answer.',
+    risk: 'read',
+    requiresConfirmation: false,
+    undoable: false,
+    schema: z.object({
+      page: z.number().int().positive().optional().describe('Page to view (default: the current page).'),
+      documentId: z.string().min(1).optional(),
+      region: z.object({
+        x: z.number(),
+        y: z.number(),
+        width: z.number(),
+        height: z.number(),
+      }).optional().describe('Area to view in 0-100 percent of the page; omit for the whole sheet.'),
+      center: z.object({ x: z.number(), y: z.number() }).optional()
+        .describe('Close-up around this DocPoint (PDF points, same as count_page_items x/y).'),
+      sizePt: z.number().positive().optional().describe('Close-up box size in PDF points (default 144 = 2 in).'),
+      showMarkers: z.boolean().optional().describe('Draw existing count markers on the image (default true).'),
+    }),
+    execute: async (context, input) => {
+      if (!context.viewPage) {
+        return { status: 'stub', summary: 'Viewing pages is not available here.', stubReason: 'view_page not wired' };
+      }
+      const { image, ...output } = await context.viewPage(input);
+      if (output.status !== 'completed' || !image) {
+        return { status: 'failed', summary: output.message || 'Could not render the page.', output };
+      }
+      return {
+        status: 'completed',
+        summary: `Viewing page ${output.page}${input.region || input.center ? ' (zoomed)' : ''}.`,
+        output: { ...output, note: 'The image is attached to the next message.' },
+        image,
+      };
+    },
+  },
+  {
     id: 'count_page_items',
     title: 'Count page items',
     description:
@@ -222,7 +266,7 @@ const coreTools: AssistantToolDefinition[] = [
     title: 'Compare vision models',
     description:
       'A/B test the model that reads the drawings: counts one page several times (fresh, never cached) with the current '
-      + 'vision model and a candidate (default google/gemini-3.1-pro-preview), with the same symbol check for both, and scores '
+      + 'vision model and a candidate (default google/gemini-4-argon), with the same symbol check for both, and scores '
       + 'run-to-run count variation, % of markers placed on the drawn symbol, duplicates/misses fixed, and speed. '
       + 'Places nothing. Takes several minutes (6 page analyses at runs=3). Use only when the user asks to compare or test models.',
     risk: 'read',
