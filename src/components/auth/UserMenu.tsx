@@ -1,7 +1,7 @@
 import { useAuth } from '@/hooks/useAuth';
 import { useTheme } from 'next-themes';
 import { useEffect, useState } from 'react';
-import { LogOut, User, ChevronDown, Moon, Sun, Download, Upload, CreditCard } from 'lucide-react';
+import { LogOut, User, ChevronDown, Moon, Sun, Download, Upload, CreditCard, Gauge } from 'lucide-react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +24,8 @@ import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/hooks/use-toast';
 import { TrainingMaterialDialog } from '@/components/ai/TrainingMaterialDialog';
 import { BillingPanel } from './BillingPanel';
+import { UsagePanel } from './UsagePanel';
+import { loadUsageAccess, type UsageAccess } from '@/services/billing/usage';
 
 export function UserMenu() {
   const { user, signOut } = useAuth();
@@ -34,6 +36,8 @@ export function UserMenu() {
   const [showUpdateDialog, setShowUpdateDialog] = useState(false);
   const [showTrainingDialog, setShowTrainingDialog] = useState(false);
   const [showBilling,setShowBilling] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
+  const [usageAccess, setUsageAccess] = useState<UsageAccess | null>(null);
 
   const displayName = user?.email?.split('@')[0] || 'User';
   const isDark = theme === 'dark';
@@ -76,6 +80,26 @@ export function UserMenu() {
     window.addEventListener('billing-required',show);
     return()=>window.removeEventListener('billing-required',show);
   },[]);
+
+  // Only the team lead (the person whose subscription pays) gets the Usage meter.
+  const userId = user?.id;
+  useEffect(() => {
+    setUsageAccess(null);
+    if (!userId) return;
+    let cancelled = false;
+    loadUsageAccess(userId)
+      .then((access) => { if (!cancelled) setUsageAccess(access); })
+      .catch(() => { if (!cancelled) setUsageAccess(null); });
+    return () => { cancelled = true; };
+  }, [userId, showBilling]);
+
+  const openUsage = () => {
+    // Re-check the billing period each time the meter opens.
+    if (userId) {
+      loadUsageAccess(userId).then((access) => setUsageAccess(access)).catch(() => {});
+    }
+    setShowUsage(true);
+  };
 
   if (!user) return null;
 
@@ -167,6 +191,12 @@ export function UserMenu() {
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />
+        {usageAccess?.isTeamLead && (
+          <DropdownMenuItem onClick={openUsage} className="cursor-pointer">
+            <Gauge className="h-4 w-4 mr-2" />
+            Usage
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onClick={()=>setShowBilling(true)} className="cursor-pointer">
           <CreditCard className="h-4 w-4 mr-2" />
           Subscription &amp; Users
@@ -182,6 +212,9 @@ export function UserMenu() {
       </DropdownMenuContent>
     </DropdownMenu>
     <BillingPanel open={showBilling} onOpenChange={setShowBilling} />
+    {usageAccess?.isTeamLead && (
+      <UsagePanel open={showUsage} onOpenChange={setShowUsage} userId={user.id} access={usageAccess} />
+    )}
 
     {/* Update Ready Dialog */}
     <AlertDialog open={showUpdateDialog} onOpenChange={setShowUpdateDialog}>
