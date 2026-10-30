@@ -11,6 +11,7 @@ import type {
   AIToolDefinition,
 } from './providers/types';
 import { formatRateLimitExceededMessage } from './rateLimitMessage';
+import { notifyUsageUpdated } from '@/services/billing/usage';
 
 export { formatRateLimitExceededMessage } from './rateLimitMessage';
 
@@ -157,6 +158,8 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
   }
 
   const proxyResponse = data as ProxyResponse;
+  // The server records billed usage before it replies, so an open usage meter can refresh now.
+  notifyUsageUpdated();
 
   if (!proxyResponse.content) {
     console.warn('[AI Proxy] Empty content in response:', proxyResponse);
