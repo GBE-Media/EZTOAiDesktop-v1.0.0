@@ -323,6 +323,8 @@ export interface PageItemCountResult {
   incomplete?: { failedTiles: string[] };
   legendTypeCodes?: string[];
   verificationNotes?: string[];
+  /** Second-opinion vision model agreement (count_page_items). */
+  visionCrossCheck?: import('../providers/types').BlueprintAnalysisResult['visionCrossCheck'];
   message?: string;
   excludedByZone?: Array<{ zoneLabel: string; kind: string; count: number; itemIds: string[] }>;
   zoneWarning?: string;
@@ -822,6 +824,7 @@ export function countItemsFromAnalysis(
       incomplete: analysis.incompleteTiles?.length ? { failedTiles: analysis.incompleteTiles } : undefined,
       legendTypeCodes: analysis.legendTypeCodes,
       verificationNotes,
+      ...(analysis.visionCrossCheck ? { visionCrossCheck: analysis.visionCrossCheck } : {}),
       excludedByZone: zoneFilter?.excludedByZone,
       zoneWarning: zoneFilter?.warning,
       message: (analysis.incompleteTiles?.length

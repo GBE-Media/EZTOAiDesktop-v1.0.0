@@ -78,14 +78,21 @@ export function createJsonToolModelAdapter(
 
       let response: AICompletionResponse;
 
-      if (options.imageBase64) {
-        const lastUserIndex = [...history].map((m, i) => (m.role === 'user' ? i : -1)).filter(i => i >= 0).pop();
+      const hasViewImages = history.some(message => message.images?.length);
+      if (options.imageBase64 || hasViewImages) {
+        // The current-page snapshot goes on the latest user message that has no image of its own
+        // (the user's request); view_page renders keep their own images.
+        const lastUserIndex = options.imageBase64
+          ? [...history].map((m, i) => (m.role === 'user' && !m.images?.length ? i : -1)).filter(i => i >= 0).pop()
+          : undefined;
         response = await ai.visionForRole(role, {
           messages: projectMessagesPreservingToolFields([
             { role: 'system', content: system },
             ...history.map((message, index) => ({
               ...message,
-              images: index === lastUserIndex ? [options.imageBase64!] : undefined,
+              images: index === lastUserIndex
+                ? [options.imageBase64!]
+                : message.images?.length ? message.images : undefined,
             })),
           ]),
           ...shared,
