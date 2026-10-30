@@ -11,8 +11,9 @@ export interface AgentModelSelection {
 export type AgentModelsConfig = Record<AgentModelRole, AgentModelSelection>;
 
 export const DEFAULT_AGENT_MODELS: AgentModelsConfig = {
-  router: { provider: 'lovable', model: 'openai/gpt-5.6-luna' },
-  primary: { provider: 'lovable', model: 'openai/gpt-5.6-sol' },
-  verifier: { provider: 'anthropic', model: 'claude-opus-4-7' },
-  fallback: { provider: 'lovable', model: 'openai/gpt-5.5' },
+  router: { provider: 'lovable', model: 'openai/gpt-6-luna' },
+  primary: { provider: 'lovable', model: 'openai/gpt-6.1-sol' },
+  verifier: { provider: 'anthropic', model: 'claude-opus-5-5' },
+  // Fallback stays on the Chat Completions path so a Responses API problem still gets an answer.
+  fallback: { provider: 'lovable', model: 'openai/gpt-5.6-sol' },
 };

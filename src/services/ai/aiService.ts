@@ -38,6 +38,7 @@ import {
 // direct OpenAI model as its last resort.
 const FALLBACK_CHAINS: Partial<Record<AIProviderType, Array<{ provider: AIProviderType; model: string }>>> = {
   lovable: [
+    { provider: 'lovable', model: 'openai/gpt-5.6-sol' },
     { provider: 'lovable', model: 'openai/gpt-5.5' },
     { provider: 'openai', model: 'gpt-4o' },
   ],
@@ -46,8 +47,8 @@ const FALLBACK_CHAINS: Partial<Record<AIProviderType, Array<{ provider: AIProvid
     { provider: 'openai', model: 'gpt-4o' },
   ],
   anthropic: [
+    { provider: 'anthropic', model: 'claude-sonnet-5-5' },
     { provider: 'anthropic', model: 'claude-sonnet-4-6' },
-    { provider: 'anthropic', model: 'claude-opus-4-7' },
   ],
 };
 
@@ -90,15 +91,15 @@ export interface AIServiceConfig {
 const DEFAULT_PIPELINE_CONFIG: PipelineConfig = {
   visionModel: {
     provider: 'lovable',
-    model: 'openai/gpt-5.6-sol',
+    model: 'openai/gpt-6.1-sol',
   },
   estimationModel: {
     provider: 'anthropic',
-    model: 'claude-opus-4-7',
+    model: 'claude-opus-5-5',
   },
   placementModel: {
     provider: 'lovable',
-    model: 'openai/gpt-5.6-sol',
+    model: 'openai/gpt-6.1-sol',
   },
 };
 

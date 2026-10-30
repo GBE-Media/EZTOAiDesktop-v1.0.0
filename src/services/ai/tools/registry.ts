@@ -222,7 +222,7 @@ const coreTools: AssistantToolDefinition[] = [
     title: 'Compare vision models',
     description:
       'A/B test the model that reads the drawings: counts one page several times (fresh, never cached) with the current '
-      + 'vision model and a candidate (default google/gemini-3.1-pro-preview), with the same symbol check for both, and scores '
+      + 'vision model and a candidate (default google/gemini-4-argon), with the same symbol check for both, and scores '
       + 'run-to-run count variation, % of markers placed on the drawn symbol, duplicates/misses fixed, and speed. '
       + 'Places nothing. Takes several minutes (6 page analyses at runs=3). Use only when the user asks to compare or test models.',
     risk: 'read',

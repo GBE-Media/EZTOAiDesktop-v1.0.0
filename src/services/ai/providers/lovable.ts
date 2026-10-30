@@ -1,8 +1,8 @@
 /**
  * Lovable AI Gateway Provider
- * Frontier models (OpenAI 5.x series, Google Gemini 3.x) served through the
+ * Frontier models (OpenAI GPT-6 and 5.x, Google Gemini 4 and 3.x) served through the
  * Lovable AI Gateway and billed as workspace credits. Requests are made with
- * { provider: 'lovable', model: 'openai/gpt-5.6-sol', ... } via the ai-proxy
+ * { provider: 'lovable', model: 'openai/gpt-6.1-sol', ... } via the ai-proxy
  * Edge Function; there is no direct (local API key) call path.
  */
 
@@ -18,6 +18,46 @@ import type {
 
 const LOVABLE_MODELS: AIModelInfo[] = [
   {
+    id: 'openai/gpt-6.1-sol',
+    name: 'GPT-6.1 Sol (Lovable)',
+    provider: 'lovable',
+    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code', 'reasoning'],
+    contextWindow: 1050000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.002, output: 0.01 },
+  },
+  {
+    id: 'openai/gpt-6-astra',
+    name: 'GPT-6 Astra (Lovable)',
+    provider: 'lovable',
+    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code', 'reasoning'],
+    contextWindow: 1050000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.01, output: 0.05 },
+  },
+  {
+    id: 'openai/gpt-6-luna',
+    name: 'GPT-6 Luna (Lovable)',
+    provider: 'lovable',
+    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code'],
+    contextWindow: 1050000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.0001, output: 0.0005 },
+  },
+  {
+    id: 'google/gemini-4-argon',
+    name: 'Gemini 4 Argon (Lovable)',
+    provider: 'lovable',
+    capabilities: ['text', 'vision', 'structured-output', 'function-calling', 'code', 'reasoning'],
+    contextWindow: 1000000,
+    supportsVision: true,
+    supportsStructuredOutput: true,
+    costPer1kTokens: { input: 0.002, output: 0.01 },
+  },
+  {
     id: 'openai/gpt-5.6-sol',
     name: 'GPT-5.6 Sol (Lovable)',
     provider: 'lovable',
@@ -25,7 +65,7 @@ const LOVABLE_MODELS: AIModelInfo[] = [
     contextWindow: 1050000,
     supportsVision: true,
     supportsStructuredOutput: true,
-    costPer1kTokens: { input: 0.005, output: 0.03 },
+    costPer1kTokens: { input: 0.004, output: 0.02 },
   },
   {
     id: 'openai/gpt-5.6-terra',
@@ -109,13 +149,13 @@ export class LovableProvider implements AIProvider {
   getDefaultModel(stage: PipelineStage): string {
     switch (stage) {
       case 'vision':
-        return 'openai/gpt-5.6-sol';
+        return 'openai/gpt-6.1-sol';
       case 'estimation':
-        return 'openai/gpt-5.6-sol';
+        return 'openai/gpt-6.1-sol';
       case 'placement':
-        return 'openai/gpt-5.6-sol';
+        return 'openai/gpt-6.1-sol';
       default:
-        return 'openai/gpt-5.6-sol';
+        return 'openai/gpt-6.1-sol';
     }
   }
 

@@ -564,7 +564,7 @@ async function defaultCompareVisionModels(
   const current = service.getPipelineConfig().visionModel;
   const candidateModel = typeof raw.candidateModel === 'string' && raw.candidateModel.trim()
     ? raw.candidateModel.trim()
-    : (current.model === COMPARISON_CANDIDATE_MODEL ? 'openai/gpt-5.6-sol' : COMPARISON_CANDIDATE_MODEL);
+    : (current.model === COMPARISON_CANDIDATE_MODEL ? 'openai/gpt-6.1-sol' : COMPARISON_CANDIDATE_MODEL);
   const candidate = { provider: 'lovable' as const, model: candidateModel };
   const startedRevision = pdfData.contentRevision ?? 0;
   const zones = await ensurePageZones(docId, page);
