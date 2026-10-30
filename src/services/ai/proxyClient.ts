@@ -146,7 +146,7 @@ export async function sendProxyRequest(request: ProxyRequest): Promise<AIComplet
     if (response.status === 402) {
       // A billing block is never a model failure and must not trigger a paid fallback.
       window.dispatchEvent(new CustomEvent('billing-required'));
-      throw new ProxyRequestError(errorData.error || 'Open Billing & Users to review your subscription.',402);
+      throw new ProxyRequestError(errorData.error || 'AI features need an active BidveraAi subscription. Open Subscription & Users to start your 7-day trial.', 402);
     }
 
     if (response.status === 413) {
